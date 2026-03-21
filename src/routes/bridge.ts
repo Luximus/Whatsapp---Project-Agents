@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from "fastify";
+﻿import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { env } from "../env.js";
 import {
@@ -12,10 +12,10 @@ import {
   refreshBridgeSessionStatus,
   requireBridgeProjectAuth,
   requireDispatchToken,
-  resolveBridgeSessionStatus
+  resolveBridgeSessionStatus,
+  verifyBridgeSessionCode
 } from "../lib/bridge.js";
-import { ensureProjectActive } from "../lib/projectKey.js";
-import { buildWaUrl, normalizeE164, sendWhatsappText } from "../lib/whatsapp.js";
+import { normalizeE164, sendWhatsappText } from "../lib/whatsapp.js";
 import { parseOrThrow } from "../lib/zod.js";
 
 const flowSchema = z.enum(BRIDGE_FLOWS);
@@ -25,8 +25,12 @@ const startBodySchema = z.object({
   phone_e164: z.string().min(1).max(40),
   user_ref: z.string().min(1).max(128).optional(),
   correlation_id: z.string().min(1).max(128).optional(),
-  metadata: z.record(z.string(), z.unknown()).optional(),
-  delivery_mode: z.enum(["wa_link", "cloud_api"]).optional().default("wa_link")
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+const verifyBodySchema = z.object({
+  session_id: z.string().uuid(),
+  code: z.string().regex(/^\d{6}$/)
 });
 
 const sessionParamsSchema = z.object({
@@ -62,11 +66,6 @@ async function createSessionRequest(
   }
 ) {
   const phoneE164 = requireE164(input.body.phone_e164);
-  await ensureProjectActive(fastify, input.projectKey);
-
-  if (!env.WHATSAPP_VERIFY_NUMBER_E164) {
-    throw Object.assign(new Error("whatsapp_verify_number_missing"), { statusCode: 500 });
-  }
 
   const session = await createBridgeSession(fastify, {
     projectKey: input.projectKey,
@@ -79,26 +78,12 @@ async function createSessionRequest(
   });
 
   const message = buildBridgeMessage(session.flow, session.code, session.otp_ref);
-  let deliveryMode = "wa_link";
-  let waUrl: string | null = null;
-
-  if (input.body.delivery_mode === "cloud_api") {
-    await sendWhatsappText(phoneE164, message);
-    deliveryMode = "cloud_api";
-  } else {
-    waUrl = buildWaUrl(env.WHATSAPP_VERIFY_NUMBER_E164, message);
-  }
-
-  const instructions =
-    deliveryMode === "wa_link"
-      ? "Abre wa_url y envia el mensaje prellenado para completar la verificacion."
-      : "Codigo enviado por WhatsApp Cloud API.";
+  await sendWhatsappText(phoneE164, message);
 
   return {
     session,
-    deliveryMode,
-    waUrl,
-    instructions
+    deliveryMode: "cloud_api" as const,
+    instructions: "Codigo enviado a WhatsApp del usuario."
   };
 }
 
@@ -122,7 +107,6 @@ export const bridgeRoutes: FastifyPluginAsync = async (fastify) => {
       otp_reference: session.otp_ref,
       expires_at: session.expires_at.toISOString(),
       delivery_mode: created.deliveryMode,
-      wa_url: created.waUrl,
       instructions: created.instructions
     };
   });
@@ -146,6 +130,7 @@ export const bridgeRoutes: FastifyPluginAsync = async (fastify) => {
         flow: session.flow,
         status: resolveBridgeSessionStatus(session),
         phone_e164: session.phone_e164,
+        code: session.code,
         otp_ref: session.otp_ref,
         user_ref: session.user_ref,
         correlation_id: session.correlation_id,
@@ -154,7 +139,6 @@ export const bridgeRoutes: FastifyPluginAsync = async (fastify) => {
       },
       delivery: {
         mode: created.deliveryMode,
-        wa_url: created.waUrl,
         instructions: created.instructions
       }
     };
@@ -173,10 +157,36 @@ export const bridgeRoutes: FastifyPluginAsync = async (fastify) => {
     };
   });
 
+  fastify.post("/api/bridge/webhooks/verify", async (request) => {
+    const auth = requireBridgeProjectAuth(request);
+    const body = parseOrThrow(verifyBodySchema, request.body);
+
+    const result = await verifyBridgeSessionCode(fastify, {
+      projectKey: auth.projectKey,
+      sessionId: body.session_id,
+      code: body.code
+    });
+
+    if (!result.found) {
+      throw Object.assign(new Error("bridge_session_not_found"), { statusCode: 404 });
+    }
+
+    await dispatchDueBridgeEvents(fastify, { projectKey: auth.projectKey, limit: 10 });
+
+    return {
+      project_key: auth.projectKey,
+      session_id: result.session.id,
+      status: result.status,
+      verified: result.status === "verified",
+      attempts: result.session.attempts,
+      expires_at: result.session.expires_at.toISOString(),
+      verified_at: result.session.verified_at?.toISOString() ?? null
+    };
+  });
+
   fastify.get("/api/bridge/sessions/:session_id", async (request) => {
     const auth = requireBridgeProjectAuth(request);
     const params = parseOrThrow(sessionParamsSchema, request.params);
-    await ensureProjectActive(fastify, auth.projectKey);
 
     const session = await getBridgeSessionById(fastify, auth.projectKey, params.session_id);
     if (!session) {

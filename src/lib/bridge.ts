@@ -1,8 +1,11 @@
-import { createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
+﻿import { createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import { env } from "../env.js";
 
 export const BRIDGE_FLOWS = ["verification", "login", "register", "recovery"] as const;
 export type BridgeFlow = (typeof BRIDGE_FLOWS)[number];
+
+type BridgeSessionStatus = "pending" | "verified" | "expired" | "cancelled";
+type BridgeEventStatus = "pending" | "processing" | "delivered" | "failed";
 
 export type BridgeSessionRow = {
   id: string;
@@ -13,7 +16,7 @@ export type BridgeSessionRow = {
   phone_e164: string;
   code: string;
   otp_ref: string;
-  status: "pending" | "verified" | "expired" | "cancelled";
+  status: BridgeSessionStatus;
   attempts: number;
   expires_at: Date;
   verified_at: Date | null;
@@ -29,12 +32,21 @@ type BridgeEventRow = {
   project_key: string;
   event_type: string;
   payload: Record<string, unknown>;
-  delivery_status: "pending" | "processing" | "delivered" | "failed";
+  delivery_status: BridgeEventStatus;
   delivery_attempts: number;
   next_retry_at: Date;
   processing_started_at: Date | null;
   callback_url: string | null;
+  delivered_at: Date | null;
+  last_error: string | null;
+  created_at: Date;
+  updated_at: Date;
 };
+
+const sessionsById = new Map<string, BridgeSessionRow>();
+const eventsById = new Map<number, BridgeEventRow>();
+const eventKeyIndex = new Map<string, number>();
+let bridgeEventSequence = 1;
 
 function toComparableBuffer(value: string) {
   return Buffer.from(value, "utf8");
@@ -57,6 +69,35 @@ function parseBearerToken(authHeader: unknown) {
   if (!raw) return null;
   const match = raw.match(/^Bearer\s+(.+)$/i);
   return match?.[1] ?? null;
+}
+
+function eventUniqueKey(sessionId: string, eventType: string) {
+  return `${sessionId}:${eventType}`;
+}
+
+function sessionRetentionMs() {
+  const ttlMs = env.BRIDGE_OTP_TTL_SECONDS * 1000;
+  return Math.max(ttlMs * 3, 24 * 60 * 60 * 1000);
+}
+
+function pruneBridgeMemory() {
+  const now = Date.now();
+  const retention = sessionRetentionMs();
+
+  for (const [sessionId, session] of sessionsById.entries()) {
+    const finished = session.status !== "pending";
+    const stalePending = session.status === "pending" && session.expires_at.getTime() + retention <= now;
+    const staleFinished = finished && session.updated_at.getTime() + retention <= now;
+    if (!stalePending && !staleFinished) continue;
+
+    sessionsById.delete(sessionId);
+
+    for (const [eventId, event] of eventsById.entries()) {
+      if (event.session_id !== sessionId) continue;
+      eventsById.delete(eventId);
+      eventKeyIndex.delete(eventUniqueKey(sessionId, event.event_type));
+    }
+  }
 }
 
 export function requireBridgeProjectAuth(request: any, expectedProjectKey?: string) {
@@ -112,7 +153,7 @@ export function requireDispatchToken(request: any) {
 }
 
 export function generateOtpCode() {
-  return String(randomInt(1000, 10000));
+  return String(randomInt(0, 1_000_000)).padStart(6, "0");
 }
 
 export function generateOtpReference() {
@@ -139,7 +180,7 @@ function flowDisplayName(flow: BridgeFlow) {
 }
 
 export function buildBridgeMessage(flow: BridgeFlow, code: string, otpRef: string) {
-  return `Hola, mi codigo de ${flowDisplayName(flow)} es ${code}. REF ${otpRef}`;
+  return `Tu codigo de ${flowDisplayName(flow)} es ${code}. REF ${otpRef}`;
 }
 
 export function resolveBridgeSessionStatus(session: Pick<BridgeSessionRow, "status" | "expires_at">) {
@@ -149,108 +190,24 @@ export function resolveBridgeSessionStatus(session: Pick<BridgeSessionRow, "stat
   return session.status;
 }
 
-export async function createBridgeSession(
-  fastify: any,
-  input: {
-    projectKey: string;
-    flow: BridgeFlow;
-    phoneE164: string;
-    userRef?: string | null;
-    correlationId?: string | null;
-    metadata?: Record<string, unknown> | null;
-    callbackUrl?: string | null;
+function expireSession(session: BridgeSessionRow) {
+  session.status = "expired";
+  session.updated_at = new Date();
+}
+
+function increaseSessionAttempts(session: BridgeSessionRow) {
+  session.attempts += 1;
+  session.updated_at = new Date();
+  if (session.attempts >= env.BRIDGE_OTP_MAX_ATTEMPTS) {
+    session.status = "expired";
   }
-) {
-  const code = generateOtpCode();
-  const otpRef = generateOtpReference();
-  const ttlMs = env.BRIDGE_OTP_TTL_SECONDS * 1000;
-  const expiresAt = new Date(Date.now() + ttlMs);
-
-  const { rows } = await fastify.pg.query(
-    `insert into whatsapp_bridge_sessions (
-       project_key, flow, user_ref, correlation_id, phone_e164, code, otp_ref, expires_at, metadata, callback_url
-     )
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-     returning id, project_key, flow, user_ref, correlation_id, phone_e164, code, otp_ref, status, attempts, expires_at, verified_at, callback_url, metadata, created_at, updated_at`,
-    [
-      input.projectKey,
-      input.flow,
-      input.userRef ?? null,
-      input.correlationId ?? null,
-      input.phoneE164,
-      code,
-      otpRef,
-      expiresAt,
-      input.metadata ?? null,
-      input.callbackUrl ?? null
-    ]
-  );
-
-  return rows[0] as BridgeSessionRow;
 }
 
-export async function getBridgeSessionById(fastify: any, projectKey: string, sessionId: string) {
-  const { rows } = await fastify.pg.query(
-    `select id, project_key, flow, user_ref, correlation_id, phone_e164, code, otp_ref, status, attempts, expires_at, verified_at, callback_url, metadata, created_at, updated_at
-     from whatsapp_bridge_sessions
-     where id = $1 and project_key = $2
-     limit 1`,
-    [sessionId, projectKey]
-  );
-  return (rows[0] as BridgeSessionRow | undefined) ?? null;
-}
-
-export async function refreshBridgeSessionStatus(fastify: any, session: BridgeSessionRow) {
-  if (resolveBridgeSessionStatus(session) !== "expired") {
-    return session;
-  }
-  const { rows } = await fastify.pg.query(
-    `update whatsapp_bridge_sessions
-     set status = 'expired',
-         updated_at = now()
-     where id = $1
-       and status = 'pending'
-     returning id, project_key, flow, user_ref, correlation_id, phone_e164, code, otp_ref, status, attempts, expires_at, verified_at, callback_url, metadata, created_at, updated_at`,
-    [session.id]
-  );
-  return (rows[0] as BridgeSessionRow | undefined) ?? session;
-}
-
-async function expireBridgeSession(fastify: any, sessionId: string) {
-  await fastify.pg.query(
-    `update whatsapp_bridge_sessions
-     set status = 'expired',
-         updated_at = now()
-     where id = $1
-       and status = 'pending'`,
-    [sessionId]
-  );
-}
-
-async function increaseBridgeAttempts(fastify: any, sessionId: string) {
-  await fastify.pg.query(
-    `update whatsapp_bridge_sessions
-     set attempts = attempts + 1,
-         status = case when attempts + 1 >= $2 then 'expired' else status end,
-         updated_at = now()
-     where id = $1
-       and status = 'pending'`,
-    [sessionId, env.BRIDGE_OTP_MAX_ATTEMPTS]
-  );
-}
-
-async function markBridgeSessionVerified(fastify: any, sessionId: string) {
-  const { rows } = await fastify.pg.query(
-    `update whatsapp_bridge_sessions
-     set status = 'verified',
-         verified_at = now(),
-         updated_at = now()
-     where id = $1
-       and status = 'pending'
-     returning id, project_key, flow, user_ref, correlation_id, phone_e164, code, otp_ref, status, attempts, expires_at, verified_at, callback_url, metadata, created_at, updated_at`,
-    [sessionId]
-  );
-  return (rows[0] as BridgeSessionRow | undefined) ?? null;
+function markSessionVerified(session: BridgeSessionRow) {
+  const now = new Date();
+  session.status = "verified";
+  session.verified_at = now;
+  session.updated_at = now;
 }
 
 function buildVerifiedEventPayload(session: BridgeSessionRow) {
@@ -273,22 +230,95 @@ function buildVerifiedEventPayload(session: BridgeSessionRow) {
   };
 }
 
+export async function createBridgeSession(
+  _fastify: any,
+  input: {
+    projectKey: string;
+    flow: BridgeFlow;
+    phoneE164: string;
+    userRef?: string | null;
+    correlationId?: string | null;
+    metadata?: Record<string, unknown> | null;
+    callbackUrl?: string | null;
+  }
+) {
+  pruneBridgeMemory();
+
+  const now = new Date();
+  const session: BridgeSessionRow = {
+    id: randomUUID(),
+    project_key: input.projectKey,
+    flow: input.flow,
+    user_ref: input.userRef ?? null,
+    correlation_id: input.correlationId ?? null,
+    phone_e164: input.phoneE164,
+    code: generateOtpCode(),
+    otp_ref: generateOtpReference(),
+    status: "pending",
+    attempts: 0,
+    expires_at: new Date(now.getTime() + env.BRIDGE_OTP_TTL_SECONDS * 1000),
+    verified_at: null,
+    callback_url: input.callbackUrl ?? null,
+    metadata: input.metadata ?? null,
+    created_at: now,
+    updated_at: now
+  };
+
+  sessionsById.set(session.id, session);
+  return session;
+}
+
+export async function getBridgeSessionById(_fastify: any, projectKey: string, sessionId: string) {
+  pruneBridgeMemory();
+  const session = sessionsById.get(sessionId);
+  if (!session) return null;
+  if (session.project_key !== projectKey) return null;
+  return session;
+}
+
+export async function refreshBridgeSessionStatus(_fastify: any, session: BridgeSessionRow) {
+  if (resolveBridgeSessionStatus(session) === "expired" && session.status === "pending") {
+    expireSession(session);
+  }
+  return session;
+}
+
 export async function enqueueBridgeEvent(
-  fastify: any,
+  _fastify: any,
   input: {
     session: BridgeSessionRow;
     eventType: string;
     payload: Record<string, unknown>;
   }
 ) {
-  const { rows } = await fastify.pg.query(
-    `insert into whatsapp_bridge_events (session_id, project_key, event_type, payload)
-     values ($1, $2, $3, $4::jsonb)
-     on conflict (session_id, event_type) do nothing
-     returning id`,
-    [input.session.id, input.session.project_key, input.eventType, JSON.stringify(input.payload)]
-  );
-  return rows.length > 0;
+  pruneBridgeMemory();
+
+  const key = eventUniqueKey(input.session.id, input.eventType);
+  if (eventKeyIndex.has(key)) {
+    return false;
+  }
+
+  const now = new Date();
+  const event: BridgeEventRow = {
+    id: bridgeEventSequence++,
+    session_id: input.session.id,
+    project_key: input.session.project_key,
+    event_type: input.eventType,
+    payload: input.payload,
+    delivery_status: "pending",
+    delivery_attempts: 0,
+    next_retry_at: now,
+    processing_started_at: null,
+    callback_url: input.session.callback_url,
+    delivered_at: null,
+    last_error: null,
+    created_at: now,
+    updated_at: now
+  };
+
+  eventsById.set(event.id, event);
+  eventKeyIndex.set(key, event.id);
+  return true;
 }
 
 export async function enqueueBridgeVerifiedEvent(fastify: any, session: BridgeSessionRow) {
@@ -300,8 +330,10 @@ export async function enqueueBridgeVerifiedEvent(fastify: any, session: BridgeSe
   });
 }
 
-function parseBridgeSession(row: any) {
-  return row as BridgeSessionRow;
+function latestPendingSessionsByPhone(phoneE164: string) {
+  return Array.from(sessionsById.values())
+    .filter((session) => session.phone_e164 === phoneE164 && session.status === "pending")
+    .sort((a, b) => b.created_at.getTime() - a.created_at.getTime());
 }
 
 export async function consumeBridgeOtp(
@@ -312,96 +344,96 @@ export async function consumeBridgeOtp(
     text: string;
   }
 ) {
-  const otpRef = extractBridgeReference(input.text);
+  pruneBridgeMemory();
+
   const now = new Date();
+  const otpRef = extractBridgeReference(input.text);
+  const pendingByPhone = latestPendingSessionsByPhone(input.from);
 
   let matchedSession: BridgeSessionRow | null = null;
   if (otpRef) {
-    const { rows } = await fastify.pg.query(
-      `select id, project_key, flow, user_ref, correlation_id, phone_e164, code, otp_ref, status, attempts, expires_at, verified_at, callback_url, metadata, created_at, updated_at
-       from whatsapp_bridge_sessions
-       where phone_e164 = $1
-         and otp_ref = $2
-         and status = 'pending'
-       order by created_at desc
-       limit 1`,
-      [input.from, otpRef]
-    );
-    matchedSession = rows[0] ? parseBridgeSession(rows[0]) : null;
+    matchedSession =
+      pendingByPhone.find((session) => session.otp_ref.toUpperCase() === otpRef.toUpperCase()) ?? null;
   } else {
-    const { rows } = await fastify.pg.query(
-      `select id, project_key, flow, user_ref, correlation_id, phone_e164, code, otp_ref, status, attempts, expires_at, verified_at, callback_url, metadata, created_at, updated_at
-       from whatsapp_bridge_sessions
-       where phone_e164 = $1
-         and code = $2
-         and status = 'pending'
-       order by created_at desc
-       limit 1`,
-      [input.from, input.otp]
-    );
-    matchedSession = rows[0] ? parseBridgeSession(rows[0]) : null;
+    matchedSession = pendingByPhone.find((session) => session.code === input.otp) ?? null;
   }
 
   if (!matchedSession) {
-    const { rows } = await fastify.pg.query(
-      `select id, project_key, flow, user_ref, correlation_id, phone_e164, code, otp_ref, status, attempts, expires_at, verified_at, callback_url, metadata, created_at, updated_at
-       from whatsapp_bridge_sessions
-       where phone_e164 = $1
-         and status = 'pending'
-       order by created_at desc
-       limit 1`,
-      [input.from]
-    );
-    const latestPending = rows[0] ? parseBridgeSession(rows[0]) : null;
+    const latestPending = pendingByPhone[0] ?? null;
     if (!latestPending) {
       return { handled: false as const };
     }
 
     if (latestPending.expires_at <= now) {
-      await expireBridgeSession(fastify, latestPending.id);
-      return {
-        handled: true as const,
-        status: "expired" as const
-      };
+      expireSession(latestPending);
+      return { handled: true as const, status: "expired" as const };
     }
 
-    await increaseBridgeAttempts(fastify, latestPending.id);
+    const willExpire = latestPending.attempts + 1 >= env.BRIDGE_OTP_MAX_ATTEMPTS;
+    increaseSessionAttempts(latestPending);
     return {
       handled: true as const,
-      status: "invalid" as const
+      status: willExpire ? ("expired" as const) : ("invalid" as const)
     };
   }
 
   if (matchedSession.expires_at <= now) {
-    await expireBridgeSession(fastify, matchedSession.id);
-    return {
-      handled: true as const,
-      status: "expired" as const
-    };
+    expireSession(matchedSession);
+    return { handled: true as const, status: "expired" as const };
   }
 
   if (matchedSession.code !== input.otp) {
-    await increaseBridgeAttempts(fastify, matchedSession.id);
+    const willExpire = matchedSession.attempts + 1 >= env.BRIDGE_OTP_MAX_ATTEMPTS;
+    increaseSessionAttempts(matchedSession);
     return {
       handled: true as const,
-      status: "invalid" as const
+      status: willExpire ? ("expired" as const) : ("invalid" as const)
     };
   }
 
-  const verified = await markBridgeSessionVerified(fastify, matchedSession.id);
-  if (!verified) {
-    return {
-      handled: true as const,
-      status: "invalid" as const
-    };
-  }
-
-  await enqueueBridgeVerifiedEvent(fastify, verified);
+  markSessionVerified(matchedSession);
+  await enqueueBridgeVerifiedEvent(fastify, matchedSession);
   return {
     handled: true as const,
     status: "verified" as const,
-    session: verified
+    session: matchedSession
   };
+}
+
+export async function verifyBridgeSessionCode(
+  fastify: any,
+  input: {
+    projectKey: string;
+    sessionId: string;
+    code: string;
+  }
+) {
+  const session = await getBridgeSessionById(fastify, input.projectKey, input.sessionId);
+  if (!session) {
+    return { found: false as const };
+  }
+
+  await refreshBridgeSessionStatus(fastify, session);
+  if (session.status === "verified") {
+    return { found: true as const, status: "verified" as const, session };
+  }
+  if (session.status !== "pending") {
+    return { found: true as const, status: "expired" as const, session };
+  }
+
+  if (session.code !== input.code) {
+    const willExpire = session.attempts + 1 >= env.BRIDGE_OTP_MAX_ATTEMPTS;
+    increaseSessionAttempts(session);
+    return {
+      found: true as const,
+      status: willExpire ? ("expired" as const) : ("invalid" as const),
+      session
+    };
+  }
+
+  markSessionVerified(session);
+  await enqueueBridgeVerifiedEvent(fastify, session);
+  return { found: true as const, status: "verified" as const, session };
 }
 
 export function buildBridgeSignature(secret: string, timestamp: string, rawBody: string) {
@@ -416,120 +448,40 @@ function nextRetryDate(attempts: number) {
   return new Date(Date.now() + seconds * 1000);
 }
 
-async function claimDueBridgeEvents(
-  fastify: any,
-  input: {
-    projectKey?: string;
-    limit: number;
-  }
-) {
-  const values: any[] = [];
-  let projectFilter = "";
-  if (input.projectKey) {
-    values.push(input.projectKey);
-    projectFilter = `and project_key = $${values.length}`;
-  }
-  values.push(input.limit);
-  const limitParam = `$${values.length}`;
-
-  await fastify.pg.query("begin");
-  try {
-    await fastify.pg.query(
-      `update whatsapp_bridge_events
-       set delivery_status = 'pending',
-           processing_started_at = null,
-           updated_at = now()
-       where delivery_status = 'processing'
-         and processing_started_at is not null
-         and processing_started_at < now() - interval '10 minutes'`
-    );
-
-    const { rows } = await fastify.pg.query(
-      `with picked as (
-         select id
-         from whatsapp_bridge_events
-         where delivery_status = 'pending'
-           and next_retry_at <= now()
-           ${projectFilter}
-         order by next_retry_at asc
-         limit ${limitParam}
-         for update skip locked
-       )
-       update whatsapp_bridge_events e
-       set delivery_status = 'processing',
-           processing_started_at = now(),
-           updated_at = now()
-       from picked
-       where e.id = picked.id
-       returning e.id, e.session_id, e.project_key, e.event_type, e.payload, e.delivery_status, e.delivery_attempts, e.next_retry_at, e.processing_started_at`,
-      values
-    );
-
-    await fastify.pg.query("commit");
-
-    const claimed = [] as BridgeEventRow[];
-    for (const row of rows) {
-      const { rows: sessionRows } = await fastify.pg.query(
-        `select callback_url
-         from whatsapp_bridge_sessions
-         where id = $1
-         limit 1`,
-        [row.session_id]
-      );
-      claimed.push({
-        ...(row as BridgeEventRow),
-        callback_url: (sessionRows[0] as { callback_url: string | null } | undefined)?.callback_url ?? null
-      });
-    }
-    return claimed;
-  } catch (err) {
-    await fastify.pg.query("rollback");
-    throw err;
-  }
+function markBridgeEventDelivered(event: BridgeEventRow) {
+  event.delivery_status = "delivered";
+  event.delivered_at = new Date();
+  event.processing_started_at = null;
+  event.updated_at = new Date();
 }
 
-async function markBridgeEventDelivered(fastify: any, eventId: number) {
-  await fastify.pg.query(
-    `update whatsapp_bridge_events
-     set delivery_status = 'delivered',
-         delivered_at = now(),
-         processing_started_at = null,
-         updated_at = now()
-     where id = $1`,
-    [eventId]
-  );
-}
-
-async function markBridgeEventFailed(fastify: any, event: BridgeEventRow, message: string) {
+function markBridgeEventFailed(event: BridgeEventRow, message: string) {
   const attempts = event.delivery_attempts + 1;
-  const reachedMax = attempts >= env.BRIDGE_EVENT_MAX_RETRIES;
-  const status = reachedMax ? "failed" : "pending";
-  const nextRetryAt = reachedMax ? null : nextRetryDate(attempts);
+  event.delivery_attempts = attempts;
+  event.last_error = message.slice(0, 1000);
+  event.processing_started_at = null;
+  event.updated_at = new Date();
 
-  await fastify.pg.query(
-    `update whatsapp_bridge_events
-     set delivery_status = $2,
-         delivery_attempts = $3,
-         next_retry_at = coalesce($4, next_retry_at),
-         last_error = $5,
-         processing_started_at = null,
-         updated_at = now()
-     where id = $1`,
-    [event.id, status, attempts, nextRetryAt, message.slice(0, 1000)]
-  );
+  if (attempts >= env.BRIDGE_EVENT_MAX_RETRIES) {
+    event.delivery_status = "failed";
+    return;
+  }
+
+  event.delivery_status = "pending";
+  event.next_retry_at = nextRetryDate(attempts);
 }
 
-async function deliverBridgeEvent(fastify: any, event: BridgeEventRow) {
+async function deliverBridgeEvent(event: BridgeEventRow) {
   const projectConfig = env.bridgeProjects[event.project_key];
   if (!projectConfig) {
-    await markBridgeEventFailed(fastify, event, "project_not_configured");
+    markBridgeEventFailed(event, "project_not_configured");
     return false;
   }
 
   const callbackUrl = event.callback_url ?? projectConfig.callbackUrl;
   const callbackSecret = projectConfig.callbackSecret;
   if (!callbackUrl || !callbackSecret) {
-    await markBridgeEventFailed(fastify, event, "callback_not_configured");
+    markBridgeEventFailed(event, "callback_not_configured");
     return false;
   }
 
@@ -556,44 +508,58 @@ async function deliverBridgeEvent(fastify: any, event: BridgeEventRow) {
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      await markBridgeEventFailed(
-        fastify,
-        event,
-        `callback_http_${response.status}${body ? `:${body}` : ""}`
-      );
+      markBridgeEventFailed(event, `callback_http_${response.status}${body ? `:${body}` : ""}`);
       return false;
     }
 
-    await markBridgeEventDelivered(fastify, event.id);
+    markBridgeEventDelivered(event);
     return true;
   } catch (err: any) {
     clearTimeout(timeout);
     const message = err?.name === "AbortError" ? "callback_timeout" : err?.message ?? "callback_failed";
-    await markBridgeEventFailed(fastify, event, message);
+    markBridgeEventFailed(event, message);
     return false;
   }
 }
 
 export async function dispatchDueBridgeEvents(
-  fastify: any,
+  _fastify: any,
   input?: {
     projectKey?: string;
     limit?: number;
   }
 ) {
+  pruneBridgeMemory();
+
   const limit = Math.min(
     Math.max(1, input?.limit ?? env.BRIDGE_EVENT_DISPATCH_LIMIT),
     env.BRIDGE_EVENT_DISPATCH_LIMIT
   );
-  const claimed = await claimDueBridgeEvents(fastify, {
-    projectKey: input?.projectKey,
-    limit
-  });
+
+  const now = Date.now();
+  const claimed = Array.from(eventsById.values())
+    .filter((event) => {
+      if (event.delivery_status !== "pending") return false;
+      if (event.next_retry_at.getTime() > now) return false;
+      if (input?.projectKey && event.project_key !== input.projectKey) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const byRetry = a.next_retry_at.getTime() - b.next_retry_at.getTime();
+      if (byRetry !== 0) return byRetry;
+      return a.id - b.id;
+    })
+    .slice(0, limit);
 
   let delivered = 0;
   let failed = 0;
+
   for (const event of claimed) {
-    const ok = await deliverBridgeEvent(fastify, event);
+    event.delivery_status = "processing";
+    event.processing_started_at = new Date();
+    event.updated_at = new Date();
+
+    const ok = await deliverBridgeEvent(event);
     if (ok) {
       delivered += 1;
     } else {
@@ -608,27 +574,21 @@ export async function dispatchDueBridgeEvents(
   };
 }
 
-export async function getBridgeSessionEventStatus(fastify: any, sessionId: string) {
-  const { rows } = await fastify.pg.query(
-    `select id, event_type, delivery_status, delivery_attempts, next_retry_at, delivered_at, last_error, created_at
-     from whatsapp_bridge_events
-     where session_id = $1
-     order by created_at desc
-     limit 1`,
-    [sessionId]
-  );
-  return (
-    (rows[0] as
-      | {
-          id: number;
-          event_type: string;
-          delivery_status: string;
-          delivery_attempts: number;
-          next_retry_at: Date;
-          delivered_at: Date | null;
-          last_error: string | null;
-          created_at: Date;
-        }
-      | undefined) ?? null
-  );
+export async function getBridgeSessionEventStatus(_fastify: any, sessionId: string) {
+  const latest = Array.from(eventsById.values())
+    .filter((event) => event.session_id === sessionId)
+    .sort((a, b) => b.created_at.getTime() - a.created_at.getTime())[0];
+
+  if (!latest) return null;
+
+  return {
+    id: latest.id,
+    event_type: latest.event_type,
+    delivery_status: latest.delivery_status,
+    delivery_attempts: latest.delivery_attempts,
+    next_retry_at: latest.next_retry_at,
+    delivered_at: latest.delivered_at,
+    last_error: latest.last_error,
+    created_at: latest.created_at
+  };
 }
