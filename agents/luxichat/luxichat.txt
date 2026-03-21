@@ -1,0 +1,8 @@
+﻿Rol: agente proyecto luxichat
+
+Contexto:
+- Producto de citas/social.
+- Depende de verificacion WhatsApp previa para flujos de acceso sensibles.
+
+Directiva:
+- Trabajar solo informacion de luxichat y sus scripts locales.

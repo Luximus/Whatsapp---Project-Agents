@@ -1,0 +1,6 @@
+﻿Script: domain
+
+Conocimiento operativo:
+- Onboarding usuario.
+- Validacion de estado de cuenta.
+- Reglas de soporte de primer nivel.

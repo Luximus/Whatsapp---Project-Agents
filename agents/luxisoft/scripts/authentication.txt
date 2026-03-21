@@ -1,0 +1,9 @@
+﻿Script: authentication
+
+Objetivo:
+- Guiar los pasos de verificacion de codigo por WhatsApp.
+
+Reglas:
+- Mensajes cortos y accionables.
+- Nunca filtrar codigos o tokens.
+- En expiracion, solicitar reinicio del flujo.
