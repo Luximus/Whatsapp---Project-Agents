@@ -47,11 +47,22 @@ export async function sendWhatsappText(toE164: string, text: string) {
     })
   });
 
+  const raw = await res.text().catch(() => "");
+  let parsed: any = null;
+  if (raw) {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = raw;
+    }
+  }
+
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
     throw Object.assign(new Error("whatsapp_send_failed"), {
       statusCode: res.status,
-      details: body
+      details: parsed ?? raw
     });
   }
+
+  return parsed;
 }

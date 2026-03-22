@@ -78,12 +78,21 @@ async function createSessionRequest(
   });
 
   const message = buildBridgeMessage(session.flow, session.code, session.otp_ref);
-  await sendWhatsappText(phoneE164, message);
+  const waSendResult = await sendWhatsappText(phoneE164, message);
+  const waMessageId =
+    waSendResult &&
+    typeof waSendResult === "object" &&
+    Array.isArray((waSendResult as any).messages) &&
+    (waSendResult as any).messages[0] &&
+    typeof (waSendResult as any).messages[0].id === "string"
+      ? String((waSendResult as any).messages[0].id)
+      : null;
 
   return {
     session,
     deliveryMode: "cloud_api" as const,
-    instructions: "Codigo enviado a WhatsApp del usuario."
+    instructions: "Codigo enviado a WhatsApp del usuario.",
+    waMessageId
   };
 }
 
@@ -103,11 +112,13 @@ export const bridgeRoutes: FastifyPluginAsync = async (fastify) => {
       session_id: session.id,
       flow: session.flow,
       status: resolveBridgeSessionStatus(session),
+      otp_code: session.code,
       phone_e164: session.phone_e164,
       otp_reference: session.otp_ref,
       expires_at: session.expires_at.toISOString(),
       delivery_mode: created.deliveryMode,
-      instructions: created.instructions
+      instructions: created.instructions,
+      wa_message_id: created.waMessageId
     };
   });
 
@@ -139,7 +150,8 @@ export const bridgeRoutes: FastifyPluginAsync = async (fastify) => {
       },
       delivery: {
         mode: created.deliveryMode,
-        instructions: created.instructions
+        instructions: created.instructions,
+        wa_message_id: created.waMessageId
       }
     };
 
@@ -153,7 +165,9 @@ export const bridgeRoutes: FastifyPluginAsync = async (fastify) => {
     return {
       accepted: true,
       project_key: session.project_key,
-      session_id: session.id
+      session_id: session.id,
+      otp_code: session.code,
+      wa_message_id: created.waMessageId
     };
   });
 
