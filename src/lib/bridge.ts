@@ -236,6 +236,7 @@ export async function createBridgeSession(
     projectKey: string;
     flow: BridgeFlow;
     phoneE164: string;
+    userCode?: string | null;
     userRef?: string | null;
     correlationId?: string | null;
     metadata?: Record<string, unknown> | null;
@@ -252,7 +253,7 @@ export async function createBridgeSession(
     user_ref: input.userRef ?? null,
     correlation_id: input.correlationId ?? null,
     phone_e164: input.phoneE164,
-    code: generateOtpCode(),
+    code: input.userCode?.trim() || generateOtpCode(),
     otp_ref: generateOtpReference(),
     status: "pending",
     attempts: 0,

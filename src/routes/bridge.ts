@@ -23,9 +23,14 @@ const flowSchema = z.enum(BRIDGE_FLOWS);
 const startBodySchema = z.object({
   flow: flowSchema.optional().default("verification"),
   phone_e164: z.string().min(1).max(40),
+  user_code: z.string().regex(/^\d{6}$/).optional(),
   user_ref: z.string().min(1).max(128).optional(),
   correlation_id: z.string().min(1).max(128).optional(),
   metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+const webhookRequestBodySchema = startBodySchema.extend({
+  user_code: z.string().regex(/^\d{6}$/)
 });
 
 const verifyBodySchema = z.object({
@@ -71,6 +76,7 @@ async function createSessionRequest(
     projectKey: input.projectKey,
     flow: input.body.flow,
     phoneE164,
+    userCode: input.body.user_code,
     userRef: input.body.user_ref,
     correlationId: input.body.correlation_id,
     metadata: input.body.metadata ?? null,
@@ -78,21 +84,46 @@ async function createSessionRequest(
   });
 
   const message = buildBridgeMessage(session.flow, session.code, session.otp_ref);
-  const waSendResult = await sendWhatsappText(phoneE164, message);
-  const waMessageId =
-    waSendResult &&
-    typeof waSendResult === "object" &&
-    Array.isArray((waSendResult as any).messages) &&
-    (waSendResult as any).messages[0] &&
-    typeof (waSendResult as any).messages[0].id === "string"
-      ? String((waSendResult as any).messages[0].id)
-      : null;
+  let deliveryOk = false;
+  let waMessageId: string | null = null;
+  let deliveryError: { message: string; status_code: number | null; details: unknown } | null = null;
+
+  try {
+    const waSendResult = await sendWhatsappText(phoneE164, message);
+    waMessageId =
+      waSendResult &&
+      typeof waSendResult === "object" &&
+      Array.isArray((waSendResult as any).messages) &&
+      (waSendResult as any).messages[0] &&
+      typeof (waSendResult as any).messages[0].id === "string"
+        ? String((waSendResult as any).messages[0].id)
+        : null;
+    deliveryOk = true;
+  } catch (err: any) {
+    deliveryError = {
+      message: String(err?.message ?? "whatsapp_send_failed"),
+      status_code: typeof err?.statusCode === "number" ? err.statusCode : null,
+      details: err?.details ?? null
+    };
+    fastify.log.warn(
+      {
+        projectKey: input.projectKey,
+        phoneE164,
+        deliveryError
+      },
+      "Bridge WhatsApp delivery failed"
+    );
+  }
 
   return {
     session,
     deliveryMode: "cloud_api" as const,
-    instructions: "Codigo enviado a WhatsApp del usuario.",
-    waMessageId
+    instructions: deliveryOk
+      ? "Codigo enviado a WhatsApp del usuario."
+      : "No fue posible entregar el codigo por WhatsApp.",
+    waMessageId,
+    deliveryOk,
+    deliveryError
   };
 }
 
@@ -118,13 +149,15 @@ export const bridgeRoutes: FastifyPluginAsync = async (fastify) => {
       expires_at: session.expires_at.toISOString(),
       delivery_mode: created.deliveryMode,
       instructions: created.instructions,
-      wa_message_id: created.waMessageId
+      wa_message_id: created.waMessageId,
+      delivery_ok: created.deliveryOk,
+      delivery_error: created.deliveryError
     };
   });
 
   fastify.post("/api/bridge/webhooks/request", async (request) => {
     const auth = requireBridgeProjectAuth(request);
-    const body = parseOrThrow(startBodySchema, request.body);
+    const body = parseOrThrow(webhookRequestBodySchema, request.body);
     const created = await createSessionRequest(fastify, {
       projectKey: auth.projectKey,
       callbackUrl: auth.config.callbackUrl,
@@ -151,7 +184,9 @@ export const bridgeRoutes: FastifyPluginAsync = async (fastify) => {
       delivery: {
         mode: created.deliveryMode,
         instructions: created.instructions,
-        wa_message_id: created.waMessageId
+        wa_message_id: created.waMessageId,
+        ok: created.deliveryOk,
+        error: created.deliveryError
       }
     };
 
@@ -163,11 +198,13 @@ export const bridgeRoutes: FastifyPluginAsync = async (fastify) => {
     await dispatchDueBridgeEvents(fastify, { projectKey: auth.projectKey, limit: 10 });
 
     return {
-      accepted: true,
+      accepted: created.deliveryOk,
       project_key: session.project_key,
       session_id: session.id,
       otp_code: session.code,
-      wa_message_id: created.waMessageId
+      wa_message_id: created.waMessageId,
+      delivery_ok: created.deliveryOk,
+      delivery_error: created.deliveryError
     };
   });
 

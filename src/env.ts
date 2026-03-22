@@ -55,6 +55,47 @@ export type BridgeProjectConfig = {
   callbackSecret: string | null;
 };
 
+function parseAgentProjectSources(value: string) {
+  const raw = value.trim();
+  if (!raw) return {} as Record<string, string[]>;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("invalid_agent_project_sources_json");
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("invalid_agent_project_sources_json");
+  }
+
+  const output: Record<string, string[]> = {};
+  for (const [key, item] of Object.entries(parsed as Record<string, unknown>)) {
+    const projectKey = key.trim().toLowerCase();
+    if (!projectKey) continue;
+
+    const sources: string[] = [];
+    if (typeof item === "string") {
+      const value = item.trim();
+      if (value) sources.push(value);
+    } else if (Array.isArray(item)) {
+      for (const source of item) {
+        if (typeof source !== "string") continue;
+        const normalized = source.trim();
+        if (!normalized) continue;
+        sources.push(normalized);
+      }
+    }
+
+    if (sources.length > 0) {
+      output[projectKey] = Array.from(new Set(sources));
+    }
+  }
+
+  return output;
+}
+
 function parseBridgeProjects(value: string) {
   const raw = value.trim();
   if (!raw) return {} as Record<string, BridgeProjectConfig>;
@@ -141,6 +182,8 @@ const envSchema = z.object({
   PROJECT_DATABASES_JSON: z.string().optional().default("{}"),
   AGENTS_DIR: z.string().optional().default("./agents"),
   ORCHESTRATOR_AGENT_DIR: z.string().optional().default("./agents/luxisoft"),
+  AGENT_PROJECT_SOURCES_JSON: z.string().optional().default("{}"),
+  AGENT_HUMAN_TRANSFER_NUMBER_E164: z.string().optional().default(""),
 
   BRIDGE_PROJECTS_JSON: z.string().optional().default("{}"),
   BRIDGE_OTP_TTL_SECONDS: z.coerce.number().int().min(30).default(300),
@@ -149,7 +192,13 @@ const envSchema = z.object({
   BRIDGE_EVENT_MAX_RETRIES: z.coerce.number().int().min(1).default(6),
   BRIDGE_EVENT_RETRY_BASE_SECONDS: z.coerce.number().int().min(5).default(20),
   BRIDGE_EVENT_DISPATCH_LIMIT: z.coerce.number().int().min(1).max(500).default(50),
-  BRIDGE_DISPATCH_TOKEN: z.string().optional().default("")
+  BRIDGE_DISPATCH_TOKEN: z.string().optional().default(""),
+
+  OPENAI_API_KEY: z.string().optional().default(""),
+  OPENAI_BASE_URL: z.string().optional().default(""),
+  OPENAI_ORCHESTRATOR_MODEL: z.string().optional().default("gpt-5.4-mini"),
+  OPENAI_PROJECT_MODEL: z.string().optional().default("gpt-5.4-mini"),
+  OPENAI_AGENT_MAX_TOOL_STEPS: z.coerce.number().int().min(1).max(12).default(6)
 });
 
 const raw = envSchema.parse(process.env);
@@ -159,5 +208,12 @@ export const env = {
   corsOrigins: csvToArray(raw.CORS_ORIGIN),
   defaultProject: raw.WHATSAPP_DEFAULT_PROJECT.trim().toLowerCase() || "luxichat",
   projectDatabases: parseProjectDatabases(raw.PROJECT_DATABASES_JSON),
-  bridgeProjects: parseBridgeProjects(raw.BRIDGE_PROJECTS_JSON)
+  bridgeProjects: parseBridgeProjects(raw.BRIDGE_PROJECTS_JSON),
+  agentProjectSources: parseAgentProjectSources(raw.AGENT_PROJECT_SOURCES_JSON),
+  humanTransferNumber: raw.AGENT_HUMAN_TRANSFER_NUMBER_E164.trim(),
+  openaiApiKey: raw.OPENAI_API_KEY.trim(),
+  openaiBaseUrl: raw.OPENAI_BASE_URL.trim(),
+  openaiOrchestratorModel: raw.OPENAI_ORCHESTRATOR_MODEL.trim() || "gpt-5.4-mini",
+  openaiProjectModel: raw.OPENAI_PROJECT_MODEL.trim() || "gpt-5.4-mini",
+  openaiAgentMaxToolSteps: raw.OPENAI_AGENT_MAX_TOOL_STEPS
 };

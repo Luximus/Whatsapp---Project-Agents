@@ -35,6 +35,21 @@ function isDirectChild(parentDir: string, childDir: string) {
   return parent === childParent;
 }
 
+function toPublicAgent(agent: Awaited<ReturnType<typeof loadOrchestratorAgent>>) {
+  return {
+    project_key: agent.project_key,
+    dir: agent.dir,
+    prompt_file: agent.prompt_file,
+    prompt: agent.prompt,
+    scripts: agent.scripts.map((script) => ({
+      name: script.name,
+      file: script.file,
+      description: script.description,
+      parameters: script.parameters
+    }))
+  };
+}
+
 export const agentRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/api/agents", async () => {
     const agentsDir = resolveAgentsDir();
@@ -54,8 +69,8 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
     return {
       agents_dir: agentsDir,
       orchestrator_dir: orchestratorDir,
-      orchestrator,
-      projects
+      orchestrator: toPublicAgent(orchestrator),
+      projects: projects.map((project) => toPublicAgent(project))
     };
   });
 
@@ -73,8 +88,8 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
     return {
       agents_dir: agentsDir,
       orchestrator_dir: orchestratorDir,
-      orchestrator,
-      project
+      orchestrator: toPublicAgent(orchestrator),
+      project: toPublicAgent(project)
     };
   });
 

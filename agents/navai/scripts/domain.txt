@@ -1,5 +1,0 @@
-﻿Script: domain
-
-Conocimiento operativo:
-- Procesos internos navai.
-- FAQ y soporte de casos de uso del proyecto.
