@@ -1,6 +1,5 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import OpenAI from "openai";
 import {
   listProjectKeys,
   loadOrchestratorAgent,
@@ -40,8 +39,6 @@ const DEFAULT_PROJECT_SOURCES: Record<string, string[]> = {
   navai: ["https://navai.luxisoft.com"],
   luxichat: []
 };
-
-let openaiClient: OpenAI | null = null;
 
 function resolveDir(configuredPath: string, fallback: string) {
   const configured = configuredPath.trim() || fallback;
@@ -260,17 +257,43 @@ function parseJsonObject(value: unknown) {
   }
 }
 
-function getOpenAIClient() {
+function resolveOpenAIBaseUrl() {
+  const base = env.openaiBaseUrl.trim() || "https://api.openai.com/v1";
+  return base.replace(/\/+$/, "");
+}
+
+async function openaiResponsesCreate(payload: Record<string, unknown>) {
   if (!env.openaiApiKey) {
     throw new Error("openai_not_configured");
   }
-  if (!openaiClient) {
-    openaiClient = new OpenAI({
-      apiKey: env.openaiApiKey,
-      ...(env.openaiBaseUrl ? { baseURL: env.openaiBaseUrl } : {})
+
+  const response = await fetch(`${resolveOpenAIBaseUrl()}/responses`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.openaiApiKey}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const raw = await response.text().catch(() => "");
+  let parsed: any = {};
+  if (raw) {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = { raw };
+    }
+  }
+
+  if (!response.ok) {
+    throw Object.assign(new Error("openai_responses_failed"), {
+      statusCode: response.status,
+      details: parsed
     });
   }
-  return openaiClient;
+
+  return parsed;
 }
 
 function extractResponseText(response: any) {
@@ -380,7 +403,6 @@ async function runProjectAgent(input: {
   }));
 
   const model = env.openaiProjectModel;
-  const client = getOpenAIClient();
   const toolsUsed = new Set<string>();
 
   const systemPrompt = [
@@ -402,14 +424,14 @@ async function runProjectAgent(input: {
     .filter(Boolean)
     .join("\n");
 
-  let response: any = await client.responses.create({
+  let response: any = await openaiResponsesCreate({
     model,
     input: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt }
     ],
     ...(tools.length ? { tools } : {})
-  } as any);
+  });
 
   for (let step = 0; step < env.openaiAgentMaxToolSteps; step += 1) {
     const calls = listFunctionCalls(response);
@@ -454,12 +476,12 @@ async function runProjectAgent(input: {
 
     if (!toolOutputs.length) break;
 
-    response = await client.responses.create({
+    response = await openaiResponsesCreate({
       model,
       previous_response_id: response.id,
       input: toolOutputs,
       ...(tools.length ? { tools } : {})
-    } as any);
+    });
   }
 
   const answer = extractResponseText(response) || "No pude generar respuesta en este momento.";
@@ -522,7 +544,6 @@ async function runOrchestrator(input: {
   const excluded = isDirectChild(agentsDir, orchestratorDir) ? [orchestrator.project_key] : [];
   const availableProjects = await listProjectKeys(agentsDir, excluded);
 
-  const client = getOpenAIClient();
   const model = env.openaiOrchestratorModel;
 
   let selectedProject = normalizeProjectKey(input.preferredProjectKey) || env.defaultProject;
@@ -598,14 +619,14 @@ async function runOrchestrator(input: {
     input.message
   ].join("\n");
 
-  let response: any = await client.responses.create({
+  let response: any = await openaiResponsesCreate({
     model,
     input: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt }
     ],
     tools
-  } as any);
+  });
 
   for (let step = 0; step < env.openaiAgentMaxToolSteps; step += 1) {
     const calls = listFunctionCalls(response);
@@ -669,12 +690,12 @@ async function runOrchestrator(input: {
 
     if (!toolOutputs.length) break;
 
-    response = await client.responses.create({
+    response = await openaiResponsesCreate({
       model,
       previous_response_id: response.id,
       input: toolOutputs,
       tools
-    } as any);
+    });
   }
 
   const fallback = lastDelegatedReply || "No pude procesar tu solicitud en este momento.";
