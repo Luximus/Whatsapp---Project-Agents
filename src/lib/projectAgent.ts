@@ -26,6 +26,7 @@ type LeadProfile = {
 
 type ConversationState = {
   projectKey: string;
+  projectConfirmed: boolean;
   history: Array<{ role: "user" | "assistant"; text: string; at: number }>;
   lead: LeadProfile;
   awaitingHumanTransferData: boolean;
@@ -248,11 +249,11 @@ function firstOfficialSource(projectKey: string) {
 
 function formatCatalogOfferMessage() {
   return [
-    "Puedo ayudarte con informacion oficial de estos proyectos:",
+    "Puedo ayudarte con informacion oficial de estas aplicaciones/servicios:",
     `- ${PROJECT_OFFERS.luxisoft}: ${firstOfficialSource("luxisoft")}`,
     `- ${PROJECT_OFFERS.navai}: ${firstOfficialSource("navai")}`,
     `- ${PROJECT_OFFERS.luxichat}: ${firstOfficialSource("luxichat")}`,
-    "Si uno de estos te sirve, dime cual y te redirijo de inmediato.",
+    "Dime cual te interesa y te conecto con el especialista para avanzar.",
     "Si necesitas algo diferente, tambien te puedo transferir con un agente humano."
   ].join("\n");
 }
@@ -285,15 +286,17 @@ function classifyRouting(message: string, state: ConversationState): RoutingDeci
 
   const mentionedProject = ensureKnownProjectKey(detectProjectByText(message));
   const currentProject = ensureKnownProjectKey(state.projectKey);
+  const contextProject = state.projectConfirmed ? currentProject : null;
 
   if (support) {
-    const target = mentionedProject ?? currentProject;
+    const target = mentionedProject ?? contextProject;
     if (target) return { kind: "support_project", projectKey: target };
     return { kind: "support_project_unknown" };
   }
 
   if (buy) {
-    if (mentionedProject) return { kind: "sales_project", projectKey: mentionedProject };
+    const target = mentionedProject ?? contextProject;
+    if (target) return { kind: "sales_project", projectKey: target };
     if (outside) return { kind: "outside_transfer" };
     return { kind: "sales_offer_catalog" };
   }
@@ -613,6 +616,7 @@ function getConversation(phoneE164: string, projectKey: string) {
 
   const initial: ConversationState = {
     projectKey,
+    projectConfirmed: false,
     history: [],
     lead: emptyLeadProfile(),
     awaitingHumanTransferData: false
@@ -1014,6 +1018,7 @@ async function runProjectRedirect(input: {
     history: input.state.history
   });
   input.state.projectKey = delegated.projectKey;
+  input.state.projectConfirmed = true;
   const reply = delegated.answer;
   appendHistory(input.state, "assistant", reply);
 
@@ -1057,6 +1062,10 @@ export async function handleProjectAgentMessage(input: {
   const previous = conversations.get(phone);
   const projectKey = explicitProject ?? ensureKnownProjectKey(previous?.projectKey) ?? env.defaultProject;
   const state = getConversation(phone, projectKey);
+  if (explicitProject) {
+    state.projectKey = explicitProject;
+    state.projectConfirmed = true;
+  }
   appendHistory(state, "user", message);
   state.lead = updateLeadProfileFromMessage(state.lead, message);
 
@@ -1083,7 +1092,7 @@ export async function handleProjectAgentMessage(input: {
 
     if (decision.kind === "support_project_unknown") {
       const reply =
-        "Te ayudo con soporte. Es sobre LuxiSoft, NAVAI o LuxiChat? Con eso te redirijo al agente correcto.";
+        "Te ayudo con soporte. Es sobre LuxiSoft, NAVAI o LuxiChat? Con eso te redirijo al especialista correcto.";
       appendHistory(state, "assistant", reply);
       return {
         handled: true,
@@ -1119,7 +1128,7 @@ export async function handleProjectAgentMessage(input: {
     if (decision.kind === "human_scope_check") {
       const reply = [
         "Antes de transferirte, confirmo algo:",
-        "Si es soporte o compra de LuxiSoft, NAVAI o LuxiChat, te redirijo de una vez al agente del proyecto.",
+        "Si es soporte o compra de LuxiSoft, NAVAI o LuxiChat, te redirijo de una vez al especialista de la aplicacion/servicio.",
         "Si es una necesidad diferente a esos servicios, te transfiero con humano."
       ].join("\n");
       appendHistory(state, "assistant", reply);
