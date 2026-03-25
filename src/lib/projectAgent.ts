@@ -31,6 +31,15 @@ type ConversationState = {
   history: Array<{ role: "user" | "assistant"; text: string; at: number }>;
   lead: LeadProfile;
   awaitingHumanTransferData: boolean;
+  lastReplyStyle: ReplyStyle | null;
+};
+
+type ReplyStyle = "natural" | "bullets" | "question" | "steps";
+type LinkPolicy = "avoid_links" | "one_link_if_helpful" | "links_if_requested";
+
+type ReplyPlan = {
+  style: ReplyStyle;
+  linkPolicy: LinkPolicy;
 };
 
 type ProjectKnowledgeSource = {
@@ -123,6 +132,41 @@ const OUTSIDE_KEYWORDS = [
   "ninguna",
   "no aplica",
   "no es eso"
+];
+
+const ASSISTANT_NAME = "Valeria";
+const ASSISTANT_COMPANY = "LuxiSoft";
+const REPLY_STYLE_ROTATION: ReplyStyle[] = ["natural", "bullets", "question", "steps"];
+
+const LINK_REQUEST_KEYWORDS = [
+  "enlace",
+  "link",
+  "url",
+  "sitio oficial",
+  "pagina oficial",
+  "web oficial",
+  "pasame la web",
+  "pasame el link",
+  "dame el link"
+];
+
+const LIST_REQUEST_KEYWORDS = [
+  "lista",
+  "opciones",
+  "puntos",
+  "enumerado",
+  "resumen",
+  "comparacion",
+  "compara"
+];
+
+const STEP_REQUEST_KEYWORDS = [
+  "paso a paso",
+  "pasos",
+  "como empiezo",
+  "proceso",
+  "flujo",
+  "implementacion"
 ];
 
 const LEAD_REQUIRED_FIELDS: Array<keyof LeadProfile> = [
@@ -273,23 +317,203 @@ function firstOfficialSource(projectKey: string) {
   return resolveWebSources(projectKey)[0] ?? "sin fuente web oficial configurada";
 }
 
-function formatCatalogOfferMessage() {
+function assistantMessageCount(state: ConversationState) {
+  return state.history.filter((item) => item.role === "assistant").length;
+}
+
+function nextReplyStyle(state: ConversationState): ReplyStyle {
+  if (!state.lastReplyStyle) return REPLY_STYLE_ROTATION[0];
+  const currentIndex = REPLY_STYLE_ROTATION.indexOf(state.lastReplyStyle);
+  if (currentIndex < 0) return REPLY_STYLE_ROTATION[0];
+  return REPLY_STYLE_ROTATION[(currentIndex + 1) % REPLY_STYLE_ROTATION.length];
+}
+
+function buildReplyPlan(state: ConversationState, message: string): ReplyPlan {
+  const normalized = normalizeText(message);
+  const asksLinks = LINK_REQUEST_KEYWORDS.some((item) => normalized.includes(normalizeText(item)));
+  const asksList = LIST_REQUEST_KEYWORDS.some((item) => normalized.includes(normalizeText(item)));
+  const asksSteps = STEP_REQUEST_KEYWORDS.some((item) => normalized.includes(normalizeText(item)));
+
+  let style = nextReplyStyle(state);
+  if (asksList) style = "bullets";
+  if (asksSteps) style = "steps";
+
+  const linkPolicy: LinkPolicy = asksLinks
+    ? "links_if_requested"
+    : style === "bullets" || style === "steps"
+      ? "one_link_if_helpful"
+      : "avoid_links";
+
+  return { style, linkPolicy };
+}
+
+function describeReplyStyle(style: ReplyStyle) {
+  if (style === "bullets") return "Usa un formato con bullets breves y cierre accionable.";
+  if (style === "steps") return "Usa un formato paso a paso corto (2-4 pasos).";
+  if (style === "question") return "Usa un texto corto y cierra con una pregunta de avance.";
+  return "Usa un parrafo breve y natural, sin bullets.";
+}
+
+function describeLinkPolicy(linkPolicy: LinkPolicy) {
+  if (linkPolicy === "links_if_requested") {
+    return "Puedes incluir URLs completas oficiales cuando agreguen valor directo a la consulta.";
+  }
+  if (linkPolicy === "one_link_if_helpful") {
+    return "Incluye maximo 1 URL oficial solo si mejora la respuesta.";
+  }
+  return "Evita incluir URLs salvo que el usuario las pida explicitamente.";
+}
+
+function maybeIdentityIntro(state: ConversationState, reply: string) {
+  if (assistantMessageCount(state) > 0) return reply.trim();
+
+  const trimmed = reply.trim();
+  if (!trimmed) return trimmed;
+
+  if (new RegExp(`\\b${ASSISTANT_NAME}\\b`, "i").test(trimmed)) return trimmed;
+  return `Hola, soy ${ASSISTANT_NAME}, asistente de ${ASSISTANT_COMPANY}. Encantada de ayudarte.\n${trimmed}`;
+}
+
+function finalizeAssistantReply(state: ConversationState, reply: string, plan: ReplyPlan) {
+  state.lastReplyStyle = plan.style;
+  return maybeIdentityIntro(state, reply).slice(0, MAX_RESPONSE_CHARS);
+}
+
+function formatCatalogOfferMessage(plan: ReplyPlan) {
+  const offers = [
+    { label: PROJECT_OFFERS.luxisoft, url: firstOfficialSource("luxisoft") },
+    { label: PROJECT_OFFERS.navai, url: firstOfficialSource("navai") },
+    { label: PROJECT_OFFERS.luxichat, url: firstOfficialSource("luxichat") }
+  ];
+
+  if (plan.style === "bullets") {
+    const lines = ["Puedo ayudarte con estas aplicaciones/servicios oficiales:"];
+    for (const offer of offers) {
+      lines.push(plan.linkPolicy === "avoid_links" ? `- ${offer.label}` : `- ${offer.label}: ${offer.url}`);
+    }
+    lines.push("Dime cual te interesa y te orientare al siguiente paso.");
+    return lines.join("\n");
+  }
+
+  if (plan.style === "steps") {
+    const base = [
+      "1. Elige el servicio: LuxiSoft, NAVAI o LuxiChat.",
+      "2. Te explico capacidades confirmadas y siguiente paso comercial."
+    ];
+    if (plan.linkPolicy !== "avoid_links") {
+      base.push(`3. Si quieres, te comparto la web oficial (${offers[0].url}, ${offers[1].url}, ${offers[2].url}).`);
+    }
+    return base.join("\n");
+  }
+
+  if (plan.style === "question") {
+    return "Trabajo con informacion oficial de LuxiSoft, NAVAI y LuxiChat. Cual te interesa para continuar?";
+  }
+
+  if (plan.linkPolicy === "avoid_links") {
+    return "Puedo ayudarte con informacion oficial de LuxiSoft, NAVAI y LuxiChat. Dime cual te interesa y te guio para avanzar.";
+  }
+
   return [
-    "Puedo ayudarte con informacion oficial de estas aplicaciones/servicios:",
-    `- ${PROJECT_OFFERS.luxisoft}: ${firstOfficialSource("luxisoft")}`,
-    `- ${PROJECT_OFFERS.navai}: ${firstOfficialSource("navai")}`,
-    `- ${PROJECT_OFFERS.luxichat}: ${firstOfficialSource("luxichat")}`,
-    "Dime cual te interesa y te conecto con el especialista para avanzar.",
-    "Si necesitas algo diferente, tambien te puedo transferir con un agente humano."
+    "Puedo ayudarte con informacion oficial de LuxiSoft, NAVAI y LuxiChat.",
+    `Si deseas, te comparto la web oficial de cada uno: ${offers[0].url}, ${offers[1].url}, ${offers[2].url}.`,
+    "Dime cual te interesa para continuar."
   ].join("\n");
 }
 
-function buildLeadCollectionPrompt(profile: LeadProfile, firstInteraction: boolean) {
+function formatSupportUnknownReply(plan: ReplyPlan) {
+  if (plan.style === "bullets") {
+    return [
+      "Te ayudo con soporte.",
+      "- LuxiSoft",
+      "- NAVAI",
+      "- LuxiChat",
+      "Indicame cual es y te redirijo al especialista."
+    ].join("\n");
+  }
+
+  if (plan.style === "steps") {
+    return [
+      "1. Confirmame el servicio: LuxiSoft, NAVAI o LuxiChat.",
+      "2. Con eso te redirijo al especialista de soporte."
+    ].join("\n");
+  }
+
+  return "Te ayudo con soporte. Es sobre LuxiSoft, NAVAI o LuxiChat? Con eso te redirijo al especialista correcto.";
+}
+
+function formatHumanScopeCheckReply(plan: ReplyPlan) {
+  if (plan.style === "question") {
+    return "Si es soporte o compra de LuxiSoft, NAVAI o LuxiChat te redirijo al especialista. Si es otro tema, te transfiero con humano. Cual de los dos casos aplica?";
+  }
+
+  if (plan.style === "steps") {
+    return [
+      "1. Si tu consulta es de LuxiSoft, NAVAI o LuxiChat, te redirijo al especialista.",
+      "2. Si es otra necesidad, te transfiero con un agente humano."
+    ].join("\n");
+  }
+
+  return [
+    "Antes de transferirte, confirmo algo:",
+    "Si es soporte o compra de LuxiSoft, NAVAI o LuxiChat, te redirijo de una vez al especialista.",
+    "Si es una necesidad diferente, te transfiero con un agente humano."
+  ].join("\n");
+}
+
+function isAssistantIdentityRequest(message: string) {
+  const normalized = normalizeText(message);
+  return /(como te llamas|cual es tu nombre|quien eres|presentate|tu nombre)/i.test(normalized);
+}
+
+function isAssistantPersonalInfoRequest(message: string) {
+  const normalized = normalizeText(message);
+  return /(?:tu edad|cuantos anos tienes|donde vives|tu direccion|tu telefono personal|tu whatsapp|tu numero personal|tu correo personal|tus redes|estado civil|estas casada|estas soltera|tu pareja)/i.test(
+    normalized
+  );
+}
+
+function formatAssistantIdentityReply(plan: ReplyPlan) {
+  if (plan.style === "bullets") {
+    return [
+      `- Mi nombre es ${ASSISTANT_NAME}.`,
+      `- Soy asistente de ${ASSISTANT_COMPANY}.`,
+      "Puedo ayudarte con informacion oficial de nuestros servicios."
+    ].join("\n");
+  }
+
+  if (plan.style === "steps") {
+    return [
+      `1. Mi nombre es ${ASSISTANT_NAME}.`,
+      `2. Trabajo como asistente de ${ASSISTANT_COMPANY}.`,
+      "3. Te ayudo con informacion oficial de servicios y siguientes pasos."
+    ].join("\n");
+  }
+
+  return `Mi nombre es ${ASSISTANT_NAME} y soy asistente de ${ASSISTANT_COMPANY}. Te ayudo con informacion oficial de nuestros servicios.`;
+}
+
+function formatAssistantPrivacyReply() {
+  return `Por politica interna solo puedo compartir mi nombre (${ASSISTANT_NAME}) y que trabajo en ${ASSISTANT_COMPANY}. Si quieres, te ayudo con informacion oficial de la empresa.`;
+}
+
+function buildLeadCollectionPrompt(profile: LeadProfile, firstInteraction: boolean, plan: ReplyPlan) {
   const missing = getMissingLeadFields(profile);
   const nextField = missing[0];
   if (!nextField) return null;
 
   if (firstInteraction) {
+    if (plan.style === "steps") {
+      return [
+        "Para transferirte con un agente humano necesito estos datos:",
+        "1. nombres y apellidos",
+        "2. empresa",
+        "3. correo",
+        "4. necesidad puntual",
+        LEAD_FIELD_QUESTIONS[nextField]
+      ].join("\n");
+    }
+
     return [
       "Para transferirte con un agente humano necesito registrar estos datos:",
       "- nombres",
@@ -669,7 +893,7 @@ function pickRelevantSnippetsFromDictionary(dictionary: ProjectKnowledgeDictiona
       return b.snippet.length - a.snippet.length;
     })
     .slice(0, MAX_GROUNDING_SNIPPETS)
-    .map((item) => `[${item.sourceUrl}] ${item.snippet.slice(0, 280)}`);
+    .map((item) => item.snippet.slice(0, 280));
 }
 
 async function searchKnowledge(projectKey: string, query: string) {
@@ -686,15 +910,15 @@ function buildGroundingBlock(snippets: string[]) {
     .join("\n");
 }
 
-function buildNoGroundingReply(projectKey: string) {
+function buildNoGroundingReply(projectKey: string, plan: ReplyPlan) {
   const sources = resolveWebSources(projectKey);
   const lines = [
     `Revise las paginas oficiales de ${projectKey} y ese punto exacto no aparece publicado por ahora.`
   ];
 
-  if (sources.length) {
+  if (sources.length && plan.linkPolicy !== "avoid_links") {
     lines.push("Fuentes oficiales revisadas:");
-    lines.push(...sources.slice(0, 3));
+    lines.push(...sources.slice(0, plan.linkPolicy === "one_link_if_helpful" ? 1 : 3));
   }
 
   lines.push("Si quieres, te propongo el siguiente paso comercial o te paso con un agente humano.");
@@ -816,6 +1040,7 @@ function getConversation(phoneE164: string, projectKey: string) {
   const existing = conversations.get(phoneE164);
   if (existing) {
     if (projectKey) existing.projectKey = projectKey;
+    if (!existing.lastReplyStyle) existing.lastReplyStyle = null;
     return existing;
   }
 
@@ -824,7 +1049,8 @@ function getConversation(phoneE164: string, projectKey: string) {
     projectConfirmed: false,
     history: [],
     lead: emptyLeadProfile(),
-    awaitingHumanTransferData: false
+    awaitingHumanTransferData: false,
+    lastReplyStyle: null
   };
   conversations.set(phoneE164, initial);
   return initial;
@@ -843,6 +1069,7 @@ async function runProjectAgent(input: {
   userMessage: string;
   history: ConversationState["history"];
   objective?: string;
+  replyPlan: ReplyPlan;
 }) {
   const agentsDir = resolveAgentsDir();
   const preferredProjectKey = normalizeProjectKey(input.projectKey) || env.defaultProject;
@@ -870,7 +1097,7 @@ async function runProjectAgent(input: {
   if (!groundingSnippets.length) {
     return {
       projectKey: project.project_key,
-      answer: buildNoGroundingReply(project.project_key),
+      answer: buildNoGroundingReply(project.project_key, input.replyPlan),
       toolsUsed: [] as string[]
     };
   }
@@ -899,18 +1126,25 @@ async function runProjectAgent(input: {
   const systemPrompt = [
     project.prompt || `Eres el agente del proyecto ${project.project_key}.`,
     "Responde en espanol claro, maximo 6 lineas si no requiere mas detalle.",
+    `Tu identidad comercial fija es ${ASSISTANT_NAME}, asistente de ${ASSISTANT_COMPANY}.`,
+    "Cuando hables de ti, usa voz femenina.",
+    `No compartas datos personales tuyos; solo puedes compartir tu nombre (${ASSISTANT_NAME}) y que trabajas en ${ASSISTANT_COMPANY}.`,
+    "No repitas siempre el mismo formato. Sigue el FORMATO_DINAMICO_RECOMENDADO enviado por el sistema.",
+    "No incluyas URLs en todas las respuestas. Sigue la POLITICA_DE_ENLACES enviada por el sistema.",
     "Responde exclusivamente con informacion presente en BLOQUE_DE_FUENTES_CONFIRMADAS.",
     "No uses conocimiento externo ni inventes datos no confirmados por fuentes oficiales.",
     "Si un dato no aparece en fuentes, responde con tono comercial seguro: explica lo que si esta publicado y el siguiente paso.",
     "Evita tono de inseguridad o frases ambiguas; habla con claridad.",
     "Si necesitas mas contexto del sitio, usa los tools disponibles antes de responder.",
-    "Cuando compartas enlaces, usa URL completa para previsualizacion en WhatsApp.",
+    "Si compartes enlaces, usa URL completa oficial.",
     'Siempre invita a escalar con la frase exacta: "Si quieres, te paso con un agente humano."'
   ].join("\n\n");
 
   const userPrompt = [
     `Proyecto: ${project.project_key}`,
     input.objective ? `Objetivo del orquestador: ${input.objective}` : "",
+    `FORMATO_DINAMICO_RECOMENDADO: ${describeReplyStyle(input.replyPlan.style)}`,
+    `POLITICA_DE_ENLACES: ${describeLinkPolicy(input.replyPlan.linkPolicy)}`,
     "BLOQUE_DE_FUENTES_CONFIRMADAS:",
     buildGroundingBlock(groundingSnippets),
     `Historial reciente:`,
@@ -1035,6 +1269,7 @@ async function runOrchestrator(input: {
   message: string;
   state: ConversationState;
   preferredProjectKey: string;
+  replyPlan: ReplyPlan;
 }) {
   const agentsDir = resolveAgentsDir();
   const orchestratorDir = resolveOrchestratorDir();
@@ -1079,6 +1314,11 @@ async function runOrchestrator(input: {
     orchestrator.prompt ||
       "Eres el agente orquestador. Delega a agentes de proyecto y entrega respuesta final al usuario.",
     "Siempre responde en espanol.",
+    `Tu identidad comercial fija es ${ASSISTANT_NAME}, asistente de ${ASSISTANT_COMPANY}.`,
+    "Cuando hables de ti, usa voz femenina.",
+    `No compartas datos personales tuyos; solo puedes compartir tu nombre (${ASSISTANT_NAME}) y que trabajas en ${ASSISTANT_COMPANY}.`,
+    "Aplica el formato dinamico sugerido por el sistema para no repetir siempre la misma estructura.",
+    "No incluyas URLs en todas las respuestas; usa la politica de enlaces indicada.",
     "Para consultas de negocio/servicios/productos debes usar delegate_project_agent.",
     "No agregues datos tecnicos/comerciales que no vengan del subagente.",
     "Tu respuesta final debe basarse solo en informacion confirmada por el subagente.",
@@ -1090,6 +1330,8 @@ async function runOrchestrator(input: {
     `Telefono: ${input.phoneE164}`,
     `Proyecto preferido: ${selectedProject}`,
     `Proyectos disponibles: ${availableProjects.join(", ") || "ninguno"}`,
+    `FORMATO_DINAMICO_RECOMENDADO: ${describeReplyStyle(input.replyPlan.style)}`,
+    `POLITICA_DE_ENLACES: ${describeLinkPolicy(input.replyPlan.linkPolicy)}`,
     "Historial reciente:",
     buildHistoryBlock(input.state.history) || "Sin historial.",
     "",
@@ -1124,7 +1366,8 @@ async function runOrchestrator(input: {
           phoneE164: input.phoneE164,
           userMessage: String(args.user_message ?? input.message),
           objective: String(args.objective ?? "").trim() || undefined,
-          history: input.state.history
+          history: input.state.history,
+          replyPlan: input.replyPlan
         });
         selectedProject = delegated.projectKey;
         lastDelegatedReply = delegated.answer;
@@ -1173,11 +1416,13 @@ async function runHumanTransferQualification(input: {
   state: ConversationState;
   phoneE164: string;
   firstInteraction: boolean;
+  replyPlan: ReplyPlan;
 }) {
   const missing = getMissingLeadFields(input.state.lead);
   if (missing.length > 0) {
-    const prompt = buildLeadCollectionPrompt(input.state.lead, input.firstInteraction);
-    const reply = prompt ?? "Necesito un dato adicional para continuar con la transferencia.";
+    const prompt = buildLeadCollectionPrompt(input.state.lead, input.firstInteraction, input.replyPlan);
+    const rawReply = prompt ?? "Necesito un dato adicional para continuar con la transferencia.";
+    const reply = finalizeAssistantReply(input.state, rawReply, input.replyPlan);
     appendHistory(input.state, "assistant", reply);
     return {
       handled: true,
@@ -1195,9 +1440,10 @@ async function runHumanTransferQualification(input: {
   });
   input.state.awaitingHumanTransferData = false;
 
-  const reply = transfer.sent
+  const rawReply = transfer.sent
     ? "Perfecto, ya transferi tu caso a un agente humano con tus datos y resumen. Te contactaran pronto."
     : "Intente transferir tu caso a un agente humano, pero fallo el envio en este momento. Intenta de nuevo en unos minutos.";
+  const reply = finalizeAssistantReply(input.state, rawReply, input.replyPlan);
   appendHistory(input.state, "assistant", reply);
 
   return {
@@ -1215,17 +1461,19 @@ async function runProjectRedirect(input: {
   message: string;
   projectKey: string;
   objective: string;
+  replyPlan: ReplyPlan;
 }) {
   const delegated = await runProjectAgent({
     projectKey: input.projectKey,
     phoneE164: input.phoneE164,
     userMessage: input.message,
     objective: input.objective,
-    history: input.state.history
+    history: input.state.history,
+    replyPlan: input.replyPlan
   });
   input.state.projectKey = delegated.projectKey;
   input.state.projectConfirmed = true;
-  const reply = delegated.answer;
+  const reply = finalizeAssistantReply(input.state, delegated.answer, input.replyPlan);
   appendHistory(input.state, "assistant", reply);
 
   return {
@@ -1274,14 +1522,40 @@ export async function handleProjectAgentMessage(input: {
   }
   appendHistory(state, "user", message);
   state.lead = updateLeadProfileFromMessage(state.lead, message);
+  const replyPlan = buildReplyPlan(state, message);
 
   try {
     if (state.awaitingHumanTransferData) {
       return await runHumanTransferQualification({
         state,
         phoneE164: phone,
-        firstInteraction: false
+        firstInteraction: false,
+        replyPlan
       });
+    }
+
+    if (isAssistantPersonalInfoRequest(message)) {
+      const reply = finalizeAssistantReply(state, formatAssistantPrivacyReply(), replyPlan);
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
+    }
+
+    if (isAssistantIdentityRequest(message)) {
+      const reply = finalizeAssistantReply(state, formatAssistantIdentityReply(replyPlan), replyPlan);
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
     }
 
     const decision = classifyRouting(message, state);
@@ -1292,13 +1566,13 @@ export async function handleProjectAgentMessage(input: {
         phoneE164: phone,
         message,
         projectKey: decision.projectKey,
-        objective: "Resolver soporte tecnico del usuario en el proyecto indicado."
+        objective: "Resolver soporte tecnico del usuario en el proyecto indicado.",
+        replyPlan
       });
     }
 
     if (decision.kind === "support_project_unknown") {
-      const reply =
-        "Te ayudo con soporte. Es sobre LuxiSoft, NAVAI o LuxiChat? Con eso te redirijo al especialista correcto.";
+      const reply = finalizeAssistantReply(state, formatSupportUnknownReply(replyPlan), replyPlan);
       appendHistory(state, "assistant", reply);
       return {
         handled: true,
@@ -1315,12 +1589,13 @@ export async function handleProjectAgentMessage(input: {
         phoneE164: phone,
         message,
         projectKey: decision.projectKey,
-        objective: "Atender interes comercial del usuario para el proyecto indicado."
+        objective: "Atender interes comercial del usuario para el proyecto indicado.",
+        replyPlan
       });
     }
 
     if (decision.kind === "sales_offer_catalog") {
-      const reply = formatCatalogOfferMessage();
+      const reply = finalizeAssistantReply(state, formatCatalogOfferMessage(replyPlan), replyPlan);
       appendHistory(state, "assistant", reply);
       return {
         handled: true,
@@ -1332,11 +1607,7 @@ export async function handleProjectAgentMessage(input: {
     }
 
     if (decision.kind === "human_scope_check") {
-      const reply = [
-        "Antes de transferirte, confirmo algo:",
-        "Si es soporte o compra de LuxiSoft, NAVAI o LuxiChat, te redirijo de una vez al especialista de la aplicacion/servicio.",
-        "Si es una necesidad diferente a esos servicios, te transfiero con humano."
-      ].join("\n");
+      const reply = finalizeAssistantReply(state, formatHumanScopeCheckReply(replyPlan), replyPlan);
       appendHistory(state, "assistant", reply);
       return {
         handled: true,
@@ -1352,7 +1623,8 @@ export async function handleProjectAgentMessage(input: {
       return await runHumanTransferQualification({
         state,
         phoneE164: phone,
-        firstInteraction: true
+        firstInteraction: true,
+        replyPlan
       });
     }
 
@@ -1360,21 +1632,24 @@ export async function handleProjectAgentMessage(input: {
       phoneE164: phone,
       message,
       state,
-      preferredProjectKey: projectKey
+      preferredProjectKey: projectKey,
+      replyPlan
     });
 
     state.projectKey = ensureKnownProjectKey(orchestrated.projectKey) ?? state.projectKey;
-    appendHistory(state, "assistant", orchestrated.reply);
+    const orchestratedReply = finalizeAssistantReply(state, orchestrated.reply, replyPlan);
+    appendHistory(state, "assistant", orchestratedReply);
 
     return {
       handled: true,
       projectKey: state.projectKey,
-      reply: orchestrated.reply,
+      reply: orchestratedReply,
       escalated: orchestrated.escalated,
       escalationSent: orchestrated.escalationSent
     };
   } catch (err: any) {
-    const fallback = `No pude responder por el momento (${String(err?.message ?? "agent_failed")}).`;
+    const rawFallback = `No pude responder por el momento (${String(err?.message ?? "agent_failed")}).`;
+    const fallback = finalizeAssistantReply(state, rawFallback, replyPlan);
     appendHistory(state, "assistant", fallback);
     return {
       handled: true,

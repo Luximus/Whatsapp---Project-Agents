@@ -77,6 +77,8 @@ Headers de firma:
 Cuando llega un mensaje de usuario a `POST /api/webhooks/whatsapp`:
 - Si parece OTP, intenta validacion contra sesiones en memoria.
 - Si no, entra al flujo de agentes OpenAI.
+- Si llega audio y esta habilitado, se descarga media de WhatsApp, se transcribe y se procesa como mensaje del agente.
+- Si llega audio y ElevenLabs esta habilitado, puede responder tambien con audio.
 
 Arquitectura:
 - `agents/orchestrator/services.txt`: prompt del orquestador principal.
@@ -125,6 +127,13 @@ Config de agentes:
 - `OPENAI_ORCHESTRATOR_MODEL`
 - `OPENAI_PROJECT_MODEL`
 - `OPENAI_AGENT_MAX_TOOL_STEPS`
+- `OPENAI_AUDIO_TRANSCRIBE_MODEL`
+- `ELEVENLABS_API_KEY`
+- `ELEVENLABS_VOICE_ID`
+- `ELEVENLABS_MODEL_ID`
+- `ELEVENLABS_OUTPUT_FORMAT`
+- `WHATSAPP_AUDIO_REPLY_ENABLED`
+- `WHATSAPP_AUDIO_REPLY_INCLUDE_TEXT`
 
 Compatibilidad legacy:
 - `DATABASE_URL` y Firebase se mantienen para rutas antiguas.

@@ -23,6 +23,14 @@ function csvToArray(value: string | undefined) {
     .filter(Boolean);
 }
 
+function parseBooleanFlag(value: string | undefined, defaultValue: boolean) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return defaultValue;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return defaultValue;
+}
+
 export type BridgeProjectConfig = {
   apiKey: string;
   callbackUrl: string | null;
@@ -171,7 +179,16 @@ const envSchema = z.object({
   OPENAI_BASE_URL: z.string().optional().default(""),
   OPENAI_ORCHESTRATOR_MODEL: z.string().optional().default("gpt-5.4-mini"),
   OPENAI_PROJECT_MODEL: z.string().optional().default("gpt-5.4-mini"),
-  OPENAI_AGENT_MAX_TOOL_STEPS: z.coerce.number().int().min(1).max(12).default(6)
+  OPENAI_AGENT_MAX_TOOL_STEPS: z.coerce.number().int().min(1).max(12).default(6),
+  OPENAI_AUDIO_TRANSCRIBE_MODEL: z.string().optional().default("gpt-4o-mini-transcribe"),
+
+  ELEVENLABS_API_KEY: z.string().optional().default(""),
+  ELEVENLABS_BASE_URL: z.string().optional().default("https://api.elevenlabs.io"),
+  ELEVENLABS_VOICE_ID: z.string().optional().default(""),
+  ELEVENLABS_MODEL_ID: z.string().optional().default("eleven_multilingual_v2"),
+  ELEVENLABS_OUTPUT_FORMAT: z.string().optional().default("mp3_44100_128"),
+  WHATSAPP_AUDIO_REPLY_ENABLED: z.string().optional().default("false"),
+  WHATSAPP_AUDIO_REPLY_INCLUDE_TEXT: z.string().optional().default("true")
 });
 
 const raw = envSchema.parse(process.env);
@@ -187,5 +204,13 @@ export const env = {
   openaiBaseUrl: raw.OPENAI_BASE_URL.trim(),
   openaiOrchestratorModel: raw.OPENAI_ORCHESTRATOR_MODEL.trim() || "gpt-5.4-mini",
   openaiProjectModel: raw.OPENAI_PROJECT_MODEL.trim() || "gpt-5.4-mini",
-  openaiAgentMaxToolSteps: raw.OPENAI_AGENT_MAX_TOOL_STEPS
+  openaiAgentMaxToolSteps: raw.OPENAI_AGENT_MAX_TOOL_STEPS,
+  openaiAudioTranscribeModel: raw.OPENAI_AUDIO_TRANSCRIBE_MODEL.trim() || "gpt-4o-mini-transcribe",
+  elevenlabsApiKey: raw.ELEVENLABS_API_KEY.trim(),
+  elevenlabsBaseUrl: raw.ELEVENLABS_BASE_URL.trim() || "https://api.elevenlabs.io",
+  elevenlabsVoiceId: raw.ELEVENLABS_VOICE_ID.trim(),
+  elevenlabsModelId: raw.ELEVENLABS_MODEL_ID.trim() || "eleven_multilingual_v2",
+  elevenlabsOutputFormat: raw.ELEVENLABS_OUTPUT_FORMAT.trim() || "mp3_44100_128",
+  whatsappAudioReplyEnabled: parseBooleanFlag(raw.WHATSAPP_AUDIO_REPLY_ENABLED, false),
+  whatsappAudioReplyIncludeText: parseBooleanFlag(raw.WHATSAPP_AUDIO_REPLY_INCLUDE_TEXT, true)
 };

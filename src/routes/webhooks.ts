@@ -1,10 +1,14 @@
 import type { FastifyPluginAsync } from "fastify";
 import { consumeBridgeOtp, dispatchDueBridgeEvents } from "../lib/bridge.js";
 import { env } from "../env.js";
+import { isElevenLabsConfigured, synthesizeSpeechWithElevenLabs } from "../lib/elevenlabs.js";
+import { transcribeAudioWithOpenAI } from "../lib/openaiAudio.js";
 import { handleProjectAgentMessage } from "../lib/projectAgent.js";
 import {
+  downloadWhatsappMedia,
   extractOtp,
   normalizeE164,
+  sendWhatsappAudio,
   sendWhatsappText,
   sendWhatsappTypingIndicator
 } from "../lib/whatsapp.js";
@@ -12,7 +16,13 @@ import {
 type WebhookMessage = {
   id?: string;
   from?: string;
+  type?: string;
   text?: { body?: string };
+  audio?: {
+    id?: string;
+    mime_type?: string;
+    voice?: boolean;
+  };
 };
 
 type WebhookStatus = {
@@ -49,6 +59,22 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       });
     } catch (err) {
       fastify.log.warn({ err, to, replyToMessageId: replyToMessageId ?? null }, "WhatsApp reply failed");
+    }
+  };
+
+  const safeAudioReply = async (
+    to: string,
+    input: { data: Buffer; mimeType: string; filename: string },
+    replyToMessageId?: string | null
+  ) => {
+    try {
+      await sendWhatsappAudio(to, input, {
+        replyToMessageId: replyToMessageId ?? null
+      });
+      return true;
+    } catch (err) {
+      fastify.log.warn({ err, to, replyToMessageId: replyToMessageId ?? null }, "WhatsApp audio reply failed");
+      return false;
     }
   };
 
@@ -97,8 +123,37 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     for (const msg of messages) {
       const incomingMessageId = String(msg.id ?? "").trim();
       const from = msg.from ? normalizeE164(msg.from) : null;
-      const text = String(msg.text?.body ?? "").trim();
-      if (!from || !text) continue;
+      const messageType = String(msg.type ?? "").trim().toLowerCase();
+      if (!from) continue;
+
+      let text = String(msg.text?.body ?? "").trim();
+      let incomingWasAudio = false;
+
+      if ((messageType === "audio" || (!!msg.audio?.id && !text)) && msg.audio?.id) {
+        incomingWasAudio = true;
+        try {
+          const media = await downloadWhatsappMedia(msg.audio.id);
+          text = await transcribeAudioWithOpenAI({
+            data: media.data,
+            mimeType: media.mimeType,
+            filename: media.filename
+          });
+          text = text.trim();
+        } catch (err) {
+          fastify.log.warn(
+            { err, from, incomingMessageId, mediaId: msg.audio.id ?? null },
+            "Audio transcription failed"
+          );
+          await safeReply(
+            from,
+            "Recibi tu nota de voz, pero no pude transcribirla. Puedes reenviarla o escribir tu mensaje en texto.",
+            incomingMessageId
+          );
+          continue;
+        }
+      }
+
+      if (!text) continue;
 
       const otp = extractOtp(text);
       if (otp) {
@@ -149,7 +204,32 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         continue;
       }
 
-      await safeReply(from, agentReply.reply, incomingMessageId);
+      let audioSent = false;
+      const shouldSendAudio =
+        incomingWasAudio &&
+        env.whatsappAudioReplyEnabled &&
+        isElevenLabsConfigured();
+
+      if (shouldSendAudio) {
+        try {
+          const generatedAudio = await synthesizeSpeechWithElevenLabs(agentReply.reply);
+          audioSent = await safeAudioReply(
+            from,
+            {
+              data: generatedAudio.data,
+              mimeType: generatedAudio.mimeType,
+              filename: generatedAudio.filename
+            },
+            incomingMessageId
+          );
+        } catch (err) {
+          fastify.log.warn({ err, from, incomingMessageId }, "ElevenLabs audio generation failed");
+        }
+      }
+
+      if (!audioSent || env.whatsappAudioReplyIncludeText) {
+        await safeReply(from, agentReply.reply, incomingMessageId);
+      }
     }
 
     return { ok: true };
