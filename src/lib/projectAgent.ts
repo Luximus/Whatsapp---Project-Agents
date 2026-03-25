@@ -17,9 +17,19 @@ type AgentReply = {
   escalationSent: boolean;
 };
 
+type LeadProfile = {
+  firstName: string | null;
+  lastName: string | null;
+  company: string | null;
+  email: string | null;
+  need: string | null;
+};
+
 type ConversationState = {
   projectKey: string;
   history: Array<{ role: "user" | "assistant"; text: string; at: number }>;
+  lead: LeadProfile;
+  awaitingHumanTransferData: boolean;
 };
 
 type CachedKnowledge = {
@@ -40,6 +50,78 @@ const DEFAULT_PROJECT_SOURCES: Record<string, string[]> = {
   luxichat: []
 };
 
+const PROJECT_OFFERS: Record<string, string> = {
+  luxisoft: "Desarrollo de software a medida, automatizacion, integraciones e IA aplicada.",
+  navai: "Agentes de voz en tiempo real, automatizacion de evaluaciones e integracion IA.",
+  luxichat: "Autenticacion WhatsApp, onboarding, soporte y experiencias de comunidad."
+};
+
+const SUPPORT_KEYWORDS = [
+  "soporte",
+  "problema",
+  "error",
+  "falla",
+  "incidencia",
+  "ayuda tecnica",
+  "no funciona"
+];
+
+const BUY_KEYWORDS = [
+  "comprar",
+  "adquirir",
+  "contratar",
+  "cotizacion",
+  "cotizar",
+  "precio",
+  "plan",
+  "servicio",
+  "producto"
+];
+
+const HUMAN_KEYWORDS = [
+  "agente humano",
+  "asesor humano",
+  "humano",
+  "ejecutivo",
+  "representante",
+  "persona real"
+];
+
+const OUTSIDE_KEYWORDS = [
+  "otro servicio",
+  "otra cosa",
+  "diferente",
+  "ninguno",
+  "ninguna",
+  "no aplica",
+  "no es eso"
+];
+
+const LEAD_REQUIRED_FIELDS: Array<keyof LeadProfile> = [
+  "firstName",
+  "lastName",
+  "company",
+  "email",
+  "need"
+];
+
+const LEAD_FIELD_QUESTIONS: Record<keyof LeadProfile, string> = {
+  firstName: "Por favor indícame tus nombres.",
+  lastName: "Ahora indícame tus apellidos.",
+  company: "¿Cuál es tu empresa?",
+  email: "¿Cuál es tu correo de contacto?",
+  need: "¿Qué necesitas exactamente o qué quieres resolver?"
+};
+
+type RoutingDecision =
+  | { kind: "support_project"; projectKey: string }
+  | { kind: "support_project_unknown" }
+  | { kind: "sales_project"; projectKey: string }
+  | { kind: "sales_offer_catalog" }
+  | { kind: "outside_transfer" }
+  | { kind: "human_scope_check" }
+  | { kind: "general" };
+
 function resolveDir(configuredPath: string, fallback: string) {
   const configured = configuredPath.trim() || fallback;
   return path.isAbsolute(configured)
@@ -59,8 +141,164 @@ function normalizeProjectKey(value: string | null | undefined) {
   return String(value ?? "").trim().toLowerCase();
 }
 
+function normalizeText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function emptyLeadProfile(): LeadProfile {
+  return {
+    firstName: null,
+    lastName: null,
+    company: null,
+    email: null,
+    need: null
+  };
+}
+
+function sanitizeValue(value: string | null | undefined, maxLength = 120) {
+  const normalized = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return null;
+  return normalized.slice(0, maxLength);
+}
+
+function titleCase(value: string | null | undefined) {
+  const normalized = sanitizeValue(value);
+  if (!normalized) return null;
+  return normalized
+    .split(" ")
+    .filter(Boolean)
+    .map((item) => item[0].toUpperCase() + item.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function ensureKnownProjectKey(value: string | null | undefined) {
+  const normalized = normalizeProjectKey(value);
+  if (!normalized) return null;
+  return Object.prototype.hasOwnProperty.call(PROJECT_OFFERS, normalized) ? normalized : null;
+}
+
+function containsKeyword(text: string, keywords: string[]) {
+  const normalized = normalizeText(text);
+  return keywords.some((keyword) => normalized.includes(normalizeText(keyword)));
+}
+
+function extractEmail(text: string) {
+  const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return match?.[0]?.toLowerCase() ?? null;
+}
+
+function updateLeadProfileFromMessage(profile: LeadProfile, message: string): LeadProfile {
+  const next: LeadProfile = { ...profile };
+  const text = String(message ?? "");
+
+  const email = extractEmail(text);
+  if (email) next.email = email;
+
+  const fullName = text.match(
+    /(?:mi nombre es|me llamo|soy)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ]+)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ]+)(?:\s+([A-Za-zÁÉÍÓÚÑáéíóúñ]+))?/i
+  );
+  if (fullName) {
+    if (!next.firstName) next.firstName = titleCase(fullName[1]);
+    if (!next.lastName) next.lastName = titleCase(fullName[2]);
+  }
+
+  const firstNameField = text.match(/(?:nombres?|nombre)\s*[:\-]\s*([^\n,.;]+)/i);
+  if (firstNameField?.[1]) {
+    next.firstName = titleCase(firstNameField[1]);
+  }
+
+  const lastNameField = text.match(/(?:apellidos?)\s*[:\-]\s*([^\n,.;]+)/i);
+  if (lastNameField?.[1]) {
+    next.lastName = titleCase(lastNameField[1]);
+  }
+
+  const companyField = text.match(
+    /(?:empresa|compa(?:n|ñ)i(?:a|as)|organizacion|organización|trabajo en|represento a)\s*[:\-]?\s*([^\n,.;]+)/i
+  );
+  if (companyField?.[1]) {
+    next.company = sanitizeValue(companyField[1], 140);
+  }
+
+  const needField = text.match(/(?:necesito|quiero|busco|requiero|me interesa)\s+([^.!?\n]+)/i);
+  if (needField?.[1]) {
+    next.need = sanitizeValue(needField[1], 220);
+  }
+
+  return next;
+}
+
+function getMissingLeadFields(profile: LeadProfile) {
+  return LEAD_REQUIRED_FIELDS.filter((field) => !sanitizeValue(profile[field], 220));
+}
+
+function formatCatalogOfferMessage() {
+  return [
+    "Actualmente manejamos estos proyectos/servicios:",
+    `- LuxiSoft: ${PROJECT_OFFERS.luxisoft}`,
+    `- NAVAI: ${PROJECT_OFFERS.navai}`,
+    `- LuxiChat: ${PROJECT_OFFERS.luxichat}`,
+    "Si uno de estos te sirve, dime cuál y te redirijo de inmediato.",
+    "Si necesitas algo diferente, también te puedo transferir con un agente humano."
+  ].join("\n");
+}
+
+function buildLeadCollectionPrompt(profile: LeadProfile, firstInteraction: boolean) {
+  const missing = getMissingLeadFields(profile);
+  const nextField = missing[0];
+  if (!nextField) return null;
+
+  if (firstInteraction) {
+    return [
+      "Para transferirte con un agente humano necesito registrar estos datos:",
+      "- nombres",
+      "- apellidos",
+      "- empresa",
+      "- correo",
+      "- necesidad puntual",
+      LEAD_FIELD_QUESTIONS[nextField]
+    ].join("\n");
+  }
+
+  return LEAD_FIELD_QUESTIONS[nextField];
+}
+
+function classifyRouting(message: string, state: ConversationState): RoutingDecision {
+  const support = containsKeyword(message, SUPPORT_KEYWORDS);
+  const buy = containsKeyword(message, BUY_KEYWORDS);
+  const human = containsKeyword(message, HUMAN_KEYWORDS);
+  const outside = containsKeyword(message, OUTSIDE_KEYWORDS);
+
+  const mentionedProject = ensureKnownProjectKey(detectProjectByText(message));
+  const currentProject = ensureKnownProjectKey(state.projectKey);
+
+  if (support) {
+    const target = mentionedProject ?? currentProject;
+    if (target) return { kind: "support_project", projectKey: target };
+    return { kind: "support_project_unknown" };
+  }
+
+  if (buy) {
+    if (mentionedProject) return { kind: "sales_project", projectKey: mentionedProject };
+    if (outside) return { kind: "outside_transfer" };
+    return { kind: "sales_offer_catalog" };
+  }
+
+  if (human) {
+    if (outside) return { kind: "outside_transfer" };
+    return { kind: "human_scope_check" };
+  }
+
+  return { kind: "general" };
 }
 
 function tokenize(input: string) {
@@ -341,6 +579,23 @@ function buildHistoryBlock(history: ConversationState["history"]) {
     .join("\n");
 }
 
+function buildHumanSummary(state: ConversationState) {
+  const recentUserMessages = state.history
+    .filter((item) => item.role === "user")
+    .slice(-4)
+    .map((item) => `- ${item.text.slice(0, 220)}`)
+    .join("\n");
+
+  return [
+    `Nombre: ${state.lead.firstName ?? "(sin dato)"} ${state.lead.lastName ?? ""}`.trim(),
+    `Empresa: ${state.lead.company ?? "(sin dato)"}`,
+    `Correo: ${state.lead.email ?? "(sin dato)"}`,
+    `Necesidad: ${state.lead.need ?? "(sin dato)"}`,
+    "Mensajes recientes del usuario:",
+    recentUserMessages || "- Sin mensajes."
+  ].join("\n");
+}
+
 function getConversation(phoneE164: string, projectKey: string) {
   const existing = conversations.get(phoneE164);
   if (existing) {
@@ -350,7 +605,9 @@ function getConversation(phoneE164: string, projectKey: string) {
 
   const initial: ConversationState = {
     projectKey,
-    history: []
+    history: [],
+    lead: emptyLeadProfile(),
+    awaitingHumanTransferData: false
   };
   conversations.set(phoneE164, initial);
   return initial;
@@ -514,7 +771,7 @@ async function transferToHuman(input: {
 
   const payload = [
     "[Bridge -> humano] Transferencia solicitada",
-    `Proyecto: ${input.projectKey}`,
+    `Proyecto sugerido: ${input.projectKey}`,
     `Usuario: ${input.phoneE164}`,
     "Resumen:",
     input.summary || "Sin resumen."
@@ -547,8 +804,6 @@ async function runOrchestrator(input: {
   const model = env.openaiOrchestratorModel;
 
   let selectedProject = normalizeProjectKey(input.preferredProjectKey) || env.defaultProject;
-  let escalated = false;
-  let escalationSent = false;
   let lastDelegatedReply = "";
 
   const tools = [
@@ -576,26 +831,6 @@ async function runOrchestrator(input: {
         required: ["user_message"],
         additionalProperties: false
       }
-    },
-    {
-      type: "function",
-      name: "transfer_to_human",
-      description: "Escala el caso a un humano y envia resumen por WhatsApp.",
-      strict: false,
-      parameters: {
-        type: "object",
-        properties: {
-          project_key: {
-            type: "string"
-          },
-          summary: {
-            type: "string",
-            description: "Resumen breve y accionable de la solicitud del usuario."
-          }
-        },
-        required: ["summary"],
-        additionalProperties: false
-      }
     }
   ];
 
@@ -604,7 +839,7 @@ async function runOrchestrator(input: {
       "Eres el agente orquestador. Delega a agentes de proyecto y entrega respuesta final al usuario.",
     "Siempre responde en espanol.",
     "Para consultas de negocio/servicios/productos debes usar delegate_project_agent.",
-    "Si el usuario pide humano, usa transfer_to_human y confirma el estado.",
+    "No llames transferencia humana desde este flujo; la transferencia se gestiona por validacion previa del sistema.",
     "No inventes informacion tecnica no confirmada por subagente."
   ].join("\n\n");
 
@@ -637,9 +872,9 @@ async function runOrchestrator(input: {
       const toolName = String(call?.name ?? "").trim();
       const callId = String(call?.call_id ?? call?.id ?? "");
       if (!toolName || !callId) continue;
-      const args = parseJsonObject(call?.arguments);
 
       if (toolName === "delegate_project_agent") {
+        const args = parseJsonObject(call?.arguments);
         const requestedProject = normalizeProjectKey(String(args.project_key ?? "")) || selectedProject;
         const delegated = await runProjectAgent({
           projectKey: requestedProject,
@@ -659,24 +894,6 @@ async function runOrchestrator(input: {
             tools_used: delegated.toolsUsed,
             reply: delegated.answer
           })
-        });
-        continue;
-      }
-
-      if (toolName === "transfer_to_human") {
-        escalated = true;
-        const requestedProject = normalizeProjectKey(String(args.project_key ?? "")) || selectedProject;
-        const summary = String(args.summary ?? "").trim();
-        const transfer = await transferToHuman({
-          projectKey: requestedProject,
-          phoneE164: input.phoneE164,
-          summary
-        });
-        escalationSent = escalationSent || transfer.sent;
-        toolOutputs.push({
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify(transfer)
         });
         continue;
       }
@@ -704,9 +921,76 @@ async function runOrchestrator(input: {
   return {
     projectKey: selectedProject,
     reply,
-    escalated,
-    escalationSent
+    escalated: false,
+    escalationSent: false
   };
+}
+
+async function runHumanTransferQualification(input: {
+  state: ConversationState;
+  phoneE164: string;
+  firstInteraction: boolean;
+}) {
+  const missing = getMissingLeadFields(input.state.lead);
+  if (missing.length > 0) {
+    const prompt = buildLeadCollectionPrompt(input.state.lead, input.firstInteraction);
+    const reply = prompt ?? "Necesito un dato adicional para continuar con la transferencia.";
+    appendHistory(input.state, "assistant", reply);
+    return {
+      handled: true,
+      projectKey: input.state.projectKey,
+      reply,
+      escalated: true,
+      escalationSent: false
+    } as AgentReply;
+  }
+
+  const transfer = await transferToHuman({
+    projectKey: input.state.projectKey,
+    phoneE164: input.phoneE164,
+    summary: buildHumanSummary(input.state)
+  });
+  input.state.awaitingHumanTransferData = false;
+
+  const reply = transfer.sent
+    ? "Perfecto, ya transferí tu caso a un agente humano con tus datos y resumen. Te contactarán pronto."
+    : "Intenté transferir tu caso a un agente humano, pero falló el envío en este momento. Intenta de nuevo en unos minutos.";
+  appendHistory(input.state, "assistant", reply);
+
+  return {
+    handled: true,
+    projectKey: input.state.projectKey,
+    reply,
+    escalated: true,
+    escalationSent: transfer.sent
+  } as AgentReply;
+}
+
+async function runProjectRedirect(input: {
+  state: ConversationState;
+  phoneE164: string;
+  message: string;
+  projectKey: string;
+  objective: string;
+}) {
+  const delegated = await runProjectAgent({
+    projectKey: input.projectKey,
+    phoneE164: input.phoneE164,
+    userMessage: input.message,
+    objective: input.objective,
+    history: input.state.history
+  });
+  input.state.projectKey = delegated.projectKey;
+  const reply = delegated.answer;
+  appendHistory(input.state, "assistant", reply);
+
+  return {
+    handled: true,
+    projectKey: delegated.projectKey,
+    reply,
+    escalated: false,
+    escalationSent: false
+  } as AgentReply;
 }
 
 export async function handleProjectAgentMessage(input: {
@@ -736,13 +1020,94 @@ export async function handleProjectAgentMessage(input: {
     };
   }
 
-  const explicitProject = detectProjectByText(message);
+  const explicitProject = ensureKnownProjectKey(detectProjectByText(message));
   const previous = conversations.get(phone);
-  const projectKey = explicitProject ?? previous?.projectKey ?? env.defaultProject;
+  const projectKey = explicitProject ?? ensureKnownProjectKey(previous?.projectKey) ?? env.defaultProject;
   const state = getConversation(phone, projectKey);
   appendHistory(state, "user", message);
+  state.lead = updateLeadProfileFromMessage(state.lead, message);
 
   try {
+    if (state.awaitingHumanTransferData) {
+      return await runHumanTransferQualification({
+        state,
+        phoneE164: phone,
+        firstInteraction: false
+      });
+    }
+
+    const decision = classifyRouting(message, state);
+
+    if (decision.kind === "support_project") {
+      return await runProjectRedirect({
+        state,
+        phoneE164: phone,
+        message,
+        projectKey: decision.projectKey,
+        objective: "Resolver soporte tecnico del usuario en el proyecto indicado."
+      });
+    }
+
+    if (decision.kind === "support_project_unknown") {
+      const reply =
+        "Te ayudo con soporte. ¿Es sobre LuxiSoft, NAVAI o LuxiChat? Con eso te redirijo al agente correcto.";
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
+    }
+
+    if (decision.kind === "sales_project") {
+      return await runProjectRedirect({
+        state,
+        phoneE164: phone,
+        message,
+        projectKey: decision.projectKey,
+        objective: "Atender interes comercial del usuario para el proyecto indicado."
+      });
+    }
+
+    if (decision.kind === "sales_offer_catalog") {
+      const reply = formatCatalogOfferMessage();
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
+    }
+
+    if (decision.kind === "human_scope_check") {
+      const reply = [
+        "Antes de transferirte, confirmo algo:",
+        "Si es soporte o compra de LuxiSoft, NAVAI o LuxiChat, te redirijo de una vez al agente del proyecto.",
+        "Si es una necesidad diferente a esos servicios, te transfiero con humano."
+      ].join("\n");
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
+    }
+
+    if (decision.kind === "outside_transfer") {
+      state.awaitingHumanTransferData = true;
+      return await runHumanTransferQualification({
+        state,
+        phoneE164: phone,
+        firstInteraction: true
+      });
+    }
+
     const orchestrated = await runOrchestrator({
       phoneE164: phone,
       message,
@@ -750,12 +1115,12 @@ export async function handleProjectAgentMessage(input: {
       preferredProjectKey: projectKey
     });
 
-    state.projectKey = orchestrated.projectKey;
+    state.projectKey = ensureKnownProjectKey(orchestrated.projectKey) ?? state.projectKey;
     appendHistory(state, "assistant", orchestrated.reply);
 
     return {
       handled: true,
-      projectKey: orchestrated.projectKey,
+      projectKey: state.projectKey,
       reply: orchestrated.reply,
       escalated: orchestrated.escalated,
       escalationSent: orchestrated.escalationSent

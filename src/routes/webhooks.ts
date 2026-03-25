@@ -2,7 +2,12 @@ import type { FastifyPluginAsync } from "fastify";
 import { consumeBridgeOtp, dispatchDueBridgeEvents } from "../lib/bridge.js";
 import { env } from "../env.js";
 import { handleProjectAgentMessage } from "../lib/projectAgent.js";
-import { extractOtp, normalizeE164, sendWhatsappText } from "../lib/whatsapp.js";
+import {
+  extractOtp,
+  normalizeE164,
+  sendWhatsappText,
+  sendWhatsappTypingIndicator
+} from "../lib/whatsapp.js";
 
 type WebhookMessage = {
   id?: string;
@@ -91,6 +96,18 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       const from = msg.from ? normalizeE164(msg.from) : null;
       const text = String(msg.text?.body ?? "").trim();
       if (!from || !text) continue;
+
+      const incomingMessageId = String(msg.id ?? "").trim();
+      if (incomingMessageId) {
+        try {
+          await sendWhatsappTypingIndicator(incomingMessageId);
+        } catch (err) {
+          fastify.log.warn(
+            { err, incomingMessageId, from },
+            "WhatsApp typing indicator failed"
+          );
+        }
+      }
 
       const otp = extractOtp(text);
       if (otp) {

@@ -27,11 +27,10 @@ export function buildWaUrl(targetE164: string, message: string) {
   return `https://wa.me/${waNumber}?text=${encodeURIComponent(message)}`;
 }
 
-export async function sendWhatsappText(toE164: string, text: string) {
+async function sendWhatsappRequest(payload: Record<string, unknown>) {
   if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) {
     throw new Error("whatsapp_not_configured");
   }
-  const to = toWaMeNumber(toE164);
   const url = `https://graph.facebook.com/v20.0/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   const res = await fetch(url, {
     method: "POST",
@@ -39,12 +38,7 @@ export async function sendWhatsappText(toE164: string, text: string) {
       authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
       "content-type": "application/json"
     },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body: text }
-    })
+    body: JSON.stringify(payload)
   });
 
   const raw = await res.text().catch(() => "");
@@ -65,4 +59,30 @@ export async function sendWhatsappText(toE164: string, text: string) {
   }
 
   return parsed;
+}
+
+export async function sendWhatsappText(toE164: string, text: string) {
+  const to = toWaMeNumber(toE164);
+  return sendWhatsappRequest({
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: { body: text }
+  });
+}
+
+export async function sendWhatsappTypingIndicator(messageId: string) {
+  const normalized = String(messageId ?? "").trim();
+  if (!normalized) {
+    throw new Error("whatsapp_message_id_required");
+  }
+
+  return sendWhatsappRequest({
+    messaging_product: "whatsapp",
+    status: "read",
+    message_id: normalized,
+    typing_indicator: {
+      type: "text"
+    }
+  });
 }
