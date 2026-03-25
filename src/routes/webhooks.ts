@@ -97,18 +97,6 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       const text = String(msg.text?.body ?? "").trim();
       if (!from || !text) continue;
 
-      const incomingMessageId = String(msg.id ?? "").trim();
-      if (incomingMessageId) {
-        try {
-          await sendWhatsappTypingIndicator(incomingMessageId);
-        } catch (err) {
-          fastify.log.warn(
-            { err, incomingMessageId, from },
-            "WhatsApp typing indicator failed"
-          );
-        }
-      }
-
       const otp = extractOtp(text);
       if (otp) {
         const result = await consumeBridgeOtp(fastify, {
@@ -128,6 +116,18 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
             await safeReply(from, "Codigo invalido o expirado. Genera uno nuevo en la app.");
           }
           continue;
+        }
+      }
+
+      const incomingMessageId = String(msg.id ?? "").trim();
+      if (incomingMessageId) {
+        try {
+          await sendWhatsappTypingIndicator(incomingMessageId);
+        } catch (err) {
+          fastify.log.warn(
+            { err, incomingMessageId, from },
+            "WhatsApp typing indicator failed"
+          );
         }
       }
 
