@@ -1,4 +1,4 @@
-import LuxisoftEmailTemplate, { type LuxisoftEmailSection } from "./LuxisoftEmailTemplate";
+import LuxisoftEmailTemplate, { type LuxisoftEmailSection } from "./LuxisoftEmailTemplate.js";
 
 export type WhatsappDailyReportEmailProps = {
   reportDate: string;
