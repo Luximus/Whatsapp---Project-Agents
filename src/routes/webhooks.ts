@@ -42,11 +42,13 @@ function flattenWebhookMessages(body: any) {
 }
 
 export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
-  const safeReply = async (to: string, message: string) => {
+  const safeReply = async (to: string, message: string, replyToMessageId?: string | null) => {
     try {
-      await sendWhatsappText(to, message);
+      await sendWhatsappText(to, message, {
+        replyToMessageId: replyToMessageId ?? null
+      });
     } catch (err) {
-      fastify.log.warn({ err, to }, "WhatsApp reply failed");
+      fastify.log.warn({ err, to, replyToMessageId: replyToMessageId ?? null }, "WhatsApp reply failed");
     }
   };
 
@@ -93,6 +95,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     if (!messages.length) return { ok: true };
 
     for (const msg of messages) {
+      const incomingMessageId = String(msg.id ?? "").trim();
       const from = msg.from ? normalizeE164(msg.from) : null;
       const text = String(msg.text?.body ?? "").trim();
       if (!from || !text) continue;
@@ -107,19 +110,26 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
         if (result.handled) {
           if (result.status === "verified") {
-            await safeReply(from, "Codigo verificado. Vuelve a la app para continuar.");
+            await safeReply(
+              from,
+              "Codigo verificado. Vuelve a la app para continuar.",
+              incomingMessageId
+            );
             await dispatchDueBridgeEvents(fastify, {
               projectKey: result.session.project_key,
               limit: 20
             });
           } else {
-            await safeReply(from, "Codigo invalido o expirado. Genera uno nuevo en la app.");
+            await safeReply(
+              from,
+              "Codigo invalido o expirado. Genera uno nuevo en la app.",
+              incomingMessageId
+            );
           }
           continue;
         }
       }
 
-      const incomingMessageId = String(msg.id ?? "").trim();
       if (incomingMessageId) {
         try {
           await sendWhatsappTypingIndicator(incomingMessageId);
@@ -139,7 +149,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         continue;
       }
 
-      await safeReply(from, agentReply.reply);
+      await safeReply(from, agentReply.reply, incomingMessageId);
     }
 
     return { ok: true };

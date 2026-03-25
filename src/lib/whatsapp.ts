@@ -2,6 +2,12 @@
 
 const OTP_REGEX = /(?:codigo|code|otp)[^\d]{0,10}(\d{4,6})/i;
 const FALLBACK_OTP_REGEX = /(\d{4,6})/;
+const URL_REGEX = /\bhttps?:\/\/[^\s<>"']+/i;
+
+export type SendWhatsappTextOptions = {
+  replyToMessageId?: string | null;
+  previewUrl?: boolean;
+};
 
 export function extractOtp(text: string | null | undefined) {
   if (!text) return null;
@@ -61,14 +67,43 @@ async function sendWhatsappRequest(payload: Record<string, unknown>) {
   return parsed;
 }
 
-export async function sendWhatsappText(toE164: string, text: string) {
+function normalizeMessageId(value: string | null | undefined) {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
+function shouldEnablePreview(text: string, explicit?: boolean) {
+  if (typeof explicit === "boolean") return explicit;
+  return URL_REGEX.test(text);
+}
+
+export async function sendWhatsappText(
+  toE164: string,
+  text: string,
+  options: SendWhatsappTextOptions = {}
+) {
   const to = toWaMeNumber(toE164);
-  return sendWhatsappRequest({
+  const body = String(text ?? "").trim();
+  if (!body) {
+    throw new Error("whatsapp_text_required");
+  }
+
+  const payload: Record<string, unknown> = {
     messaging_product: "whatsapp",
     to,
     type: "text",
-    text: { body: text }
-  });
+    text: {
+      body,
+      preview_url: shouldEnablePreview(body, options.previewUrl)
+    }
+  };
+
+  const replyToMessageId = normalizeMessageId(options.replyToMessageId);
+  if (replyToMessageId) {
+    payload.context = { message_id: replyToMessageId };
+  }
+
+  return sendWhatsappRequest(payload);
 }
 
 export async function sendWhatsappTypingIndicator(messageId: string) {

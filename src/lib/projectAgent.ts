@@ -1,4 +1,3 @@
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   listProjectKeys,
@@ -43,17 +42,19 @@ const conversations = new Map<string, ConversationState>();
 const KNOWLEDGE_CACHE_TTL_MS = 10 * 60 * 1000;
 const MAX_HISTORY_ITEMS = 12;
 const MAX_RESPONSE_CHARS = 1400;
+const MAX_SOURCE_LINKS_PER_PAGE = 20;
+const MAX_GROUNDING_SNIPPETS = 6;
 
 const DEFAULT_PROJECT_SOURCES: Record<string, string[]> = {
-  luxisoft: ["https://luxisoft.com"],
-  navai: ["https://navai.luxisoft.com"],
-  luxichat: []
+  luxisoft: ["https://luxisoft.com/en/"],
+  navai: ["https://navai.luxisoft.com/",],
+  luxichat: ["https://luxichat.com/"]
 };
 
 const PROJECT_OFFERS: Record<string, string> = {
-  luxisoft: "Desarrollo de software a medida, automatizacion, integraciones e IA aplicada.",
-  navai: "Agentes de voz en tiempo real, automatizacion de evaluaciones e integracion IA.",
-  luxichat: "Autenticacion WhatsApp, onboarding, soporte y experiencias de comunidad."
+  luxisoft: "LuxiSoft",
+  navai: "NAVAI",
+  luxichat: "LuxiChat"
 };
 
 const SUPPORT_KEYWORDS = [
@@ -106,11 +107,11 @@ const LEAD_REQUIRED_FIELDS: Array<keyof LeadProfile> = [
 ];
 
 const LEAD_FIELD_QUESTIONS: Record<keyof LeadProfile, string> = {
-  firstName: "Por favor indícame tus nombres.",
-  lastName: "Ahora indícame tus apellidos.",
-  company: "¿Cuál es tu empresa?",
-  email: "¿Cuál es tu correo de contacto?",
-  need: "¿Qué necesitas exactamente o qué quieres resolver?"
+  firstName: "Por favor indicame tus nombres.",
+  lastName: "Ahora indicame tus apellidos.",
+  company: "Cual es tu empresa?",
+  email: "Cual es tu correo de contacto?",
+  need: "Que necesitas exactamente o que quieres resolver?"
 };
 
 type RoutingDecision =
@@ -205,7 +206,7 @@ function updateLeadProfileFromMessage(profile: LeadProfile, message: string): Le
   if (email) next.email = email;
 
   const fullName = text.match(
-    /(?:mi nombre es|me llamo|soy)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ]+)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ]+)(?:\s+([A-Za-zÁÉÍÓÚÑáéíóúñ]+))?/i
+    /(?:mi nombre es|me llamo|soy)\s+([A-Za-z\u00C0-\u017F]+)\s+([A-Za-z\u00C0-\u017F]+)(?:\s+([A-Za-z\u00C0-\u017F]+))?/i
   );
   if (fullName) {
     if (!next.firstName) next.firstName = titleCase(fullName[1]);
@@ -223,7 +224,7 @@ function updateLeadProfileFromMessage(profile: LeadProfile, message: string): Le
   }
 
   const companyField = text.match(
-    /(?:empresa|compa(?:n|ñ)i(?:a|as)|organizacion|organización|trabajo en|represento a)\s*[:\-]?\s*([^\n,.;]+)/i
+    /(?:empresa|compa(?:n|\u00F1)i(?:a|as)|organizacion|organizaci\u00F3n|trabajo en|represento a)\s*[:\-]?\s*([^\n,.;]+)/i
   );
   if (companyField?.[1]) {
     next.company = sanitizeValue(companyField[1], 140);
@@ -241,14 +242,18 @@ function getMissingLeadFields(profile: LeadProfile) {
   return LEAD_REQUIRED_FIELDS.filter((field) => !sanitizeValue(profile[field], 220));
 }
 
+function firstOfficialSource(projectKey: string) {
+  return resolveWebSources(projectKey)[0] ?? "sin fuente web oficial configurada";
+}
+
 function formatCatalogOfferMessage() {
   return [
-    "Actualmente manejamos estos proyectos/servicios:",
-    `- LuxiSoft: ${PROJECT_OFFERS.luxisoft}`,
-    `- NAVAI: ${PROJECT_OFFERS.navai}`,
-    `- LuxiChat: ${PROJECT_OFFERS.luxichat}`,
-    "Si uno de estos te sirve, dime cuál y te redirijo de inmediato.",
-    "Si necesitas algo diferente, también te puedo transferir con un agente humano."
+    "Puedo ayudarte con informacion oficial de estos proyectos:",
+    `- ${PROJECT_OFFERS.luxisoft}: ${firstOfficialSource("luxisoft")}`,
+    `- ${PROJECT_OFFERS.navai}: ${firstOfficialSource("navai")}`,
+    `- ${PROJECT_OFFERS.luxichat}: ${firstOfficialSource("luxichat")}`,
+    "Si uno de estos te sirve, dime cual y te redirijo de inmediato.",
+    "Si necesitas algo diferente, tambien te puedo transferir con un agente humano."
   ].join("\n");
 }
 
@@ -326,67 +331,46 @@ function stripHtml(html: string) {
     .trim();
 }
 
-async function safeReadFile(filePath: string) {
+function decodeHtmlEntities(value: string) {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function normalizeHttpUrl(urlLike: string, baseUrl: string) {
   try {
-    const stat = await fs.stat(filePath);
-    if (!stat.isFile() || stat.size > 250_000) return "";
-    return await fs.readFile(filePath, "utf8");
+    const normalized = new URL(urlLike, baseUrl).toString();
+    return /^https?:\/\//i.test(normalized) ? normalized : null;
   } catch {
-    return "";
+    return null;
   }
 }
 
-async function collectTextFiles(dirPath: string, depth = 0, output: string[] = []) {
-  if (depth > 3 || output.length >= 25) return output;
+function extractSourceLinks(rawHtml: string, sourceUrl: string) {
+  const links: string[] = [];
+  const unique = new Set<string>();
+  const anchorRegex = /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
 
-  let entries: import("node:fs").Dirent[] = [];
-  try {
-    entries = await fs.readdir(dirPath, { withFileTypes: true });
-  } catch {
-    return output;
+  for (const match of rawHtml.matchAll(anchorRegex)) {
+    const rawHref = String(match[1] ?? "").trim();
+    if (!rawHref) continue;
+    if (/^(#|javascript:|mailto:|tel:)/i.test(rawHref)) continue;
+
+    const href = normalizeHttpUrl(rawHref, sourceUrl);
+    if (!href || unique.has(href)) continue;
+    unique.add(href);
+
+    const label = decodeHtmlEntities(stripHtml(String(match[2] ?? ""))).trim();
+    links.push(label ? `${label}: ${href}` : href);
+
+    if (links.length >= MAX_SOURCE_LINKS_PER_PAGE) break;
   }
 
-  for (const entry of entries) {
-    if (output.length >= 25) break;
-    const fullPath = path.join(dirPath, entry.name);
-    if (entry.isDirectory()) {
-      if (["node_modules", ".git", "dist", "build", ".next"].includes(entry.name)) continue;
-      await collectTextFiles(fullPath, depth + 1, output);
-      continue;
-    }
-    if (!entry.isFile()) continue;
-
-    const ext = path.extname(entry.name).toLowerCase();
-    if (![".txt", ".md", ".markdown"].includes(ext)) continue;
-    output.push(fullPath);
-  }
-
-  return output;
-}
-
-async function loadLocalSource(sourcePath: string) {
-  const resolved = path.isAbsolute(sourcePath)
-    ? sourcePath
-    : path.resolve(process.cwd(), sourcePath);
-
-  try {
-    const stat = await fs.stat(resolved);
-    if (stat.isFile()) {
-      return await safeReadFile(resolved);
-    }
-    if (!stat.isDirectory()) return "";
-
-    const files = await collectTextFiles(resolved);
-    const chunks: string[] = [];
-    for (const filePath of files) {
-      const content = await safeReadFile(filePath);
-      if (!content.trim()) continue;
-      chunks.push(`[source:${filePath}]\n${content.slice(0, 12_000)}`);
-    }
-    return chunks.join("\n\n");
-  } catch {
-    return "";
-  }
+  return links;
 }
 
 async function fetchRemoteSource(url: string) {
@@ -405,9 +389,18 @@ async function fetchRemoteSource(url: string) {
 
     const raw = await response.text().catch(() => "");
     if (!raw) return "";
+    const sourceUrl = response.url || url;
     const normalized = stripHtml(raw);
     if (!normalized) return "";
-    return `[source:${url}]\n${normalized.slice(0, 16_000)}`;
+
+    const sections = [`[source:${sourceUrl}]`, normalized.slice(0, 16_000)];
+    const links = extractSourceLinks(raw, sourceUrl);
+    if (links.length) {
+      sections.push(`[source_links:${sourceUrl}]`);
+      sections.push(...links.map((item) => `- ${item}`));
+    }
+
+    return sections.join("\n");
   } catch {
     return "";
   } finally {
@@ -421,6 +414,10 @@ function resolveSources(projectKey: string) {
   return Array.from(new Set([...configured, ...fallback])).filter(Boolean);
 }
 
+function resolveWebSources(projectKey: string) {
+  return resolveSources(projectKey).filter((source) => /^https?:\/\//i.test(source));
+}
+
 async function loadProjectKnowledge(projectKey: string) {
   const now = Date.now();
   const cached = knowledgeCache.get(projectKey);
@@ -428,21 +425,10 @@ async function loadProjectKnowledge(projectKey: string) {
     return cached.text;
   }
 
-  const agentsDir = resolveAgentsDir();
   const pieces: string[] = [];
-  const project = await loadProjectAgent(agentsDir, projectKey);
-  if (project?.prompt?.trim()) {
-    pieces.push(`[project_prompt:${projectKey}]\n${project.prompt.trim()}`);
-  }
-
-  const sources = resolveSources(projectKey);
+  const sources = resolveWebSources(projectKey);
   for (const source of sources) {
-    if (/^https?:\/\//i.test(source)) {
-      const loaded = await fetchRemoteSource(source);
-      if (loaded) pieces.push(loaded);
-      continue;
-    }
-    const loaded = await loadLocalSource(source);
+    const loaded = await fetchRemoteSource(source);
     if (loaded) pieces.push(loaded);
   }
 
@@ -483,6 +469,28 @@ function pickRelevantSnippets(knowledge: string, question: string) {
 async function searchKnowledge(projectKey: string, query: string) {
   const knowledge = await loadProjectKnowledge(projectKey);
   return pickRelevantSnippets(knowledge, query);
+}
+
+function buildGroundingBlock(snippets: string[]) {
+  return snippets
+    .slice(0, MAX_GROUNDING_SNIPPETS)
+    .map((snippet, index) => `[${index + 1}] ${snippet}`)
+    .join("\n");
+}
+
+function buildNoGroundingReply(projectKey: string) {
+  const sources = resolveWebSources(projectKey);
+  const lines = [
+    `No tengo informacion confirmada en las paginas oficiales de ${projectKey} para responder eso con precision.`
+  ];
+
+  if (sources.length) {
+    lines.push("Fuentes oficiales disponibles:");
+    lines.push(...sources.slice(0, 3));
+  }
+
+  lines.push("Si quieres, te paso con un agente humano.");
+  return lines.join("\n");
 }
 
 function parseJsonObject(value: unknown) {
@@ -641,12 +649,29 @@ async function runProjectAgent(input: {
     };
   }
 
+  const groundingQuery = [input.objective ?? "", input.userMessage]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean)
+    .join(". ");
+  const groundingSnippets = await searchKnowledge(
+    project.project_key,
+    groundingQuery || input.userMessage
+  );
+
+  if (!groundingSnippets.length) {
+    return {
+      projectKey: project.project_key,
+      answer: buildNoGroundingReply(project.project_key),
+      toolsUsed: [] as string[]
+    };
+  }
+
   const runtimeContext: AgentScriptRuntimeContext = {
     projectKey: project.project_key,
     phoneE164: input.phoneE164,
     userMessage: input.userMessage,
     history: input.history.map((item) => ({ role: item.role, text: item.text })),
-    sources: resolveSources(project.project_key),
+    sources: resolveWebSources(project.project_key),
     searchKnowledge: (query) => searchKnowledge(project.project_key, query)
   };
 
@@ -665,13 +690,19 @@ async function runProjectAgent(input: {
   const systemPrompt = [
     project.prompt || `Eres el agente del proyecto ${project.project_key}.`,
     "Responde en espanol claro, maximo 6 lineas si no requiere mas detalle.",
-    "Si necesitas datos concretos del proyecto, usa los tools disponibles antes de responder.",
+    "Responde exclusivamente con informacion presente en BLOQUE_DE_FUENTES_CONFIRMADAS.",
+    "No uses conocimiento externo ni inventes datos no confirmados por fuentes oficiales.",
+    "Si la respuesta no esta en fuentes, dilo explicitamente y comparte enlaces oficiales disponibles.",
+    "Si necesitas mas contexto del sitio, usa los tools disponibles antes de responder.",
+    "Cuando compartas enlaces, usa URL completa para previsualizacion en WhatsApp.",
     'Siempre invita a escalar con la frase exacta: "Si quieres, te paso con un agente humano."'
   ].join("\n\n");
 
   const userPrompt = [
     `Proyecto: ${project.project_key}`,
     input.objective ? `Objetivo del orquestador: ${input.objective}` : "",
+    "BLOQUE_DE_FUENTES_CONFIRMADAS:",
+    buildGroundingBlock(groundingSnippets),
     `Historial reciente:`,
     buildHistoryBlock(input.history) || "Sin historial.",
     "",
@@ -839,6 +870,8 @@ async function runOrchestrator(input: {
       "Eres el agente orquestador. Delega a agentes de proyecto y entrega respuesta final al usuario.",
     "Siempre responde en espanol.",
     "Para consultas de negocio/servicios/productos debes usar delegate_project_agent.",
+    "No agregues datos tecnicos/comerciales que no vengan del subagente.",
+    "Tu respuesta final debe basarse solo en informacion confirmada por el subagente.",
     "No llames transferencia humana desde este flujo; la transferencia se gestiona por validacion previa del sistema.",
     "No inventes informacion tecnica no confirmada por subagente."
   ].join("\n\n");
@@ -953,8 +986,8 @@ async function runHumanTransferQualification(input: {
   input.state.awaitingHumanTransferData = false;
 
   const reply = transfer.sent
-    ? "Perfecto, ya transferí tu caso a un agente humano con tus datos y resumen. Te contactarán pronto."
-    : "Intenté transferir tu caso a un agente humano, pero falló el envío en este momento. Intenta de nuevo en unos minutos.";
+    ? "Perfecto, ya transferi tu caso a un agente humano con tus datos y resumen. Te contactaran pronto."
+    : "Intente transferir tu caso a un agente humano, pero fallo el envio en este momento. Intenta de nuevo en unos minutos.";
   appendHistory(input.state, "assistant", reply);
 
   return {
@@ -1050,7 +1083,7 @@ export async function handleProjectAgentMessage(input: {
 
     if (decision.kind === "support_project_unknown") {
       const reply =
-        "Te ayudo con soporte. ¿Es sobre LuxiSoft, NAVAI o LuxiChat? Con eso te redirijo al agente correcto.";
+        "Te ayudo con soporte. Es sobre LuxiSoft, NAVAI o LuxiChat? Con eso te redirijo al agente correcto.";
       appendHistory(state, "assistant", reply);
       return {
         handled: true,
