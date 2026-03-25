@@ -8,7 +8,12 @@ export type AgentScriptRuntimeContext = {
   userMessage: string;
   history: Array<{ role: "user" | "assistant"; text: string }>;
   sources: string[];
-  searchKnowledge: (query: string) => Promise<string[]>;
+  searchKnowledge: (
+    query: string,
+    options?: {
+      sourceUrl?: string;
+    }
+  ) => Promise<string[]>;
 };
 
 export type AgentScript = {

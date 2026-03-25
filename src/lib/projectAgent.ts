@@ -541,6 +541,32 @@ function formatHumanScopeCheckReply(plan: ReplyPlan) {
   ].join("\n");
 }
 
+function formatInitialDiscoveryReply(plan: ReplyPlan) {
+  if (plan.style === "bullets") {
+    return [
+      "Para ayudarte mejor, confirmame:",
+      "- servicio de interes (LuxiSoft, NAVAI o LuxiChat)",
+      "- objetivo principal",
+      "- si buscas implementacion, soporte o cotizacion"
+    ].join("\n");
+  }
+
+  if (plan.style === "steps") {
+    return [
+      "Para avanzar rapido:",
+      "1. Dime el servicio: LuxiSoft, NAVAI o LuxiChat.",
+      "2. Cuentame el objetivo que quieres lograr.",
+      "3. Te doy la mejor ruta con informacion oficial."
+    ].join("\n");
+  }
+
+  if (plan.style === "question") {
+    return "Para ayudarte mejor, te interesa LuxiSoft, NAVAI o LuxiChat? Y que necesitas resolver primero?";
+  }
+
+  return "Para ayudarte mejor, dime si te interesa LuxiSoft, NAVAI o LuxiChat, y que objetivo quieres resolver.";
+}
+
 function isAssistantIdentityRequest(message: string) {
   const normalized = normalizeText(message);
   return /(como te llamas|cual es tu nombre|quien eres|presentate|tu nombre)/i.test(normalized);
@@ -704,6 +730,43 @@ function normalizeComparableUrl(value: string) {
     return parsed.toString();
   } catch {
     return value;
+  }
+}
+
+function extractHttpUrlsFromText(value: string) {
+  const matches = String(value ?? "").match(/https?:\/\/[^\s<>"'`]+/gi) ?? [];
+  const deduped = new Map<string, string>();
+
+  for (const item of matches) {
+    const normalized = normalizeHttpUrl(item, item);
+    if (!normalized) continue;
+    const key = normalizeComparableUrl(normalized);
+    if (!deduped.has(key)) deduped.set(key, normalized);
+  }
+
+  return Array.from(deduped.values());
+}
+
+function buildKnowledgeCacheKey(projectKey: string, sources: string[]) {
+  const normalizedSources = sources
+    .map((source) => normalizeComparableUrl(source))
+    .sort((a, b) => a.localeCompare(b));
+  return `${projectKey}::${normalizedSources.join("|")}`;
+}
+
+function sameDomainAsAnySource(candidateUrl: string, sources: string[]) {
+  try {
+    const candidate = new URL(candidateUrl);
+    return sources.some((source) => {
+      try {
+        const root = new URL(source);
+        return isSameDomain(candidate.host, root.host);
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
   }
 }
 
@@ -891,25 +954,34 @@ function knowledgeTextFromDictionary(dictionary: ProjectKnowledgeDictionary) {
   return sections.join("\n").trim();
 }
 
-function resolveSources(projectKey: string) {
+function resolveSources(projectKey: string, promptText = "") {
   const configured = env.agentProjectSources[projectKey] ?? [];
   const fallback = DEFAULT_PROJECT_SOURCES[projectKey] ?? [];
-  return Array.from(new Set([...configured, ...fallback])).filter(Boolean);
+  const promptUrls = extractHttpUrlsFromText(promptText);
+  return Array.from(new Set([...configured, ...fallback, ...promptUrls])).filter(Boolean);
 }
 
-function resolveWebSources(projectKey: string) {
-  return resolveSources(projectKey).filter((source) => /^https?:\/\//i.test(source));
+function resolveWebSources(projectKey: string, promptText = "") {
+  const deduped = new Map<string, string>();
+  for (const source of resolveSources(projectKey, promptText)) {
+    const normalized = normalizeHttpUrl(source, source);
+    if (!normalized) continue;
+    const key = normalizeComparableUrl(normalized);
+    if (!deduped.has(key)) deduped.set(key, normalized);
+  }
+  return Array.from(deduped.values());
 }
 
-async function loadProjectKnowledge(projectKey: string) {
+async function loadProjectKnowledge(projectKey: string, webSources: string[]) {
+  const sources = webSources.filter((source) => /^https?:\/\//i.test(source));
+  const cacheKey = buildKnowledgeCacheKey(projectKey, sources);
   const now = Date.now();
-  const cached = knowledgeCache.get(projectKey);
+  const cached = knowledgeCache.get(cacheKey);
   if (cached && now - cached.loadedAt <= KNOWLEDGE_CACHE_TTL_MS) {
     return cached;
   }
 
   const pages: CrawledKnowledgePage[] = [];
-  const sources = resolveWebSources(projectKey);
   for (const source of sources) {
     const loaded = await fetchRemoteSource(source);
     if (loaded.length) pages.push(...loaded);
@@ -918,7 +990,7 @@ async function loadProjectKnowledge(projectKey: string) {
   const dictionary = buildProjectKnowledgeDictionary(projectKey, pages);
   const knowledge = knowledgeTextFromDictionary(dictionary);
   const loaded = { loadedAt: now, text: knowledge, dictionary };
-  knowledgeCache.set(projectKey, loaded);
+  knowledgeCache.set(cacheKey, loaded);
   return loaded;
 }
 
@@ -982,11 +1054,21 @@ function pickRelevantSnippetsFromDictionary(dictionary: ProjectKnowledgeDictiona
     .map((item) => item.snippet.slice(0, 280));
 }
 
-async function searchKnowledge(projectKey: string, query: string) {
-  const knowledge = await loadProjectKnowledge(projectKey);
-  const fromDictionary = pickRelevantSnippetsFromDictionary(knowledge.dictionary, query);
+async function searchKnowledge(input: {
+  projectKey: string;
+  query: string;
+  sources: string[];
+  sourceUrl?: string;
+}) {
+  const requestedSourceUrl = normalizeHttpUrl(String(input.sourceUrl ?? "").trim(), String(input.sourceUrl ?? "").trim());
+  const effectiveSources =
+    requestedSourceUrl && sameDomainAsAnySource(requestedSourceUrl, input.sources)
+      ? [requestedSourceUrl]
+      : input.sources;
+  const knowledge = await loadProjectKnowledge(input.projectKey, effectiveSources);
+  const fromDictionary = pickRelevantSnippetsFromDictionary(knowledge.dictionary, input.query);
   if (fromDictionary.length) return fromDictionary;
-  return pickRelevantSnippets(knowledge.text, query);
+  return pickRelevantSnippets(knowledge.text, input.query);
 }
 
 function buildGroundingBlock(snippets: string[]) {
@@ -996,8 +1078,7 @@ function buildGroundingBlock(snippets: string[]) {
     .join("\n");
 }
 
-function buildNoGroundingReply(projectKey: string, plan: ReplyPlan) {
-  const sources = resolveWebSources(projectKey);
+function buildNoGroundingReply(projectKey: string, plan: ReplyPlan, sources: string[]) {
   const lines = [
     `Revise las paginas oficiales de ${projectKey} y ese punto exacto no aparece publicado por ahora.`
   ];
@@ -1186,19 +1267,22 @@ async function runProjectAgent(input: {
     };
   }
 
+  const projectSources = resolveWebSources(project.project_key, project.prompt);
+
   const groundingQuery = [input.objective ?? "", input.userMessage]
     .map((value) => String(value ?? "").trim())
     .filter(Boolean)
     .join(". ");
-  const groundingSnippets = await searchKnowledge(
-    project.project_key,
-    groundingQuery || input.userMessage
-  );
+  const groundingSnippets = await searchKnowledge({
+    projectKey: project.project_key,
+    query: groundingQuery || input.userMessage,
+    sources: projectSources
+  });
 
   if (!groundingSnippets.length) {
     return {
       projectKey: project.project_key,
-      answer: buildNoGroundingReply(project.project_key, input.replyPlan),
+      answer: buildNoGroundingReply(project.project_key, input.replyPlan, projectSources),
       toolsUsed: [] as string[]
     };
   }
@@ -1208,8 +1292,14 @@ async function runProjectAgent(input: {
     phoneE164: input.phoneE164,
     userMessage: input.userMessage,
     history: input.history.map((item) => ({ role: item.role, text: item.text })),
-    sources: resolveWebSources(project.project_key),
-    searchKnowledge: (query) => searchKnowledge(project.project_key, query)
+    sources: projectSources,
+    searchKnowledge: (query, options) =>
+      searchKnowledge({
+        projectKey: project.project_key,
+        query,
+        sources: projectSources,
+        sourceUrl: options?.sourceUrl
+      })
   };
 
   const scriptMap = new Map(project.scripts.map((script) => [script.name, script]));
@@ -1674,6 +1764,23 @@ export async function handleProjectAgentMessage(input: {
     }
 
     const decision = classifyRouting(message, state);
+    const isFirstAssistantTurn = assistantMessageCount(state) === 0;
+
+    if (
+      isFirstAssistantTurn &&
+      decision.kind !== "meeting_interest" &&
+      decision.kind !== "human_scope_check"
+    ) {
+      const reply = finalizeAssistantReply(state, formatInitialDiscoveryReply(replyPlan), replyPlan);
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
+    }
 
     if (decision.kind === "support_project") {
       return await runProjectRedirect({

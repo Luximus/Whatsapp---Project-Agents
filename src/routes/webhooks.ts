@@ -40,6 +40,15 @@ type WebhookStatus = {
   errors?: Array<{ code?: number; title?: string; message?: string }>;
 };
 
+const MAX_TEXT_REPLY_CHARS = 250;
+
+function toTextChannelReply(input: string, maxChars = MAX_TEXT_REPLY_CHARS) {
+  const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) return normalized;
+  if (maxChars <= 3) return normalized.slice(0, maxChars);
+  return `${normalized.slice(0, maxChars - 3).trimEnd()}...`;
+}
+
 function flattenWebhookMessages(body: any) {
   const messages: WebhookMessage[] = [];
   const statuses: WebhookStatus[] = [];
@@ -141,7 +150,6 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       if (!from) continue;
 
       let text = String(msg.text?.body ?? "").trim();
-      let incomingWasAudio = false;
       const isAudioInput = messageType === "audio" || (!!msg.audio?.id && !text);
       trackInboundMessage({
         fromE164: from,
@@ -149,7 +157,6 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       });
 
       if (isAudioInput && msg.audio?.id) {
-        incomingWasAudio = true;
         try {
           const media = await downloadWhatsappMedia(msg.audio.id);
           text = await transcribeAudioWithOpenAI({
@@ -223,20 +230,21 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         phoneE164: from,
         text
       });
-      if (!agentReply.handled || !agentReply.reply.trim()) {
+      const replyText = String(agentReply.reply ?? "").trim();
+      if (!agentReply.handled || !replyText) {
         continue;
       }
       trackAgentReplyGenerated();
 
       let audioSent = false;
       const shouldSendAudio =
-        incomingWasAudio &&
+        replyText.length > MAX_TEXT_REPLY_CHARS &&
         env.whatsappAudioReplyEnabled &&
         isElevenLabsConfigured();
 
       if (shouldSendAudio) {
         try {
-          const generatedAudio = await synthesizeSpeechWithElevenLabs(agentReply.reply);
+          const generatedAudio = await synthesizeSpeechWithElevenLabs(replyText);
           audioSent = await safeAudioReply(
             from,
             {
@@ -252,8 +260,10 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         }
       }
 
-      if (!audioSent || env.whatsappAudioReplyIncludeText) {
-        await safeReply(from, agentReply.reply, incomingMessageId);
+      const textReply = toTextChannelReply(replyText);
+      const shouldAlsoSendText = !shouldSendAudio && env.whatsappAudioReplyIncludeText;
+      if (!audioSent || shouldAlsoSendText) {
+        await safeReply(from, textReply, incomingMessageId);
       }
     }
 
