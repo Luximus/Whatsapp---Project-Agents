@@ -5,6 +5,14 @@ import { isElevenLabsConfigured, synthesizeSpeechWithElevenLabs } from "../lib/e
 import { transcribeAudioWithOpenAI } from "../lib/openaiAudio.js";
 import { handleProjectAgentMessage } from "../lib/projectAgent.js";
 import {
+  trackAgentReplyGenerated,
+  trackInboundMessage,
+  trackOpenAIFailure,
+  trackOperationalError,
+  trackOtpMessage,
+  trackOutboundMessage
+} from "../lib/reporting.js";
+import {
   downloadWhatsappMedia,
   extractOtp,
   normalizeE164,
@@ -57,8 +65,12 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       await sendWhatsappText(to, message, {
         replyToMessageId: replyToMessageId ?? null
       });
+      trackOutboundMessage({ messageType: "text" });
+      return true;
     } catch (err) {
+      trackOperationalError();
       fastify.log.warn({ err, to, replyToMessageId: replyToMessageId ?? null }, "WhatsApp reply failed");
+      return false;
     }
   };
 
@@ -71,8 +83,10 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       await sendWhatsappAudio(to, input, {
         replyToMessageId: replyToMessageId ?? null
       });
+      trackOutboundMessage({ messageType: "audio" });
       return true;
     } catch (err) {
+      trackOperationalError();
       fastify.log.warn({ err, to, replyToMessageId: replyToMessageId ?? null }, "WhatsApp audio reply failed");
       return false;
     }
@@ -128,8 +142,13 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
       let text = String(msg.text?.body ?? "").trim();
       let incomingWasAudio = false;
+      const isAudioInput = messageType === "audio" || (!!msg.audio?.id && !text);
+      trackInboundMessage({
+        fromE164: from,
+        messageType: isAudioInput ? "audio" : "text"
+      });
 
-      if ((messageType === "audio" || (!!msg.audio?.id && !text)) && msg.audio?.id) {
+      if (isAudioInput && msg.audio?.id) {
         incomingWasAudio = true;
         try {
           const media = await downloadWhatsappMedia(msg.audio.id);
@@ -144,6 +163,8 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
             { err, from, incomingMessageId, mediaId: msg.audio.id ?? null },
             "Audio transcription failed"
           );
+          trackOpenAIFailure();
+          trackOperationalError();
           await safeReply(
             from,
             "Recibi tu nota de voz, pero no pude transcribirla. Puedes reenviarla o escribir tu mensaje en texto.",
@@ -157,6 +178,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
       const otp = extractOtp(text);
       if (otp) {
+        trackOtpMessage();
         const result = await consumeBridgeOtp(fastify, {
           from,
           otp,
@@ -189,6 +211,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         try {
           await sendWhatsappTypingIndicator(incomingMessageId);
         } catch (err) {
+          trackOperationalError();
           fastify.log.warn(
             { err, incomingMessageId, from },
             "WhatsApp typing indicator failed"
@@ -203,6 +226,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       if (!agentReply.handled || !agentReply.reply.trim()) {
         continue;
       }
+      trackAgentReplyGenerated();
 
       let audioSent = false;
       const shouldSendAudio =
@@ -223,6 +247,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
             incomingMessageId
           );
         } catch (err) {
+          trackOperationalError();
           fastify.log.warn({ err, from, incomingMessageId }, "ElevenLabs audio generation failed");
         }
       }

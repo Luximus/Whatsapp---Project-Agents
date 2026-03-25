@@ -100,8 +100,14 @@ Fuentes de conocimiento:
 - Ese contenido se guarda en cache como diccionario por proyecto (`URL -> texto + enlaces`) y se usa para grounding de respuestas.
 
 Transferencia a humano:
-- Palabras como `agente humano`, `asesor`, `contacto`, `soporte humano`.
-- Envia resumen al numero `AGENT_HUMAN_TRANSFER_NUMBER_E164`.
+- Valeria mantiene la conversacion en todo momento.
+- Solo se notifica al agente humano cuando el usuario solicita agendar reunion con especialista.
+- Se envian datos de contacto + dia/fecha/hora + motivo al numero `AGENT_HUMAN_TRANSFER_NUMBER_E164`.
+
+Reporte diario:
+- El sistema genera un reporte diario a las `23:59` (cron) con metricas operativas.
+- Envia PDF por correo a `REPORT_EMAIL_TO` usando SMTP configurado.
+- Al numero del agente humano se envia solo estado del reporte (enviado / fallo).
 
 ## Variables de entorno
 
@@ -134,6 +140,16 @@ Config de agentes:
 - `ELEVENLABS_OUTPUT_FORMAT`
 - `WHATSAPP_AUDIO_REPLY_ENABLED`
 - `WHATSAPP_AUDIO_REPLY_INCLUDE_TEXT`
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_SECURE`
+- `SMTP_USER`
+- `SMTP_PASS`
+- `SMTP_FROM`
+- `REPORT_EMAIL_TO`
+- `REPORT_CRON`
+- `REPORT_TIMEZONE`
+- `REPORT_LOGO_URL`
 
 Compatibilidad legacy:
 - `DATABASE_URL` y Firebase se mantienen para rutas antiguas.

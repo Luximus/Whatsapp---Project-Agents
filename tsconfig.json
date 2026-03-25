@@ -4,6 +4,7 @@
     "lib": ["ES2022"],
     "module": "ES2022",
     "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
     "outDir": "dist",
     "rootDir": ".",
     "strict": true,
@@ -12,5 +13,5 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "scripts/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.d.ts", "scripts/**/*.ts"]
 }

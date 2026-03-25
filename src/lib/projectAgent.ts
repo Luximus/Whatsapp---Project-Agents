@@ -6,6 +6,7 @@ import {
   type AgentScriptRuntimeContext
 } from "../agents/repository.js";
 import { env } from "../env.js";
+import { trackMeetingScheduled, trackOpenAIFailure, trackOpenAIUsage, trackOperationalError } from "./reporting.js";
 import { scrapePageTextFromHtml } from "./scraping/textWeb.js";
 import { normalizeE164, sendWhatsappText } from "./whatsapp.js";
 
@@ -25,12 +26,20 @@ type LeadProfile = {
   need: string | null;
 };
 
+type MeetingProfile = {
+  meetingDay: string | null;
+  meetingDate: string | null;
+  meetingTime: string | null;
+  meetingReason: string | null;
+};
+
 type ConversationState = {
   projectKey: string;
   projectConfirmed: boolean;
   history: Array<{ role: "user" | "assistant"; text: string; at: number }>;
   lead: LeadProfile;
-  awaitingHumanTransferData: boolean;
+  meeting: MeetingProfile;
+  awaitingMeetingData: boolean;
   lastReplyStyle: ReplyStyle | null;
 };
 
@@ -124,14 +133,18 @@ const HUMAN_KEYWORDS = [
   "persona real"
 ];
 
-const OUTSIDE_KEYWORDS = [
-  "otro servicio",
-  "otra cosa",
-  "diferente",
-  "ninguno",
-  "ninguna",
-  "no aplica",
-  "no es eso"
+const MEETING_KEYWORDS = [
+  "agendar reunion",
+  "agendar reunión",
+  "agendar",
+  "reunion",
+  "reunión",
+  "meeting",
+  "agenda",
+  "demo",
+  "cita",
+  "llamada",
+  "videollamada"
 ];
 
 const ASSISTANT_NAME = "Valeria";
@@ -173,8 +186,7 @@ const LEAD_REQUIRED_FIELDS: Array<keyof LeadProfile> = [
   "firstName",
   "lastName",
   "company",
-  "email",
-  "need"
+  "email"
 ];
 
 const LEAD_FIELD_QUESTIONS: Record<keyof LeadProfile, string> = {
@@ -185,12 +197,25 @@ const LEAD_FIELD_QUESTIONS: Record<keyof LeadProfile, string> = {
   need: "Que necesitas exactamente o que quieres resolver?"
 };
 
+const MEETING_REQUIRED_FIELDS: Array<keyof MeetingProfile> = [
+  "meetingDay",
+  "meetingDate",
+  "meetingReason"
+];
+
+const MEETING_FIELD_QUESTIONS: Record<keyof MeetingProfile, string> = {
+  meetingDay: "Que dia prefieres para la reunion? (ejemplo: martes)",
+  meetingDate: "Que fecha prefieres? (ejemplo: 2026-03-25 o 25/03/2026)",
+  meetingTime: "Si tienes una hora preferida, compartela (opcional).",
+  meetingReason: "Cual es el motivo puntual de la reunion?"
+};
+
 type RoutingDecision =
   | { kind: "support_project"; projectKey: string }
   | { kind: "support_project_unknown" }
   | { kind: "sales_project"; projectKey: string }
   | { kind: "sales_offer_catalog" }
-  | { kind: "outside_transfer" }
+  | { kind: "meeting_interest" }
   | { kind: "human_scope_check" }
   | { kind: "general" };
 
@@ -232,6 +257,15 @@ function emptyLeadProfile(): LeadProfile {
     company: null,
     email: null,
     need: null
+  };
+}
+
+function emptyMeetingProfile(): MeetingProfile {
+  return {
+    meetingDay: null,
+    meetingDate: null,
+    meetingTime: null,
+    meetingReason: null
   };
 }
 
@@ -311,6 +345,51 @@ function updateLeadProfileFromMessage(profile: LeadProfile, message: string): Le
 
 function getMissingLeadFields(profile: LeadProfile) {
   return LEAD_REQUIRED_FIELDS.filter((field) => !sanitizeValue(profile[field], 220));
+}
+
+function updateMeetingProfileFromMessage(profile: MeetingProfile, message: string, lead: LeadProfile): MeetingProfile {
+  const next: MeetingProfile = { ...profile };
+  const text = String(message ?? "");
+
+  const dayMatch = text.match(
+    /\b(lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)\b/i
+  );
+  if (dayMatch?.[1]) {
+    next.meetingDay = titleCase(dayMatch[1]);
+  }
+
+  const dateMatch = text.match(/\b(\d{4}-\d{2}-\d{2}|\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?)\b/);
+  if (dateMatch?.[1]) {
+    next.meetingDate = sanitizeValue(dateMatch[1], 40);
+  }
+
+  const timeMatch = text.match(/\b([01]?\d|2[0-3])[:.]([0-5]\d)\s*(am|pm)?\b/i);
+  if (timeMatch) {
+    const suffix = timeMatch[3] ? ` ${timeMatch[3].toUpperCase()}` : "";
+    next.meetingTime = `${timeMatch[1]}:${timeMatch[2]}${suffix}`;
+  }
+
+  const reasonMatch = text.match(/(?:motivo|razon|razón)\s*[:\-]\s*([^\n.]+)/i);
+  if (reasonMatch?.[1]) {
+    next.meetingReason = sanitizeValue(reasonMatch[1], 220);
+  }
+
+  if (!next.meetingReason) {
+    next.meetingReason = sanitizeValue(lead.need, 220);
+  }
+
+  return next;
+}
+
+function getMissingMeetingFields(state: ConversationState) {
+  const missingLead = getMissingLeadFields(state.lead);
+  const missingMeeting = MEETING_REQUIRED_FIELDS.filter(
+    (field) => !sanitizeValue(state.meeting[field], 220)
+  );
+  return {
+    missingLead,
+    missingMeeting
+  };
 }
 
 function firstOfficialSource(projectKey: string) {
@@ -444,20 +523,21 @@ function formatSupportUnknownReply(plan: ReplyPlan) {
 
 function formatHumanScopeCheckReply(plan: ReplyPlan) {
   if (plan.style === "question") {
-    return "Si es soporte o compra de LuxiSoft, NAVAI o LuxiChat te redirijo al especialista. Si es otro tema, te transfiero con humano. Cual de los dos casos aplica?";
+    return "Puedo atenderte directamente por este canal. Si quieres que un especialista humano te contacte, puedo agendar una reunion. Te la agendo?";
   }
 
   if (plan.style === "steps") {
     return [
-      "1. Si tu consulta es de LuxiSoft, NAVAI o LuxiChat, te redirijo al especialista.",
-      "2. Si es otra necesidad, te transfiero con un agente humano."
+      "1. Te atiendo directamente por este canal para dudas de servicios.",
+      "2. Si quieres contacto humano, te agendo reunion con especialista.",
+      "3. Te pedire nombre, empresa, correo, fecha/dia y motivo."
     ].join("\n");
   }
 
   return [
-    "Antes de transferirte, confirmo algo:",
-    "Si es soporte o compra de LuxiSoft, NAVAI o LuxiChat, te redirijo de una vez al especialista.",
-    "Si es una necesidad diferente, te transfiero con un agente humano."
+    "Puedo atenderte directamente por este canal.",
+    "Si prefieres contacto humano, con gusto te agendo una reunion con especialista.",
+    "Para eso te pedire nombre, empresa, correo, fecha/dia y motivo."
   ].join("\n");
 }
 
@@ -497,46 +577,54 @@ function formatAssistantPrivacyReply() {
   return `Por politica interna solo puedo compartir mi nombre (${ASSISTANT_NAME}) y que trabajo en ${ASSISTANT_COMPANY}. Si quieres, te ayudo con informacion oficial de la empresa.`;
 }
 
-function buildLeadCollectionPrompt(profile: LeadProfile, firstInteraction: boolean, plan: ReplyPlan) {
-  const missing = getMissingLeadFields(profile);
-  const nextField = missing[0];
-  if (!nextField) return null;
+function buildMeetingCollectionPrompt(state: ConversationState, firstInteraction: boolean, plan: ReplyPlan) {
+  const { missingLead, missingMeeting } = getMissingMeetingFields(state);
+  const nextLead = missingLead[0] ?? null;
+  const nextMeeting = missingMeeting[0] ?? null;
+  const nextQuestion = nextLead ? LEAD_FIELD_QUESTIONS[nextLead] : nextMeeting ? MEETING_FIELD_QUESTIONS[nextMeeting] : null;
+  if (!nextQuestion) return null;
 
   if (firstInteraction) {
     if (plan.style === "steps") {
       return [
-        "Para transferirte con un agente humano necesito estos datos:",
+        "Perfecto, para agendar reunion con un especialista humano necesito:",
         "1. nombres y apellidos",
         "2. empresa",
         "3. correo",
-        "4. necesidad puntual",
-        LEAD_FIELD_QUESTIONS[nextField]
+        "4. dia y fecha de reunion",
+        "5. motivo de la reunion",
+        nextQuestion
       ].join("\n");
     }
 
     return [
-      "Para transferirte con un agente humano necesito registrar estos datos:",
+      "Perfecto, para agendar reunion con un especialista humano necesito estos datos:",
       "- nombres",
       "- apellidos",
       "- empresa",
       "- correo",
-      "- necesidad puntual",
-      LEAD_FIELD_QUESTIONS[nextField]
+      "- dia y fecha de reunion",
+      "- motivo de la reunion",
+      nextQuestion
     ].join("\n");
   }
 
-  return LEAD_FIELD_QUESTIONS[nextField];
+  return nextQuestion;
 }
 
 function classifyRouting(message: string, state: ConversationState): RoutingDecision {
   const support = containsKeyword(message, SUPPORT_KEYWORDS);
   const buy = containsKeyword(message, BUY_KEYWORDS);
   const human = containsKeyword(message, HUMAN_KEYWORDS);
-  const outside = containsKeyword(message, OUTSIDE_KEYWORDS);
+  const meeting = containsKeyword(message, MEETING_KEYWORDS);
 
   const mentionedProject = ensureKnownProjectKey(detectProjectByText(message));
   const currentProject = ensureKnownProjectKey(state.projectKey);
   const contextProject = state.projectConfirmed ? currentProject : null;
+
+  if (meeting) {
+    return { kind: "meeting_interest" };
+  }
 
   if (support) {
     const target = mentionedProject ?? contextProject;
@@ -547,12 +635,10 @@ function classifyRouting(message: string, state: ConversationState): RoutingDeci
   if (buy) {
     const target = mentionedProject ?? contextProject;
     if (target) return { kind: "sales_project", projectKey: target };
-    if (outside) return { kind: "outside_transfer" };
     return { kind: "sales_offer_catalog" };
   }
 
   if (human) {
-    if (outside) return { kind: "outside_transfer" };
     return { kind: "human_scope_check" };
   }
 
@@ -921,7 +1007,7 @@ function buildNoGroundingReply(projectKey: string, plan: ReplyPlan) {
     lines.push(...sources.slice(0, plan.linkPolicy === "one_link_if_helpful" ? 1 : 3));
   }
 
-  lines.push("Si quieres, te propongo el siguiente paso comercial o te paso con un agente humano.");
+  lines.push("Si quieres, te propongo el siguiente paso comercial o agendamos una reunion con especialista.");
   return lines.join("\n");
 }
 
@@ -945,6 +1031,8 @@ async function openaiResponsesCreate(payload: Record<string, unknown>) {
     throw new Error("openai_not_configured");
   }
 
+  const requestModel = String(payload.model ?? "").trim() || "unknown_model";
+
   const response = await fetch(`${resolveOpenAIBaseUrl()}/responses`, {
     method: "POST",
     headers: {
@@ -965,11 +1053,18 @@ async function openaiResponsesCreate(payload: Record<string, unknown>) {
   }
 
   if (!response.ok) {
+    trackOpenAIFailure();
+    trackOperationalError();
     throw Object.assign(new Error("openai_responses_failed"), {
       statusCode: response.status,
       details: parsed
     });
   }
+
+  trackOpenAIUsage({
+    model: String(parsed?.model ?? requestModel).trim() || requestModel,
+    usage: parsed?.usage ?? null
+  });
 
   return parsed;
 }
@@ -1019,7 +1114,7 @@ function buildHistoryBlock(history: ConversationState["history"]) {
     .join("\n");
 }
 
-function buildHumanSummary(state: ConversationState) {
+function buildMeetingSummary(state: ConversationState, phoneE164: string) {
   const recentUserMessages = state.history
     .filter((item) => item.role === "user")
     .slice(-4)
@@ -1027,10 +1122,15 @@ function buildHumanSummary(state: ConversationState) {
     .join("\n");
 
   return [
+    "[Agenda reunion - LuxiSoft]",
     `Nombre: ${state.lead.firstName ?? "(sin dato)"} ${state.lead.lastName ?? ""}`.trim(),
     `Empresa: ${state.lead.company ?? "(sin dato)"}`,
     `Correo: ${state.lead.email ?? "(sin dato)"}`,
-    `Necesidad: ${state.lead.need ?? "(sin dato)"}`,
+    `Telefono WhatsApp: ${phoneE164}`,
+    `Dia preferido: ${state.meeting.meetingDay ?? "(sin dato)"}`,
+    `Fecha preferida: ${state.meeting.meetingDate ?? "(sin dato)"}`,
+    `Hora preferida: ${state.meeting.meetingTime ?? "(sin dato)"}`,
+    `Motivo reunion: ${state.meeting.meetingReason ?? state.lead.need ?? "(sin dato)"}`,
     "Mensajes recientes del usuario:",
     recentUserMessages || "- Sin mensajes."
   ].join("\n");
@@ -1049,7 +1149,8 @@ function getConversation(phoneE164: string, projectKey: string) {
     projectConfirmed: false,
     history: [],
     lead: emptyLeadProfile(),
-    awaitingHumanTransferData: false,
+    meeting: emptyMeetingProfile(),
+    awaitingMeetingData: false,
     lastReplyStyle: null
   };
   conversations.set(phoneE164, initial);
@@ -1137,7 +1238,7 @@ async function runProjectAgent(input: {
     "Evita tono de inseguridad o frases ambiguas; habla con claridad.",
     "Si necesitas mas contexto del sitio, usa los tools disponibles antes de responder.",
     "Si compartes enlaces, usa URL completa oficial.",
-    'Siempre invita a escalar con la frase exacta: "Si quieres, te paso con un agente humano."'
+    "Si el usuario pide contacto humano, ofrece agendar reunion con especialista."
   ].join("\n\n");
 
   const userPrompt = [
@@ -1230,7 +1331,7 @@ function isDirectChild(parentDir: string, childDir: string) {
   return parent === childParent;
 }
 
-async function transferToHuman(input: {
+async function notifyHumanMeeting(input: {
   projectKey: string;
   phoneE164: string;
   summary: string;
@@ -1245,7 +1346,7 @@ async function transferToHuman(input: {
   }
 
   const payload = [
-    "[Bridge -> humano] Transferencia solicitada",
+    "[Bridge -> humano] Solicitud de reunion",
     `Proyecto sugerido: ${input.projectKey}`,
     `Usuario: ${input.phoneE164}`,
     "Resumen:",
@@ -1259,7 +1360,7 @@ async function transferToHuman(input: {
     return {
       ok: false,
       sent: false,
-      error: String(err?.message ?? "human_transfer_failed")
+      error: String(err?.message ?? "human_meeting_notify_failed")
     };
   }
 }
@@ -1322,7 +1423,7 @@ async function runOrchestrator(input: {
     "Para consultas de negocio/servicios/productos debes usar delegate_project_agent.",
     "No agregues datos tecnicos/comerciales que no vengan del subagente.",
     "Tu respuesta final debe basarse solo en informacion confirmada por el subagente.",
-    "No llames transferencia humana desde este flujo; la transferencia se gestiona por validacion previa del sistema.",
+    "No transfieras automaticamente a humano. Si aplica, propone agendar reunion con especialista.",
     "No inventes informacion tecnica no confirmada por subagente."
   ].join("\n\n");
 
@@ -1412,16 +1513,16 @@ async function runOrchestrator(input: {
   };
 }
 
-async function runHumanTransferQualification(input: {
+async function runMeetingQualification(input: {
   state: ConversationState;
   phoneE164: string;
   firstInteraction: boolean;
   replyPlan: ReplyPlan;
 }) {
-  const missing = getMissingLeadFields(input.state.lead);
-  if (missing.length > 0) {
-    const prompt = buildLeadCollectionPrompt(input.state.lead, input.firstInteraction, input.replyPlan);
-    const rawReply = prompt ?? "Necesito un dato adicional para continuar con la transferencia.";
+  const missing = getMissingMeetingFields(input.state);
+  if (missing.missingLead.length > 0 || missing.missingMeeting.length > 0) {
+    const prompt = buildMeetingCollectionPrompt(input.state, input.firstInteraction, input.replyPlan);
+    const rawReply = prompt ?? "Necesito un dato adicional para continuar con la agenda de reunion.";
     const reply = finalizeAssistantReply(input.state, rawReply, input.replyPlan);
     appendHistory(input.state, "assistant", reply);
     return {
@@ -1433,18 +1534,31 @@ async function runHumanTransferQualification(input: {
     } as AgentReply;
   }
 
-  const transfer = await transferToHuman({
+  const transfer = await notifyHumanMeeting({
     projectKey: input.state.projectKey,
     phoneE164: input.phoneE164,
-    summary: buildHumanSummary(input.state)
+    summary: buildMeetingSummary(input.state, input.phoneE164)
   });
-  input.state.awaitingHumanTransferData = false;
+  input.state.awaitingMeetingData = false;
 
   const rawReply = transfer.sent
-    ? "Perfecto, ya transferi tu caso a un agente humano con tus datos y resumen. Te contactaran pronto."
-    : "Intente transferir tu caso a un agente humano, pero fallo el envio en este momento. Intenta de nuevo en unos minutos.";
+    ? "Perfecto, ya agende tu solicitud de reunion con especialista. Te contactaran con los datos registrados."
+    : "Registre tu solicitud, pero fallo el envio al agente humano en este momento. Intenta de nuevo en unos minutos.";
   const reply = finalizeAssistantReply(input.state, rawReply, input.replyPlan);
   appendHistory(input.state, "assistant", reply);
+
+  trackMeetingScheduled({
+    projectKey: input.state.projectKey,
+    userPhone: input.phoneE164,
+    contactName: `${input.state.lead.firstName ?? ""} ${input.state.lead.lastName ?? ""}`.trim(),
+    contactEmail: input.state.lead.email ?? "",
+    company: input.state.lead.company ?? "",
+    meetingDay: input.state.meeting.meetingDay ?? "",
+    meetingDate: input.state.meeting.meetingDate ?? "",
+    meetingTime: input.state.meeting.meetingTime,
+    reason: input.state.meeting.meetingReason ?? input.state.lead.need ?? "",
+    notifiedHuman: transfer.sent
+  });
 
   return {
     handled: true,
@@ -1522,11 +1636,12 @@ export async function handleProjectAgentMessage(input: {
   }
   appendHistory(state, "user", message);
   state.lead = updateLeadProfileFromMessage(state.lead, message);
+  state.meeting = updateMeetingProfileFromMessage(state.meeting, message, state.lead);
   const replyPlan = buildReplyPlan(state, message);
 
   try {
-    if (state.awaitingHumanTransferData) {
-      return await runHumanTransferQualification({
+    if (state.awaitingMeetingData) {
+      return await runMeetingQualification({
         state,
         phoneE164: phone,
         firstInteraction: false,
@@ -1618,9 +1733,9 @@ export async function handleProjectAgentMessage(input: {
       };
     }
 
-    if (decision.kind === "outside_transfer") {
-      state.awaitingHumanTransferData = true;
-      return await runHumanTransferQualification({
+    if (decision.kind === "meeting_interest") {
+      state.awaitingMeetingData = true;
+      return await runMeetingQualification({
         state,
         phoneE164: phone,
         firstInteraction: true,

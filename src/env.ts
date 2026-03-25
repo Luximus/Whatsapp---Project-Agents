@@ -188,7 +188,19 @@ const envSchema = z.object({
   ELEVENLABS_MODEL_ID: z.string().optional().default("eleven_multilingual_v2"),
   ELEVENLABS_OUTPUT_FORMAT: z.string().optional().default("mp3_44100_128"),
   WHATSAPP_AUDIO_REPLY_ENABLED: z.string().optional().default("false"),
-  WHATSAPP_AUDIO_REPLY_INCLUDE_TEXT: z.string().optional().default("true")
+  WHATSAPP_AUDIO_REPLY_INCLUDE_TEXT: z.string().optional().default("true"),
+
+  SMTP_HOST: z.string().optional().default(""),
+  SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(465),
+  SMTP_SECURE: z.string().optional().default("true"),
+  SMTP_USER: z.string().optional().default(""),
+  SMTP_PASS: z.string().optional().default(""),
+  SMTP_FROM: z.string().optional().default(""),
+
+  REPORT_EMAIL_TO: z.string().optional().default("reports@luxisoft.com"),
+  REPORT_CRON: z.string().optional().default("59 23 * * *"),
+  REPORT_TIMEZONE: z.string().optional().default("America/Bogota"),
+  REPORT_LOGO_URL: z.string().optional().default("https://luxisoft.com/logo_white.png")
 });
 
 const raw = envSchema.parse(process.env);
@@ -212,5 +224,15 @@ export const env = {
   elevenlabsModelId: raw.ELEVENLABS_MODEL_ID.trim() || "eleven_multilingual_v2",
   elevenlabsOutputFormat: raw.ELEVENLABS_OUTPUT_FORMAT.trim() || "mp3_44100_128",
   whatsappAudioReplyEnabled: parseBooleanFlag(raw.WHATSAPP_AUDIO_REPLY_ENABLED, false),
-  whatsappAudioReplyIncludeText: parseBooleanFlag(raw.WHATSAPP_AUDIO_REPLY_INCLUDE_TEXT, true)
+  whatsappAudioReplyIncludeText: parseBooleanFlag(raw.WHATSAPP_AUDIO_REPLY_INCLUDE_TEXT, true),
+  smtpHost: raw.SMTP_HOST.trim(),
+  smtpPort: raw.SMTP_PORT,
+  smtpSecure: parseBooleanFlag(raw.SMTP_SECURE, true),
+  smtpUser: raw.SMTP_USER.trim(),
+  smtpPass: raw.SMTP_PASS.trim(),
+  smtpFrom: raw.SMTP_FROM.trim(),
+  reportEmailTo: raw.REPORT_EMAIL_TO.trim() || "reports@luxisoft.com",
+  reportCron: raw.REPORT_CRON.trim() || "59 23 * * *",
+  reportTimezone: raw.REPORT_TIMEZONE.trim() || "America/Bogota",
+  reportLogoUrl: raw.REPORT_LOGO_URL.trim() || "https://luxisoft.com/logo_white.png"
 };
