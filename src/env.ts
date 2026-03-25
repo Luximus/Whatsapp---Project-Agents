@@ -23,32 +23,6 @@ function csvToArray(value: string | undefined) {
     .filter(Boolean);
 }
 
-function parseProjectDatabases(value: string) {
-  const raw = value.trim();
-  if (!raw) return {} as Record<string, string>;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error("invalid_project_databases_json");
-  }
-
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("invalid_project_databases_json");
-  }
-
-  const output: Record<string, string> = {};
-  for (const [key, dbUrl] of Object.entries(parsed as Record<string, unknown>)) {
-    if (typeof dbUrl !== "string") continue;
-    const normalizedKey = key.trim().toLowerCase();
-    const normalizedUrl = dbUrl.trim();
-    if (!normalizedKey || !normalizedUrl) continue;
-    output[normalizedKey] = normalizedUrl;
-  }
-  return output;
-}
-
 export type BridgeProjectConfig = {
   apiKey: string;
   callbackUrl: string | null;
@@ -179,7 +153,6 @@ const envSchema = z.object({
   WHATSAPP_APP_SECRET: z.string().optional().default(""),
 
   WHATSAPP_DEFAULT_PROJECT: z.string().optional().default("luxichat"),
-  PROJECT_DATABASES_JSON: z.string().optional().default("{}"),
   AGENTS_DIR: z.string().optional().default("./agents"),
   ORCHESTRATOR_AGENT_DIR: z.string().optional().default("./agents/luxisoft"),
   AGENT_PROJECT_SOURCES_JSON: z.string().optional().default("{}"),
@@ -207,7 +180,6 @@ export const env = {
   ...raw,
   corsOrigins: csvToArray(raw.CORS_ORIGIN),
   defaultProject: raw.WHATSAPP_DEFAULT_PROJECT.trim().toLowerCase() || "luxichat",
-  projectDatabases: parseProjectDatabases(raw.PROJECT_DATABASES_JSON),
   bridgeProjects: parseBridgeProjects(raw.BRIDGE_PROJECTS_JSON),
   agentProjectSources: parseAgentProjectSources(raw.AGENT_PROJECT_SOURCES_JSON),
   humanTransferNumber: raw.AGENT_HUMAN_TRANSFER_NUMBER_E164.trim(),

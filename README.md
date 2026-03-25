@@ -94,6 +94,8 @@ Resolucion de proyecto:
 Fuentes de conocimiento:
 - Agentes locales en `agents/<project>`.
 - Fuentes extra en `AGENT_PROJECT_SOURCES_JSON` (URLs o rutas locales).
+- El backend hace crawling por dominio oficial y extrae texto limpio por URL (sin HTML) para cada proyecto.
+- Ese contenido se guarda en cache como diccionario por proyecto (`URL -> texto + enlaces`) y se usa para grounding de respuestas.
 
 Transferencia a humano:
 - Palabras como `agente humano`, `asesor`, `contacto`, `soporte humano`.
@@ -125,7 +127,7 @@ Config de agentes:
 - `OPENAI_AGENT_MAX_TOOL_STEPS`
 
 Compatibilidad legacy:
-- `DATABASE_URL`, `PROJECT_DATABASES_JSON`, Firebase se mantienen para rutas antiguas.
+- `DATABASE_URL` y Firebase se mantienen para rutas antiguas.
 
 ### Ejemplo `BRIDGE_PROJECTS_JSON`
 

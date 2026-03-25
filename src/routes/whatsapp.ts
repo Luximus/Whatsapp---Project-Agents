@@ -462,7 +462,7 @@ export const whatsappRoutes: FastifyPluginAsync = async (fastify) => {
         throw Object.assign(new Error("handle_in_use"), { statusCode: 409 });
       }
 
-      const { rows: updatedRows } = await fastify.pg.query(
+      await fastify.pg.query(
         `update whatsapp_accounts
          set name = $1,
              handle = $2,

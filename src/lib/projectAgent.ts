@@ -6,6 +6,7 @@ import {
   type AgentScriptRuntimeContext
 } from "../agents/repository.js";
 import { env } from "../env.js";
+import { scrapePageTextFromHtml } from "./scraping/textWeb.js";
 import { normalizeE164, sendWhatsappText } from "./whatsapp.js";
 
 type AgentReply = {
@@ -32,9 +33,30 @@ type ConversationState = {
   awaitingHumanTransferData: boolean;
 };
 
+type ProjectKnowledgeSource = {
+  sourceUrl: string;
+  text: string;
+  snippets: string[];
+  links: string[];
+};
+
+type ProjectKnowledgeDictionary = {
+  projectKey: string;
+  sources: Record<string, ProjectKnowledgeSource>;
+};
+
 type CachedKnowledge = {
   loadedAt: number;
   text: string;
+  dictionary: ProjectKnowledgeDictionary;
+};
+
+type CrawledKnowledgePage = {
+  sourceUrl: string;
+  raw: string;
+  text: string;
+  snippets: string[];
+  links: string[];
 };
 
 const knowledgeCache = new Map<string, CachedKnowledge>();
@@ -48,6 +70,7 @@ const MAX_GROUNDING_SNIPPETS = 6;
 const MAX_CRAWL_PAGES_PER_SOURCE = 6;
 const MAX_CRAWL_DEPTH = 1;
 const MAX_PAGE_TEXT_CHARS = 10_000;
+const MAX_PAGE_SNIPPETS = 250;
 
 const DEFAULT_PROJECT_SOURCES: Record<string, string[]> = {
   luxisoft: ["https://luxisoft.com/en/"],
@@ -442,13 +465,23 @@ async function fetchRemotePage(url: string) {
     const raw = await response.text().catch(() => "");
     if (!raw) return null;
     const sourceUrl = response.url || url;
-    const normalized = stripHtml(raw);
+    const snippets = scrapePageTextFromHtml(raw, {
+      dedupe: true,
+      minLength: 2,
+      onlyVisible: true,
+      includeLinkText: false,
+      excludeUrlLikeText: true
+    }).slice(0, MAX_PAGE_SNIPPETS);
+    const normalized = snippets.join("\n").slice(0, MAX_PAGE_TEXT_CHARS).trim();
     if (!normalized) return null;
+    const links = extractSourceLinks(raw, sourceUrl);
 
     return {
       sourceUrl,
       raw,
-      text: normalized
+      text: normalized,
+      snippets,
+      links
     };
   } catch {
     return null;
@@ -460,7 +493,7 @@ async function fetchRemotePage(url: string) {
 async function fetchRemoteSource(url: string) {
   const queue: Array<{ url: string; depth: number }> = [{ url, depth: 0 }];
   const visited = new Set<string>();
-  const sections: string[] = [];
+  const pages: CrawledKnowledgePage[] = [];
 
   while (queue.length > 0 && visited.size < MAX_CRAWL_PAGES_PER_SOURCE) {
     const current = queue.shift()!;
@@ -471,14 +504,7 @@ async function fetchRemoteSource(url: string) {
     const page = await fetchRemotePage(current.url);
     if (!page) continue;
 
-    sections.push(`[source:${page.sourceUrl}]`);
-    sections.push(page.text.slice(0, MAX_PAGE_TEXT_CHARS));
-
-    const links = extractSourceLinks(page.raw, page.sourceUrl);
-    if (links.length) {
-      sections.push(`[source_links:${page.sourceUrl}]`);
-      sections.push(...links.map((item) => `- ${item}`));
-    }
+    pages.push(page);
 
     if (current.depth >= MAX_CRAWL_DEPTH) continue;
 
@@ -495,7 +521,64 @@ async function fetchRemoteSource(url: string) {
     }
   }
 
-  return sections.join("\n");
+  return pages;
+}
+
+function buildProjectKnowledgeDictionary(projectKey: string, pages: CrawledKnowledgePage[]) {
+  const sources: Record<string, ProjectKnowledgeSource> = {};
+
+  for (const page of pages) {
+    const key = normalizeComparableUrl(page.sourceUrl);
+    const previous = sources[key];
+    if (!previous) {
+      sources[key] = {
+        sourceUrl: page.sourceUrl,
+        text: page.text.slice(0, MAX_PAGE_TEXT_CHARS),
+        snippets: page.snippets,
+        links: page.links.slice(0, MAX_SOURCE_LINKS_PER_PAGE)
+      };
+      continue;
+    }
+
+    const mergedSnippets = Array.from(new Set([...previous.snippets, ...page.snippets])).slice(
+      0,
+      MAX_PAGE_SNIPPETS
+    );
+    const mergedLinks = Array.from(new Set([...previous.links, ...page.links])).slice(
+      0,
+      MAX_SOURCE_LINKS_PER_PAGE
+    );
+
+    sources[key] = {
+      sourceUrl: previous.sourceUrl,
+      snippets: mergedSnippets,
+      links: mergedLinks,
+      text: mergedSnippets.join("\n").slice(0, MAX_PAGE_TEXT_CHARS)
+    };
+  }
+
+  return {
+    projectKey,
+    sources
+  } as ProjectKnowledgeDictionary;
+}
+
+function knowledgeTextFromDictionary(dictionary: ProjectKnowledgeDictionary) {
+  const sections: string[] = [];
+  const ordered = Object.values(dictionary.sources).sort((a, b) =>
+    a.sourceUrl.localeCompare(b.sourceUrl)
+  );
+
+  for (const source of ordered) {
+    sections.push(`[source:${source.sourceUrl}]`);
+    sections.push(source.text.slice(0, MAX_PAGE_TEXT_CHARS));
+    if (source.links.length) {
+      sections.push(`[source_links:${source.sourceUrl}]`);
+      sections.push(...source.links.map((item) => `- ${item}`));
+    }
+  }
+
+  return sections.join("\n").trim();
 }
 
 function resolveSources(projectKey: string) {
@@ -512,19 +595,21 @@ async function loadProjectKnowledge(projectKey: string) {
   const now = Date.now();
   const cached = knowledgeCache.get(projectKey);
   if (cached && now - cached.loadedAt <= KNOWLEDGE_CACHE_TTL_MS) {
-    return cached.text;
+    return cached;
   }
 
-  const pieces: string[] = [];
+  const pages: CrawledKnowledgePage[] = [];
   const sources = resolveWebSources(projectKey);
   for (const source of sources) {
     const loaded = await fetchRemoteSource(source);
-    if (loaded) pieces.push(loaded);
+    if (loaded.length) pages.push(...loaded);
   }
 
-  const knowledge = pieces.join("\n\n").trim();
-  knowledgeCache.set(projectKey, { loadedAt: now, text: knowledge });
-  return knowledge;
+  const dictionary = buildProjectKnowledgeDictionary(projectKey, pages);
+  const knowledge = knowledgeTextFromDictionary(dictionary);
+  const loaded = { loadedAt: now, text: knowledge, dictionary };
+  knowledgeCache.set(projectKey, loaded);
+  return loaded;
 }
 
 function pickRelevantSnippets(knowledge: string, question: string) {
@@ -556,9 +641,42 @@ function pickRelevantSnippets(knowledge: string, question: string) {
     .map((item) => item.paragraph.slice(0, 320));
 }
 
+function pickRelevantSnippetsFromDictionary(dictionary: ProjectKnowledgeDictionary, question: string) {
+  const queryTokens = new Set(tokenize(question));
+  if (!queryTokens.size) return [] as string[];
+
+  const candidates = Object.values(dictionary.sources)
+    .flatMap((source) =>
+      source.snippets.map((snippet) => ({
+        sourceUrl: source.sourceUrl,
+        snippet
+      }))
+    )
+    .filter((item) => item.snippet.length >= 30)
+    .slice(0, 2500);
+
+  return candidates
+    .map((item) => {
+      const score = tokenize(item.snippet).reduce(
+        (acc, token) => (queryTokens.has(token) ? acc + 1 : acc),
+        0
+      );
+      return { ...item, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return b.snippet.length - a.snippet.length;
+    })
+    .slice(0, MAX_GROUNDING_SNIPPETS)
+    .map((item) => `[${item.sourceUrl}] ${item.snippet.slice(0, 280)}`);
+}
+
 async function searchKnowledge(projectKey: string, query: string) {
   const knowledge = await loadProjectKnowledge(projectKey);
-  return pickRelevantSnippets(knowledge, query);
+  const fromDictionary = pickRelevantSnippetsFromDictionary(knowledge.dictionary, query);
+  if (fromDictionary.length) return fromDictionary;
+  return pickRelevantSnippets(knowledge.text, query);
 }
 
 function buildGroundingBlock(snippets: string[]) {
