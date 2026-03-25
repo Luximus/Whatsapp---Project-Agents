@@ -186,6 +186,13 @@ pm2 start npm --name whatsapp-bridge -- start
 pm2 save
 ```
 
+Reiniciar servicio (sin crear procesos duplicados):
+
+```bash
+pm2 restart whatsapp-bridge --update-env
+pm2 save
+```
+
 ## Actualizacion rapida en servidor
 
 Crear comando global para actualizar/reconstruir/reiniciar:
