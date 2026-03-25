@@ -45,6 +45,9 @@ const MAX_HISTORY_ITEMS = 12;
 const MAX_RESPONSE_CHARS = 1400;
 const MAX_SOURCE_LINKS_PER_PAGE = 20;
 const MAX_GROUNDING_SNIPPETS = 6;
+const MAX_CRAWL_PAGES_PER_SOURCE = 6;
+const MAX_CRAWL_DEPTH = 1;
+const MAX_PAGE_TEXT_CHARS = 10_000;
 
 const DEFAULT_PROJECT_SOURCES: Record<string, string[]> = {
   luxisoft: ["https://luxisoft.com/en/"],
@@ -353,8 +356,26 @@ function normalizeHttpUrl(urlLike: string, baseUrl: string) {
   }
 }
 
-function extractSourceLinks(rawHtml: string, sourceUrl: string) {
-  const links: string[] = [];
+function normalizeHost(host: string) {
+  return host.toLowerCase().replace(/^www\./, "");
+}
+
+function isSameDomain(left: string, right: string) {
+  return normalizeHost(left) === normalizeHost(right);
+}
+
+function normalizeComparableUrl(value: string) {
+  try {
+    const parsed = new URL(value);
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return value;
+  }
+}
+
+function extractAbsoluteAnchorLinks(rawHtml: string, sourceUrl: string) {
+  const links: Array<{ href: string; label: string | null }> = [];
   const unique = new Set<string>();
   const anchorRegex = /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
 
@@ -368,7 +389,16 @@ function extractSourceLinks(rawHtml: string, sourceUrl: string) {
     unique.add(href);
 
     const label = decodeHtmlEntities(stripHtml(String(match[2] ?? ""))).trim();
-    links.push(label ? `${label}: ${href}` : href);
+    links.push({ href, label: label || null });
+  }
+
+  return links;
+}
+
+function extractSourceLinks(rawHtml: string, sourceUrl: string) {
+  const links: string[] = [];
+  for (const item of extractAbsoluteAnchorLinks(rawHtml, sourceUrl)) {
+    links.push(item.label ? `${item.label}: ${item.href}` : item.href);
 
     if (links.length >= MAX_SOURCE_LINKS_PER_PAGE) break;
   }
@@ -376,7 +406,26 @@ function extractSourceLinks(rawHtml: string, sourceUrl: string) {
   return links;
 }
 
-async function fetchRemoteSource(url: string) {
+function shouldCrawlSublink(candidateUrl: string, rootUrl: string) {
+  try {
+    const candidate = new URL(candidateUrl);
+    const root = new URL(rootUrl);
+    if (!isSameDomain(candidate.host, root.host)) return false;
+
+    const path = candidate.pathname.toLowerCase();
+    if (
+      /\.(pdf|png|jpg|jpeg|gif|webp|svg|zip|rar|7z|mp4|mp3|avi|mov|woff2?|ttf)$/i.test(path)
+    ) {
+      return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function fetchRemotePage(url: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
   try {
@@ -388,27 +437,65 @@ async function fetchRemoteSource(url: string) {
         "user-agent": "luxisoft-whatsapp-agent/2.0"
       }
     });
-    if (!response.ok) return "";
+    if (!response.ok) return null;
 
     const raw = await response.text().catch(() => "");
-    if (!raw) return "";
+    if (!raw) return null;
     const sourceUrl = response.url || url;
     const normalized = stripHtml(raw);
-    if (!normalized) return "";
+    if (!normalized) return null;
 
-    const sections = [`[source:${sourceUrl}]`, normalized.slice(0, 16_000)];
-    const links = extractSourceLinks(raw, sourceUrl);
-    if (links.length) {
-      sections.push(`[source_links:${sourceUrl}]`);
-      sections.push(...links.map((item) => `- ${item}`));
-    }
-
-    return sections.join("\n");
+    return {
+      sourceUrl,
+      raw,
+      text: normalized
+    };
   } catch {
-    return "";
+    return null;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchRemoteSource(url: string) {
+  const queue: Array<{ url: string; depth: number }> = [{ url, depth: 0 }];
+  const visited = new Set<string>();
+  const sections: string[] = [];
+
+  while (queue.length > 0 && visited.size < MAX_CRAWL_PAGES_PER_SOURCE) {
+    const current = queue.shift()!;
+    const comparableCurrent = normalizeComparableUrl(current.url);
+    if (visited.has(comparableCurrent)) continue;
+    visited.add(comparableCurrent);
+
+    const page = await fetchRemotePage(current.url);
+    if (!page) continue;
+
+    sections.push(`[source:${page.sourceUrl}]`);
+    sections.push(page.text.slice(0, MAX_PAGE_TEXT_CHARS));
+
+    const links = extractSourceLinks(page.raw, page.sourceUrl);
+    if (links.length) {
+      sections.push(`[source_links:${page.sourceUrl}]`);
+      sections.push(...links.map((item) => `- ${item}`));
+    }
+
+    if (current.depth >= MAX_CRAWL_DEPTH) continue;
+
+    const candidates = extractAbsoluteAnchorLinks(page.raw, page.sourceUrl)
+      .map((item) => item.href)
+      .filter((href) => shouldCrawlSublink(href, url))
+      .slice(0, MAX_SOURCE_LINKS_PER_PAGE);
+
+    for (const candidate of candidates) {
+      const comparable = normalizeComparableUrl(candidate);
+      if (visited.has(comparable)) continue;
+      if (queue.some((item) => normalizeComparableUrl(item.url) === comparable)) continue;
+      queue.push({ url: candidate, depth: current.depth + 1 });
+    }
+  }
+
+  return sections.join("\n");
 }
 
 function resolveSources(projectKey: string) {
@@ -484,15 +571,15 @@ function buildGroundingBlock(snippets: string[]) {
 function buildNoGroundingReply(projectKey: string) {
   const sources = resolveWebSources(projectKey);
   const lines = [
-    `No tengo informacion confirmada en las paginas oficiales de ${projectKey} para responder eso con precision.`
+    `Revise las paginas oficiales de ${projectKey} y ese punto exacto no aparece publicado por ahora.`
   ];
 
   if (sources.length) {
-    lines.push("Fuentes oficiales disponibles:");
+    lines.push("Fuentes oficiales revisadas:");
     lines.push(...sources.slice(0, 3));
   }
 
-  lines.push("Si quieres, te paso con un agente humano.");
+  lines.push("Si quieres, te propongo el siguiente paso comercial o te paso con un agente humano.");
   return lines.join("\n");
 }
 
@@ -696,7 +783,8 @@ async function runProjectAgent(input: {
     "Responde en espanol claro, maximo 6 lineas si no requiere mas detalle.",
     "Responde exclusivamente con informacion presente en BLOQUE_DE_FUENTES_CONFIRMADAS.",
     "No uses conocimiento externo ni inventes datos no confirmados por fuentes oficiales.",
-    "Si la respuesta no esta en fuentes, dilo explicitamente y comparte enlaces oficiales disponibles.",
+    "Si un dato no aparece en fuentes, responde con tono comercial seguro: explica lo que si esta publicado y el siguiente paso.",
+    "Evita tono de inseguridad o frases ambiguas; habla con claridad.",
     "Si necesitas mas contexto del sitio, usa los tools disponibles antes de responder.",
     "Cuando compartas enlaces, usa URL completa para previsualizacion en WhatsApp.",
     'Siempre invita a escalar con la frase exacta: "Si quieres, te paso con un agente humano."'
