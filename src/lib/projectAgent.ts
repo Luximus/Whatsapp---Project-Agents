@@ -1,7 +1,5 @@
 import path from "node:path";
 import {
-  listProjectKeys,
-  loadOrchestratorAgent,
   loadProjectAgent,
   type AgentScriptRuntimeContext
 } from "../agents/repository.js";
@@ -41,7 +39,6 @@ type ConversationState = {
   meeting: MeetingProfile;
   awaitingMeetingData: boolean;
   lastReplyStyle: ReplyStyle | null;
-  openaiOrchestratorPreviousResponseId: string | null;
   openaiProjectPreviousResponseIds: Record<string, string>;
 };
 
@@ -86,14 +83,6 @@ type ProjectAgentResult = {
   responseId: string | null;
 };
 
-type OrchestratorResult = {
-  projectKey: string;
-  reply: string;
-  escalated: boolean;
-  escalationSent: boolean;
-  responseId: string | null;
-};
-
 const knowledgeCache = new Map<string, CachedKnowledge>();
 const conversations = new Map<string, ConversationState>();
 
@@ -108,15 +97,7 @@ const MAX_PAGE_TEXT_CHARS = 10_000;
 const MAX_PAGE_SNIPPETS = 250;
 
 const DEFAULT_PROJECT_SOURCES: Record<string, string[]> = {
-  luxisoft: ["https://luxisoft.com/en/"],
-  navai: ["https://navai.luxisoft.com/",],
-  luxichat: ["https://luxichat.com/"]
-};
-
-const PROJECT_OFFERS: Record<string, string> = {
-  luxisoft: "LuxiSoft",
-  navai: "NAVAI",
-  luxichat: "LuxiChat"
+  luxisoft: ["https://luxisoft.com/en/"]
 };
 
 const SUPPORT_KEYWORDS = [
@@ -165,7 +146,7 @@ const MEETING_KEYWORDS = [
 ];
 
 const ASSISTANT_NAME = "Valeria";
-const ASSISTANT_COMPANY = "LuxiSoft";
+const ASSISTANT_COMPANY = "LUXISOFT";
 const REPLY_STYLE_ROTATION: ReplyStyle[] = ["natural", "bullets", "question", "steps"];
 
 const LINK_REQUEST_KEYWORDS = [
@@ -247,10 +228,6 @@ function resolveAgentsDir() {
   return resolveDir(env.AGENTS_DIR, "./agents");
 }
 
-function resolveOrchestratorDir() {
-  return resolveDir(env.ORCHESTRATOR_AGENT_DIR, "./agents/orchestrator");
-}
-
 function normalizeProjectKey(value: string | null | undefined) {
   return String(value ?? "").trim().toLowerCase();
 }
@@ -307,7 +284,8 @@ function titleCase(value: string | null | undefined) {
 function ensureKnownProjectKey(value: string | null | undefined) {
   const normalized = normalizeProjectKey(value);
   if (!normalized) return null;
-  return Object.prototype.hasOwnProperty.call(PROJECT_OFFERS, normalized) ? normalized : null;
+  const activeProject = normalizeProjectKey(env.defaultProject) || "luxisoft";
+  return normalized === activeProject ? normalized : null;
 }
 
 function containsKeyword(text: string, keywords: string[]) {
@@ -409,10 +387,6 @@ function getMissingMeetingFields(state: ConversationState) {
   };
 }
 
-function firstOfficialSource(projectKey: string) {
-  return resolveWebSources(projectKey)[0] ?? "sin fuente web oficial configurada";
-}
-
 function assistantMessageCount(state: ConversationState) {
   return state.history.filter((item) => item.role === "assistant").length;
 }
@@ -475,69 +449,6 @@ function finalizeAssistantReply(state: ConversationState, reply: string, plan: R
   return maybeIdentityIntro(state, reply).slice(0, MAX_RESPONSE_CHARS);
 }
 
-function formatCatalogOfferMessage(plan: ReplyPlan) {
-  const offers = [
-    { label: PROJECT_OFFERS.luxisoft, url: firstOfficialSource("luxisoft") },
-    { label: PROJECT_OFFERS.navai, url: firstOfficialSource("navai") },
-    { label: PROJECT_OFFERS.luxichat, url: firstOfficialSource("luxichat") }
-  ];
-
-  if (plan.style === "bullets") {
-    const lines = ["Puedo ayudarte con estas aplicaciones/servicios oficiales:"];
-    for (const offer of offers) {
-      lines.push(plan.linkPolicy === "avoid_links" ? `- ${offer.label}` : `- ${offer.label}: ${offer.url}`);
-    }
-    lines.push("Dime cual te interesa y te orientare al siguiente paso.");
-    return lines.join("\n");
-  }
-
-  if (plan.style === "steps") {
-    const base = [
-      "1. Elige el servicio: LuxiSoft, NAVAI o LuxiChat.",
-      "2. Te explico capacidades confirmadas y siguiente paso comercial."
-    ];
-    if (plan.linkPolicy !== "avoid_links") {
-      base.push(`3. Si quieres, te comparto la web oficial (${offers[0].url}, ${offers[1].url}, ${offers[2].url}).`);
-    }
-    return base.join("\n");
-  }
-
-  if (plan.style === "question") {
-    return "Trabajo con informacion oficial de LuxiSoft, NAVAI y LuxiChat. Cual te interesa para continuar?";
-  }
-
-  if (plan.linkPolicy === "avoid_links") {
-    return "Puedo ayudarte con informacion oficial de LuxiSoft, NAVAI y LuxiChat. Dime cual te interesa y te guio para avanzar.";
-  }
-
-  return [
-    "Puedo ayudarte con informacion oficial de LuxiSoft, NAVAI y LuxiChat.",
-    `Si deseas, te comparto la web oficial de cada uno: ${offers[0].url}, ${offers[1].url}, ${offers[2].url}.`,
-    "Dime cual te interesa para continuar."
-  ].join("\n");
-}
-
-function formatSupportUnknownReply(plan: ReplyPlan) {
-  if (plan.style === "bullets") {
-    return [
-      "Te ayudo con soporte.",
-      "- LuxiSoft",
-      "- NAVAI",
-      "- LuxiChat",
-      "Indicame cual es y te redirijo al especialista."
-    ].join("\n");
-  }
-
-  if (plan.style === "steps") {
-    return [
-      "1. Confirmame el servicio: LuxiSoft, NAVAI o LuxiChat.",
-      "2. Con eso te redirijo al especialista de soporte."
-    ].join("\n");
-  }
-
-  return "Te ayudo con soporte. Es sobre LuxiSoft, NAVAI o LuxiChat? Con eso te redirijo al especialista correcto.";
-}
-
 function formatHumanScopeCheckReply(plan: ReplyPlan) {
   if (plan.style === "question") {
     return "Puedo atenderte directamente por este canal. Si quieres que un especialista humano te contacte, puedo agendar una reunion. Te la agendo?";
@@ -562,7 +473,7 @@ function formatInitialDiscoveryReply(plan: ReplyPlan) {
   if (plan.style === "bullets") {
     return [
       "Para ayudarte mejor, confirmame:",
-      "- servicio de interes (LuxiSoft, NAVAI o LuxiChat)",
+      "- servicio digital que necesitas",
       "- objetivo principal",
       "- si buscas implementacion, soporte o cotizacion"
     ].join("\n");
@@ -571,17 +482,17 @@ function formatInitialDiscoveryReply(plan: ReplyPlan) {
   if (plan.style === "steps") {
     return [
       "Para avanzar rapido:",
-      "1. Dime el servicio: LuxiSoft, NAVAI o LuxiChat.",
+      "1. Dime que servicio digital necesitas.",
       "2. Cuentame el objetivo que quieres lograr.",
-      "3. Te doy la mejor ruta con informacion oficial."
+      "3. Te explico como LUXISOFT puede ayudarte."
     ].join("\n");
   }
 
   if (plan.style === "question") {
-    return "Para ayudarte mejor, te interesa LuxiSoft, NAVAI o LuxiChat? Y que necesitas resolver primero?";
+    return "Para ayudarte mejor, que servicio digital necesitas y que objetivo quieres lograr primero?";
   }
 
-  return "Para ayudarte mejor, dime si te interesa LuxiSoft, NAVAI o LuxiChat, y que objetivo quieres resolver.";
+  return "Para ayudarte mejor, cuentame que servicio digital necesitas y que objetivo quieres resolver.";
 }
 
 function isAssistantIdentityRequest(message: string) {
@@ -1088,27 +999,6 @@ async function searchKnowledge(input: {
   return pickRelevantSnippets(knowledge.text, input.query);
 }
 
-function buildGroundingBlock(snippets: string[]) {
-  return snippets
-    .slice(0, MAX_GROUNDING_SNIPPETS)
-    .map((snippet, index) => `[${index + 1}] ${snippet}`)
-    .join("\n");
-}
-
-function buildNoGroundingReply(projectKey: string, plan: ReplyPlan, sources: string[]) {
-  const lines = [
-    `Revise las paginas oficiales de ${projectKey} y ese punto exacto no aparece publicado por ahora.`
-  ];
-
-  if (sources.length && plan.linkPolicy !== "avoid_links") {
-    lines.push("Fuentes oficiales revisadas:");
-    lines.push(...sources.slice(0, plan.linkPolicy === "one_link_if_helpful" ? 1 : 3));
-  }
-
-  lines.push("Si quieres, te propongo el siguiente paso comercial o agendamos una reunion con especialista.");
-  return lines.join("\n");
-}
-
 function parseJsonObject(value: unknown) {
   if (typeof value !== "string" || !value.trim()) return {} as Record<string, unknown>;
   try {
@@ -1242,13 +1132,16 @@ function listFunctionCalls(response: any) {
 
 function detectProjectByText(text: string) {
   const normalized = text.toLowerCase();
-  if (/(^|\s|\b)(navai)(\b|\s|$)/i.test(normalized)) return "navai";
-  if (/(^|\s|\b)(luxichat|audeo)(\b|\s|$)/i.test(normalized)) return "luxichat";
-  if (/(^|\s|\b)(luxisoft)(\b|\s|$)/i.test(normalized)) return "luxisoft";
+  const activeProject = normalizeProjectKey(env.defaultProject) || "luxisoft";
+
+  if (new RegExp(`(^|\\s|\\b)(${activeProject})(\\b|\\s|$)`, "i").test(normalized)) {
+    return activeProject;
+  }
 
   const command = normalized.match(/(?:proyecto|project)\s*[:=\-]?\s*([a-z0-9_-]{2,64})/i)?.[1] ?? null;
   if (!command) return null;
-  return normalizeProjectKey(command) || null;
+  const requested = normalizeProjectKey(command) || null;
+  return requested === activeProject ? requested : null;
 }
 
 function buildHistoryBlock(history: ConversationState["history"]) {
@@ -1285,9 +1178,6 @@ function getConversation(phoneE164: string, projectKey: string) {
   if (existing) {
     if (projectKey) existing.projectKey = projectKey;
     if (!existing.lastReplyStyle) existing.lastReplyStyle = null;
-    existing.openaiOrchestratorPreviousResponseId = normalizeResponseId(
-      existing.openaiOrchestratorPreviousResponseId
-    );
     if (
       !existing.openaiProjectPreviousResponseIds ||
       typeof existing.openaiProjectPreviousResponseIds !== "object" ||
@@ -1306,7 +1196,6 @@ function getConversation(phoneE164: string, projectKey: string) {
     meeting: emptyMeetingProfile(),
     awaitingMeetingData: false,
     lastReplyStyle: null,
-    openaiOrchestratorPreviousResponseId: null,
     openaiProjectPreviousResponseIds: {}
   };
   conversations.set(phoneE164, initial);
@@ -1346,25 +1235,6 @@ async function runProjectAgent(input: {
 
   const projectSources = resolveWebSources(project.project_key, project.prompt);
 
-  const groundingQuery = [input.objective ?? "", input.userMessage]
-    .map((value) => String(value ?? "").trim())
-    .filter(Boolean)
-    .join(". ");
-  const groundingSnippets = await searchKnowledge({
-    projectKey: project.project_key,
-    query: groundingQuery || input.userMessage,
-    sources: projectSources
-  });
-
-  if (!groundingSnippets.length) {
-    return {
-      projectKey: project.project_key,
-      answer: buildNoGroundingReply(project.project_key, input.replyPlan, projectSources),
-      toolsUsed: [] as string[],
-      responseId: null
-    };
-  }
-
   const runtimeContext: AgentScriptRuntimeContext = {
     projectKey: project.project_key,
     phoneE164: input.phoneE164,
@@ -1400,9 +1270,10 @@ async function runProjectAgent(input: {
     `No compartas datos personales tuyos; solo puedes compartir tu nombre (${ASSISTANT_NAME}) y que trabajas en ${ASSISTANT_COMPANY}.`,
     "No repitas siempre el mismo formato. Sigue el FORMATO_DINAMICO_RECOMENDADO enviado por el sistema.",
     "No incluyas URLs en todas las respuestas. Sigue la POLITICA_DE_ENLACES enviada por el sistema.",
-    "Responde exclusivamente con informacion presente en BLOQUE_DE_FUENTES_CONFIRMADAS.",
+    "Responde exclusivamente con informacion confirmada por herramientas y fuentes oficiales.",
     "No uses conocimiento externo ni inventes datos no confirmados por fuentes oficiales.",
-    "Si un dato no aparece en fuentes, responde con tono comercial seguro: explica lo que si esta publicado y el siguiente paso.",
+    "Si necesitas confirmar detalles de servicios o funcionalidades, usa la tool scrape_project_knowledge antes de responder.",
+    "Si un dato no aparece en fuentes despues de consultar tools, responde con tono comercial seguro: explica lo que si esta publicado y el siguiente paso.",
     "Evita tono de inseguridad o frases ambiguas; habla con claridad.",
     "Si necesitas mas contexto del sitio, usa los tools disponibles antes de responder.",
     "Si compartes enlaces, usa URL completa oficial.",
@@ -1411,11 +1282,13 @@ async function runProjectAgent(input: {
 
   const userPrompt = [
     `Proyecto: ${project.project_key}`,
-    input.objective ? `Objetivo del orquestador: ${input.objective}` : "",
+    input.objective ? `Objetivo de atencion: ${input.objective}` : "",
     `FORMATO_DINAMICO_RECOMENDADO: ${describeReplyStyle(input.replyPlan.style)}`,
     `POLITICA_DE_ENLACES: ${describeLinkPolicy(input.replyPlan.linkPolicy)}`,
-    "BLOQUE_DE_FUENTES_CONFIRMADAS:",
-    buildGroundingBlock(groundingSnippets),
+    "FUENTES_OFICIALES_DISPONIBLES:",
+    projectSources.length ? projectSources.map((item) => `- ${item}`).join("\n") : "- Sin fuentes configuradas.",
+    "SNIPPETS_PRE-CARGADOS:",
+    "- Ninguno. Usa las tools de scraping cuando haga falta validar datos.",
     `Historial reciente:`,
     buildHistoryBlock(input.history) || "Sin historial.",
     "",
@@ -1497,12 +1370,6 @@ async function runProjectAgent(input: {
   };
 }
 
-function isDirectChild(parentDir: string, childDir: string) {
-  const parent = path.resolve(parentDir);
-  const childParent = path.dirname(path.resolve(childDir));
-  return parent === childParent;
-}
-
 async function notifyHumanMeeting(input: {
   projectKey: string;
   phoneE164: string;
@@ -1535,164 +1402,6 @@ async function notifyHumanMeeting(input: {
       error: String(err?.message ?? "human_meeting_notify_failed")
     };
   }
-}
-
-async function runOrchestrator(input: {
-  phoneE164: string;
-  message: string;
-  state: ConversationState;
-  preferredProjectKey: string;
-  replyPlan: ReplyPlan;
-  previousResponseId?: string | null;
-}): Promise<OrchestratorResult> {
-  const agentsDir = resolveAgentsDir();
-  const orchestratorDir = resolveOrchestratorDir();
-  const orchestrator = await loadOrchestratorAgent(orchestratorDir);
-  const excluded = isDirectChild(agentsDir, orchestratorDir) ? [orchestrator.project_key] : [];
-  const availableProjects = await listProjectKeys(agentsDir, excluded);
-
-  const model = env.openaiOrchestratorModel;
-
-  let selectedProject = normalizeProjectKey(input.preferredProjectKey) || env.defaultProject;
-  let lastDelegatedReply = "";
-
-  const tools = [
-    {
-      type: "function",
-      name: "delegate_project_agent",
-      description: "Delega la respuesta al agente especializado de un proyecto.",
-      strict: false,
-      parameters: {
-        type: "object",
-        properties: {
-          project_key: {
-            type: "string",
-            description: "Proyecto destino. Debe ser uno de los disponibles."
-          },
-          user_message: {
-            type: "string",
-            description: "Mensaje del usuario para procesar."
-          },
-          objective: {
-            type: "string",
-            description: "Objetivo puntual para el subagente."
-          }
-        },
-        required: ["user_message"],
-        additionalProperties: false
-      }
-    }
-  ];
-
-  const systemPrompt = [
-    orchestrator.prompt ||
-      "Eres el agente orquestador. Delega a agentes de proyecto y entrega respuesta final al usuario.",
-    "Siempre responde en espanol.",
-    `Tu identidad comercial fija es ${ASSISTANT_NAME}, asistente de ${ASSISTANT_COMPANY}.`,
-    "Cuando hables de ti, usa voz femenina.",
-    `No compartas datos personales tuyos; solo puedes compartir tu nombre (${ASSISTANT_NAME}) y que trabajas en ${ASSISTANT_COMPANY}.`,
-    "Aplica el formato dinamico sugerido por el sistema para no repetir siempre la misma estructura.",
-    "No incluyas URLs en todas las respuestas; usa la politica de enlaces indicada.",
-    "Para consultas de negocio/servicios/productos debes usar delegate_project_agent.",
-    "No agregues datos tecnicos/comerciales que no vengan del subagente.",
-    "Tu respuesta final debe basarse solo en informacion confirmada por el subagente.",
-    "No transfieras automaticamente a humano. Si aplica, propone agendar reunion con especialista.",
-    "No inventes informacion tecnica no confirmada por subagente."
-  ].join("\n\n");
-
-  const userPrompt = [
-    `Telefono: ${input.phoneE164}`,
-    `Proyecto preferido: ${selectedProject}`,
-    `Proyectos disponibles: ${availableProjects.join(", ") || "ninguno"}`,
-    `FORMATO_DINAMICO_RECOMENDADO: ${describeReplyStyle(input.replyPlan.style)}`,
-    `POLITICA_DE_ENLACES: ${describeLinkPolicy(input.replyPlan.linkPolicy)}`,
-    "Historial reciente:",
-    buildHistoryBlock(input.state.history) || "Sin historial.",
-    "",
-    "Mensaje actual del usuario:",
-    input.message
-  ].join("\n");
-
-  let response: any = await openaiResponsesCreateWithHistory({
-    previousResponseId: input.previousResponseId,
-    payload: {
-      model,
-      input: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ],
-      tools
-    }
-  });
-
-  for (let step = 0; step < env.openaiAgentMaxToolSteps; step += 1) {
-    const calls = listFunctionCalls(response);
-    if (!calls.length) break;
-
-    const toolOutputs = [] as Array<{ type: "function_call_output"; call_id: string; output: string }>;
-    for (const call of calls) {
-      const toolName = String(call?.name ?? "").trim();
-      const callId = String(call?.call_id ?? call?.id ?? "");
-      if (!toolName || !callId) continue;
-
-      if (toolName === "delegate_project_agent") {
-        const args = parseJsonObject(call?.arguments);
-        const requestedProject = normalizeProjectKey(String(args.project_key ?? "")) || selectedProject;
-        const delegated = await runProjectAgent({
-          projectKey: requestedProject,
-          phoneE164: input.phoneE164,
-          userMessage: String(args.user_message ?? input.message),
-          objective: String(args.objective ?? "").trim() || undefined,
-          history: input.state.history,
-          replyPlan: input.replyPlan,
-          previousResponseId:
-            input.state.openaiProjectPreviousResponseIds[requestedProject] ?? null
-        });
-        if (delegated.responseId) {
-          input.state.openaiProjectPreviousResponseIds[delegated.projectKey] = delegated.responseId;
-        }
-        selectedProject = delegated.projectKey;
-        lastDelegatedReply = delegated.answer;
-        toolOutputs.push({
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify({
-            ok: true,
-            project_key: delegated.projectKey,
-            tools_used: delegated.toolsUsed,
-            reply: delegated.answer
-          })
-        });
-        continue;
-      }
-
-      toolOutputs.push({
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({ ok: false, error: "tool_not_supported" })
-      });
-    }
-
-    if (!toolOutputs.length) break;
-
-    response = await openaiResponsesCreate({
-      model,
-      previous_response_id: response.id,
-      input: toolOutputs,
-      tools
-    });
-  }
-
-  const fallback = lastDelegatedReply || "No pude procesar tu solicitud en este momento.";
-  const reply = (extractResponseText(response) || fallback).slice(0, MAX_RESPONSE_CHARS);
-
-  return {
-    projectKey: selectedProject,
-    reply,
-    escalated: false,
-    escalationSent: false,
-    responseId: normalizeResponseId(response?.id)
-  };
 }
 
 async function runMeetingQualification(input: {
@@ -1748,41 +1457,6 @@ async function runMeetingQualification(input: {
     reply,
     escalated: true,
     escalationSent: transfer.sent
-  } as AgentReply;
-}
-
-async function runProjectRedirect(input: {
-  state: ConversationState;
-  phoneE164: string;
-  message: string;
-  projectKey: string;
-  objective: string;
-  replyPlan: ReplyPlan;
-}) {
-  const delegated = await runProjectAgent({
-    projectKey: input.projectKey,
-    phoneE164: input.phoneE164,
-    userMessage: input.message,
-    objective: input.objective,
-    history: input.state.history,
-    replyPlan: input.replyPlan,
-    previousResponseId:
-      input.state.openaiProjectPreviousResponseIds[input.projectKey] ?? null
-  });
-  if (delegated.responseId) {
-    input.state.openaiProjectPreviousResponseIds[delegated.projectKey] = delegated.responseId;
-  }
-  input.state.projectKey = delegated.projectKey;
-  input.state.projectConfirmed = true;
-  const reply = finalizeAssistantReply(input.state, delegated.answer, input.replyPlan);
-  appendHistory(input.state, "assistant", reply);
-
-  return {
-    handled: true,
-    projectKey: delegated.projectKey,
-    reply,
-    escalated: false,
-    escalationSent: false
   } as AgentReply;
 }
 
@@ -1880,49 +1554,8 @@ export async function handleProjectAgentMessage(input: {
     }
 
     if (decision.kind === "support_project") {
-      return await runProjectRedirect({
-        state,
-        phoneE164: phone,
-        message,
-        projectKey: decision.projectKey,
-        objective: "Resolver soporte tecnico del usuario en el proyecto indicado.",
-        replyPlan
-      });
-    }
-
-    if (decision.kind === "support_project_unknown") {
-      const reply = finalizeAssistantReply(state, formatSupportUnknownReply(replyPlan), replyPlan);
-      appendHistory(state, "assistant", reply);
-      return {
-        handled: true,
-        projectKey: state.projectKey,
-        reply,
-        escalated: false,
-        escalationSent: false
-      };
-    }
-
-    if (decision.kind === "sales_project") {
-      return await runProjectRedirect({
-        state,
-        phoneE164: phone,
-        message,
-        projectKey: decision.projectKey,
-        objective: "Atender interes comercial del usuario para el proyecto indicado.",
-        replyPlan
-      });
-    }
-
-    if (decision.kind === "sales_offer_catalog") {
-      const reply = finalizeAssistantReply(state, formatCatalogOfferMessage(replyPlan), replyPlan);
-      appendHistory(state, "assistant", reply);
-      return {
-        handled: true,
-        projectKey: state.projectKey,
-        reply,
-        escalated: false,
-        escalationSent: false
-      };
+      state.projectKey = env.defaultProject;
+      state.projectConfirmed = true;
     }
 
     if (decision.kind === "human_scope_check") {
@@ -1947,27 +1580,40 @@ export async function handleProjectAgentMessage(input: {
       });
     }
 
-    const orchestrated = await runOrchestrator({
-      phoneE164: phone,
-      message,
-      state,
-      preferredProjectKey: projectKey,
-      replyPlan,
-      previousResponseId: state.openaiOrchestratorPreviousResponseId
-    });
-    state.openaiOrchestratorPreviousResponseId =
-      orchestrated.responseId ?? state.openaiOrchestratorPreviousResponseId;
+    const singleProjectKey = env.defaultProject || "luxisoft";
+    state.projectKey = singleProjectKey;
+    state.projectConfirmed = true;
 
-    state.projectKey = ensureKnownProjectKey(orchestrated.projectKey) ?? state.projectKey;
-    const orchestratedReply = finalizeAssistantReply(state, orchestrated.reply, replyPlan);
-    appendHistory(state, "assistant", orchestratedReply);
+    const objective =
+      decision.kind === "support_project" || decision.kind === "support_project_unknown"
+        ? "Atender una consulta de soporte del usuario y guiar el siguiente paso."
+        : decision.kind === "sales_project" || decision.kind === "sales_offer_catalog"
+          ? "Atender interes comercial del usuario y calificar su necesidad."
+          : "Entender la necesidad del usuario, explicar una solucion breve y guiar al siguiente paso comercial.";
+
+    const resolved = await runProjectAgent({
+      projectKey: singleProjectKey,
+      phoneE164: phone,
+      userMessage: message,
+      history: state.history,
+      objective,
+      replyPlan,
+      previousResponseId:
+        state.openaiProjectPreviousResponseIds[singleProjectKey] ?? null
+    });
+    if (resolved.responseId) {
+      state.openaiProjectPreviousResponseIds[singleProjectKey] = resolved.responseId;
+    }
+
+    const agentReply = finalizeAssistantReply(state, resolved.answer, replyPlan);
+    appendHistory(state, "assistant", agentReply);
 
     return {
       handled: true,
       projectKey: state.projectKey,
-      reply: orchestratedReply,
-      escalated: orchestrated.escalated,
-      escalationSent: orchestrated.escalationSent
+      reply: agentReply,
+      escalated: false,
+      escalationSent: false
     };
   } catch (err: any) {
     const rawFallback = `No pude responder por el momento (${String(err?.message ?? "agent_failed")}).`;

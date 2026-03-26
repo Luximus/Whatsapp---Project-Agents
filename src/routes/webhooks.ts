@@ -41,6 +41,13 @@ type WebhookStatus = {
 };
 
 const MAX_TEXT_REPLY_CHARS = 250;
+const USER_MESSAGE_DEBOUNCE_MS = env.whatsappInboundDebounceMs;
+
+type PendingInbound = {
+  chunks: string[];
+  lastIncomingMessageId: string | null;
+  timer: NodeJS.Timeout | null;
+};
 
 function toTextChannelReply(input: string, maxChars = MAX_TEXT_REPLY_CHARS) {
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
@@ -69,6 +76,8 @@ function flattenWebhookMessages(body: any) {
 }
 
 export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
+  const pendingInboundByPhone = new Map<string, PendingInbound>();
+
   const safeReply = async (to: string, message: string, replyToMessageId?: string | null) => {
     try {
       await sendWhatsappText(to, message, {
@@ -100,6 +109,122 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       return false;
     }
   };
+
+  const clearPendingInbound = (phoneE164: string) => {
+    const pending = pendingInboundByPhone.get(phoneE164);
+    if (!pending) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    pendingInboundByPhone.delete(phoneE164);
+  };
+
+  const processBufferedInbound = async (phoneE164: string) => {
+    const pending = pendingInboundByPhone.get(phoneE164);
+    if (!pending) return;
+    pendingInboundByPhone.delete(phoneE164);
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+      pending.timer = null;
+    }
+
+    const incomingMessageId = pending.lastIncomingMessageId ?? null;
+    const text = pending.chunks
+      .map((item) => String(item ?? "").trim())
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    if (!text) return;
+
+    if (incomingMessageId) {
+      try {
+        await sendWhatsappTypingIndicator(incomingMessageId);
+      } catch (err) {
+        trackOperationalError();
+        fastify.log.warn(
+          { err, incomingMessageId, from: phoneE164 },
+          "WhatsApp typing indicator failed"
+        );
+      }
+    }
+
+    const agentReply = await handleProjectAgentMessage({
+      phoneE164,
+      text
+    });
+    const replyText = String(agentReply.reply ?? "").trim();
+    if (!agentReply.handled || !replyText) {
+      return;
+    }
+    trackAgentReplyGenerated();
+
+    let audioSent = false;
+    const shouldSendAudio =
+      replyText.length > MAX_TEXT_REPLY_CHARS &&
+      env.whatsappAudioReplyEnabled &&
+      isElevenLabsConfigured();
+
+    if (shouldSendAudio) {
+      try {
+        const generatedAudio = await synthesizeSpeechWithElevenLabs(replyText);
+        audioSent = await safeAudioReply(
+          phoneE164,
+          {
+            data: generatedAudio.data,
+            mimeType: generatedAudio.mimeType,
+            filename: generatedAudio.filename
+          },
+          incomingMessageId
+        );
+      } catch (err) {
+        trackOperationalError();
+        fastify.log.warn(
+          { err, from: phoneE164, incomingMessageId },
+          "ElevenLabs audio generation failed"
+        );
+      }
+    }
+
+    const textReply = toTextChannelReply(replyText);
+    const shouldAlsoSendText = !shouldSendAudio && env.whatsappAudioReplyIncludeText;
+    if (!audioSent || shouldAlsoSendText) {
+      await safeReply(phoneE164, textReply, incomingMessageId);
+    }
+  };
+
+  const enqueueInbound = (input: {
+    phoneE164: string;
+    text: string;
+    incomingMessageId: string | null;
+  }) => {
+    const existing = pendingInboundByPhone.get(input.phoneE164);
+    const pending: PendingInbound = existing ?? {
+      chunks: [],
+      lastIncomingMessageId: null,
+      timer: null
+    };
+
+    pending.chunks.push(input.text);
+    if (input.incomingMessageId) {
+      pending.lastIncomingMessageId = input.incomingMessageId;
+    }
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+    }
+    pending.timer = setTimeout(() => {
+      void processBufferedInbound(input.phoneE164).catch((err) => {
+        trackOperationalError();
+        fastify.log.error({ err, from: input.phoneE164 }, "Buffered inbound processing failed");
+      });
+    }, USER_MESSAGE_DEBOUNCE_MS);
+
+    pendingInboundByPhone.set(input.phoneE164, pending);
+  };
+
+  fastify.addHook("onClose", async () => {
+    for (const pending of pendingInboundByPhone.values()) {
+      if (pending.timer) clearTimeout(pending.timer);
+    }
+    pendingInboundByPhone.clear();
+  });
 
   fastify.get("/api/webhooks/whatsapp", async (request, reply) => {
     const mode = (request.query as any)?.["hub.mode"];
@@ -185,6 +310,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
       const otp = extractOtp(text);
       if (otp) {
+        clearPendingInbound(from);
         trackOtpMessage();
         const result = await consumeBridgeOtp(fastify, {
           from,
@@ -213,58 +339,11 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           continue;
         }
       }
-
-      if (incomingMessageId) {
-        try {
-          await sendWhatsappTypingIndicator(incomingMessageId);
-        } catch (err) {
-          trackOperationalError();
-          fastify.log.warn(
-            { err, incomingMessageId, from },
-            "WhatsApp typing indicator failed"
-          );
-        }
-      }
-
-      const agentReply = await handleProjectAgentMessage({
+      enqueueInbound({
         phoneE164: from,
-        text
+        text,
+        incomingMessageId: incomingMessageId || null
       });
-      const replyText = String(agentReply.reply ?? "").trim();
-      if (!agentReply.handled || !replyText) {
-        continue;
-      }
-      trackAgentReplyGenerated();
-
-      let audioSent = false;
-      const shouldSendAudio =
-        replyText.length > MAX_TEXT_REPLY_CHARS &&
-        env.whatsappAudioReplyEnabled &&
-        isElevenLabsConfigured();
-
-      if (shouldSendAudio) {
-        try {
-          const generatedAudio = await synthesizeSpeechWithElevenLabs(replyText);
-          audioSent = await safeAudioReply(
-            from,
-            {
-              data: generatedAudio.data,
-              mimeType: generatedAudio.mimeType,
-              filename: generatedAudio.filename
-            },
-            incomingMessageId
-          );
-        } catch (err) {
-          trackOperationalError();
-          fastify.log.warn({ err, from, incomingMessageId }, "ElevenLabs audio generation failed");
-        }
-      }
-
-      const textReply = toTextChannelReply(replyText);
-      const shouldAlsoSendText = !shouldSendAudio && env.whatsappAudioReplyIncludeText;
-      if (!audioSent || shouldAlsoSendText) {
-        await safeReply(from, textReply, incomingMessageId);
-      }
     }
 
     return { ok: true };

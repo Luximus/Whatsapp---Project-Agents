@@ -160,9 +160,8 @@ const envSchema = z.object({
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().optional().default(""),
   WHATSAPP_APP_SECRET: z.string().optional().default(""),
 
-  WHATSAPP_DEFAULT_PROJECT: z.string().optional().default("luxichat"),
+  WHATSAPP_DEFAULT_PROJECT: z.string().optional().default("luxisoft"),
   AGENTS_DIR: z.string().optional().default("./agents"),
-  ORCHESTRATOR_AGENT_DIR: z.string().optional().default("./agents/luxisoft"),
   AGENT_PROJECT_SOURCES_JSON: z.string().optional().default("{}"),
   AGENT_HUMAN_TRANSFER_NUMBER_E164: z.string().optional().default(""),
 
@@ -177,7 +176,6 @@ const envSchema = z.object({
 
   OPENAI_API_KEY: z.string().optional().default(""),
   OPENAI_BASE_URL: z.string().optional().default(""),
-  OPENAI_ORCHESTRATOR_MODEL: z.string().optional().default("gpt-5.4-mini"),
   OPENAI_PROJECT_MODEL: z.string().optional().default("gpt-5.4-mini"),
   OPENAI_AGENT_MAX_TOOL_STEPS: z.coerce.number().int().min(1).max(12).default(6),
   OPENAI_AUDIO_TRANSCRIBE_MODEL: z.string().optional().default("gpt-4o-mini-transcribe"),
@@ -189,6 +187,7 @@ const envSchema = z.object({
   ELEVENLABS_OUTPUT_FORMAT: z.string().optional().default("mp3_44100_128"),
   WHATSAPP_AUDIO_REPLY_ENABLED: z.string().optional().default("false"),
   WHATSAPP_AUDIO_REPLY_INCLUDE_TEXT: z.string().optional().default("true"),
+  WHATSAPP_INBOUND_DEBOUNCE_MS: z.coerce.number().int().min(0).default(10000),
 
   SMTP_HOST: z.string().optional().default(""),
   SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(465),
@@ -208,13 +207,12 @@ const raw = envSchema.parse(process.env);
 export const env = {
   ...raw,
   corsOrigins: csvToArray(raw.CORS_ORIGIN),
-  defaultProject: raw.WHATSAPP_DEFAULT_PROJECT.trim().toLowerCase() || "luxichat",
+  defaultProject: raw.WHATSAPP_DEFAULT_PROJECT.trim().toLowerCase() || "luxisoft",
   bridgeProjects: parseBridgeProjects(raw.BRIDGE_PROJECTS_JSON),
   agentProjectSources: parseAgentProjectSources(raw.AGENT_PROJECT_SOURCES_JSON),
   humanTransferNumber: raw.AGENT_HUMAN_TRANSFER_NUMBER_E164.trim(),
   openaiApiKey: raw.OPENAI_API_KEY.trim(),
   openaiBaseUrl: raw.OPENAI_BASE_URL.trim(),
-  openaiOrchestratorModel: raw.OPENAI_ORCHESTRATOR_MODEL.trim() || "gpt-5.4-mini",
   openaiProjectModel: raw.OPENAI_PROJECT_MODEL.trim() || "gpt-5.4-mini",
   openaiAgentMaxToolSteps: raw.OPENAI_AGENT_MAX_TOOL_STEPS,
   openaiAudioTranscribeModel: raw.OPENAI_AUDIO_TRANSCRIBE_MODEL.trim() || "gpt-4o-mini-transcribe",
@@ -225,6 +223,7 @@ export const env = {
   elevenlabsOutputFormat: raw.ELEVENLABS_OUTPUT_FORMAT.trim() || "mp3_44100_128",
   whatsappAudioReplyEnabled: parseBooleanFlag(raw.WHATSAPP_AUDIO_REPLY_ENABLED, false),
   whatsappAudioReplyIncludeText: parseBooleanFlag(raw.WHATSAPP_AUDIO_REPLY_INCLUDE_TEXT, true),
+  whatsappInboundDebounceMs: raw.WHATSAPP_INBOUND_DEBOUNCE_MS,
   smtpHost: raw.SMTP_HOST.trim(),
   smtpPort: raw.SMTP_PORT,
   smtpSecure: parseBooleanFlag(raw.SMTP_SECURE, true),

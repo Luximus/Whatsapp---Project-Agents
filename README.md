@@ -1,252 +1,95 @@
 # WhatsApp Bridge Service (LuxiSoft)
 
-Puente de WhatsApp para:
-- Entrega de codigos OTP enviados por otros proyectos (webhook -> WhatsApp).
-- Respuesta de entrega positiva/negativa al proyecto solicitante.
-- Atencion por agentes OpenAI: un orquestador y subagentes por proyecto (`luxisoft`, `navai`, `luxichat`).
-- Transferencia a agente humano por WhatsApp con resumen de la conversacion.
+Backend para WhatsApp Cloud API con dos flujos principales:
+- Bridge OTP para proyectos externos.
+- Asistente comercial de IA (Valeria) para `luxisoft`.
 
-## Flujo de autenticacion actual (Proyecto X genera el codigo)
+## Arquitectura actual
 
-1. Proyecto X genera su `user_code` de 6 digitos.
-2. Proyecto X llama `POST /api/bridge/webhooks/request`.
-3. Este servicio envia ese `user_code` al WhatsApp del usuario.
-4. Responde inmediatamente si la entrega a Meta fue `delivery_ok=true` o `false`.
-5. Opcionalmente envia callback firmado al `callback_url` del proyecto.
+- Agente unico: `agents/luxisoft/services.txt`.
+- Tools dinamicas por proyecto: `agents/luxisoft/scripts/*.js|*.ts`.
+- Carga automatica de tools desde `src/agents/repository.ts`.
+- Scraping web como tool (`scrape_project_knowledge`) para grounding de respuestas.
+- Buffer de entrada configurable para agrupar mensajes de usuario:
+  - `WHATSAPP_INBOUND_DEBOUNCE_MS` (reinicia contador en cada mensaje nuevo).
 
-No se persisten OTP/sesiones en base de datos para este flujo bridge. Se maneja en memoria con TTL e intentos maximos.
+## Flujo del asistente IA
 
-## Request y response del endpoint principal
+1. Llega mensaje por webhook.
+2. Se agrupa por numero durante el debounce configurado.
+3. Se procesa con `handleProjectAgentMessage`.
+4. Si la respuesta supera 250 chars y audio esta habilitado, responde con ElevenLabs.
+5. Si el usuario quiere agendar reunion, se recopilan datos y se notifica al agente humano.
 
-### Solicitud
+## Reporte diario
 
-`POST /api/bridge/webhooks/request`
+- Cron configurable por `REPORT_CRON` (default `59 23 * * *`).
+- Genera metricas operativas + consumo OpenAI por modelo.
+- Envia email con HTML + PDF adjunto (sin guardar PDF en disco).
+- Notifica por WhatsApp al agente humano si el envio fue exitoso o fallo.
 
-Headers:
-- `x-project-key: <project_key>`
-- `x-project-api-key: <api_key_del_proyecto>`
-- `content-type: application/json`
+## Estructura de agentes
 
-Body:
-
-```json
-{
-  "flow": "login",
-  "phone_e164": "+573019289464",
-  "user_code": "123456",
-  "user_ref": "user_123",
-  "correlation_id": "req_001"
-}
+```text
+agents/
+  luxisoft/
+    services.txt
+    scripts/
+      classify_service_intent.js
+      extract_prospect_profile.js
+      next_intake_question.js
+      scrape_project_knowledge.js
 ```
-
-`user_code` es obligatorio en esta ruta.
-
-### Respuesta
-
-```json
-{
-  "accepted": true,
-  "project_key": "luxichat",
-  "session_id": "uuid",
-  "otp_code": "123456",
-  "wa_message_id": "wamid....",
-  "delivery_ok": true,
-  "delivery_error": null
-}
-```
-
-Si falla entrega a Meta:
-- `accepted=false`
-- `delivery_ok=false`
-- `delivery_error` con detalle.
-
-## Callbacks a proyecto (opcionales pero recomendados)
-
-Si en `BRIDGE_PROJECTS_JSON` configuras `callback_url` y `callback_secret`, el bridge envia eventos:
-- `bridge.session.requested`
-- `bridge.session.verified` (si usas verificacion posterior)
-
-Headers de firma:
-- `x-bridge-event-id`
-- `x-bridge-event-type`
-- `x-bridge-timestamp`
-- `x-bridge-signature` (`sha256=<hmac>`)
-
-## Agentes por proyecto en WhatsApp
-
-Cuando llega un mensaje de usuario a `POST /api/webhooks/whatsapp`:
-- Si parece OTP, intenta validacion contra sesiones en memoria.
-- Si no, entra al flujo de agentes OpenAI.
-- Si llega audio y esta habilitado, se descarga media de WhatsApp, se transcribe y se procesa como mensaje del agente.
-- Si llega audio y ElevenLabs esta habilitado, puede responder tambien con audio.
-
-Arquitectura:
-- `agents/orchestrator/services.txt`: prompt del orquestador principal.
-- `agents/<proyecto>/services.txt`: prompt del subagente del proyecto.
-- `agents/<proyecto>/scripts/*.js`: tools/funciones que ese subagente puede ejecutar.
-
-Regla de estructura:
-- En cada proyecto solo debe existir `services.txt` como archivo `.txt`.
-- En `scripts/` solo deben existir archivos `.js`.
-
-Resolucion de proyecto:
-- Detecta por texto (`luxisoft`, `navai`, `luxichat`, `audeo`).
-- Si no detecta, usa `WHATSAPP_DEFAULT_PROJECT`.
-
-Fuentes de conocimiento:
-- Agentes locales en `agents/<project>`.
-- Fuentes extra en `AGENT_PROJECT_SOURCES_JSON` (URLs o rutas locales).
-- El backend hace crawling por dominio oficial y extrae texto limpio por URL (sin HTML) para cada proyecto.
-- Ese contenido se guarda en cache como diccionario por proyecto (`URL -> texto + enlaces`) y se usa para grounding de respuestas.
-
-Transferencia a humano:
-- Valeria mantiene la conversacion en todo momento.
-- Solo se notifica al agente humano cuando el usuario solicita agendar reunion con especialista.
-- Se envian datos de contacto + dia/fecha/hora + motivo al numero `AGENT_HUMAN_TRANSFER_NUMBER_E164`.
-
-Reporte diario:
-- El sistema genera un reporte diario a las `23:59` (cron) con metricas operativas.
-- Envia PDF por correo a `REPORT_EMAIL_TO` usando SMTP configurado.
-- Al numero del agente humano se envia solo estado del reporte (enviado / fallo).
 
 ## Variables de entorno
 
-Copia:
+Copia base:
 
 ```bash
 cp .env.example .env
 ```
 
-Config minima para bridge + WhatsApp:
+Claves minimas para produccion:
 - `WHATSAPP_ACCESS_TOKEN`
 - `WHATSAPP_PHONE_NUMBER_ID`
 - `WHATSAPP_WEBHOOK_VERIFY_TOKEN`
-- `WHATSAPP_DEFAULT_PROJECT`
-- `BRIDGE_PROJECTS_JSON`
-
-Config de agentes:
-- `AGENTS_DIR`
-- `ORCHESTRATOR_AGENT_DIR`
-- `AGENT_PROJECT_SOURCES_JSON`
-- `AGENT_HUMAN_TRANSFER_NUMBER_E164`
 - `OPENAI_API_KEY`
-- `OPENAI_ORCHESTRATOR_MODEL`
-- `OPENAI_PROJECT_MODEL`
-- `OPENAI_AGENT_MAX_TOOL_STEPS`
-- `OPENAI_AUDIO_TRANSCRIBE_MODEL`
-- `ELEVENLABS_API_KEY`
-- `ELEVENLABS_VOICE_ID`
-- `ELEVENLABS_MODEL_ID`
-- `ELEVENLABS_OUTPUT_FORMAT`
+- `AGENTS_DIR`
+- `AGENT_PROJECT_SOURCES_JSON`
+- `WHATSAPP_DEFAULT_PROJECT` (recomendado `luxisoft`)
+
+Opcionales importantes:
+- `WHATSAPP_INBOUND_DEBOUNCE_MS`
 - `WHATSAPP_AUDIO_REPLY_ENABLED`
 - `WHATSAPP_AUDIO_REPLY_INCLUDE_TEXT`
-- `SMTP_HOST`
-- `SMTP_PORT`
-- `SMTP_SECURE`
-- `SMTP_USER`
-- `SMTP_PASS`
-- `SMTP_FROM`
+- `ELEVENLABS_API_KEY`
+- `ELEVENLABS_VOICE_ID`
+- `AGENT_HUMAN_TRANSFER_NUMBER_E164`
+- `SMTP_*`
 - `REPORT_EMAIL_TO`
 - `REPORT_CRON`
 - `REPORT_TIMEZONE`
-- `REPORT_LOGO_URL`
-
-Compatibilidad legacy:
-- `DATABASE_URL` y Firebase se mantienen para rutas antiguas.
-
-### Ejemplo `BRIDGE_PROJECTS_JSON`
-
-```json
-{
-  "luxichat": {
-    "api_key": "luxichat_bridge_key_2026",
-    "callback_url": "https://api.luxichat.com/api/integrations/whatsapp/bridge",
-    "callback_secret": "luxichat_bridge_callback_2026"
-  },
-  "navai": {
-    "api_key": "navai_bridge_key_2026",
-    "callback_url": "https://api.navai.com/api/integrations/whatsapp/bridge",
-    "callback_secret": "navai_bridge_callback_2026"
-  }
-}
-```
-
-### Ejemplo `AGENT_PROJECT_SOURCES_JSON`
-
-```json
-{
-  "luxisoft": ["https://luxisoft.com"],
-  "navai": ["https://navai.luxisoft.com"],
-  "luxichat": ["C:/Users/jwmg1/OneDrive/Documentos/Desarrollo/audeo"]
-}
-```
-
-### Config OpenAI minima
-
-```env
-OPENAI_API_KEY=sk-...
-OPENAI_ORCHESTRATOR_MODEL=gpt-5.4-mini
-OPENAI_PROJECT_MODEL=gpt-5.4-mini
-OPENAI_AGENT_MAX_TOOL_STEPS=6
-```
 
 ## Ejecucion
-
-Local:
 
 ```bash
 npm install
 npm run dev
 ```
 
-Build:
+Build y start:
 
 ```bash
 npm run build
 npm start
 ```
 
-PM2 (produccion):
+PM2:
 
 ```bash
 pm2 start npm --name whatsapp-bridge -- start
 pm2 save
-```
-
-Reiniciar servicio (sin crear procesos duplicados):
-
-```bash
 pm2 restart whatsapp-bridge --update-env
-pm2 save
-```
-
-## Actualizacion rapida en servidor
-
-Crear comando global para actualizar/reconstruir/reiniciar:
-
-```bash
-sudo tee /usr/local/bin/whatsapp-backend-update > /dev/null <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-APP_DIR="/var/www/whatsapp"
-
-cd "$APP_DIR"
-git pull --ff-only
-rm -rf node_modules
-npm ci
-npm run build
-pm2 restart whatsapp-bridge --update-env
-pm2 save
-EOF
-
-sudo chmod +x /usr/local/bin/whatsapp-backend-update
-```
-
-Uso:
-
-```bash
-sudo whatsapp-backend-update
 ```
 
 ## Endpoints
@@ -258,6 +101,11 @@ Bridge:
 - `GET /api/bridge/sessions/:session_id`
 - `POST /api/bridge/events/dispatch`
 
-Meta webhook:
-- `GET /api/webhooks/whatsapp` (verificacion Meta)
-- `POST /api/webhooks/whatsapp` (mensajes/status)
+WhatsApp webhook:
+- `GET /api/webhooks/whatsapp`
+- `POST /api/webhooks/whatsapp`
+
+Agentes:
+- `GET /api/agents`
+- `GET /api/agents/:project_key`
+- `GET /api/agents/:project_key/context`

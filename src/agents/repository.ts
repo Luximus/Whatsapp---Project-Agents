@@ -57,15 +57,31 @@ async function readUtf8(filePath: string) {
   return fs.readFile(filePath, "utf8");
 }
 
-async function listFilesByExtension(dirPath: string, extension: string) {
+async function listFilesByExtensions(dirPath: string, extensions: string[]) {
   const stat = await safeStat(dirPath);
   if (!stat?.isDirectory()) return [] as string[];
 
-  const entries = await fs.readdir(dirPath, { withFileTypes: true });
-  return entries
-    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(extension))
-    .map((entry) => path.join(dirPath, entry.name))
-    .sort((a, b) => a.localeCompare(b));
+  const normalizedExtensions = new Set(extensions.map((item) => item.toLowerCase()));
+  const output: string[] = [];
+
+  const walk = async (currentDir: string) => {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const resolved = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(resolved);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+
+      const ext = path.extname(entry.name).toLowerCase();
+      if (!normalizedExtensions.has(ext)) continue;
+      output.push(resolved);
+    }
+  };
+
+  await walk(dirPath);
+  return output.sort((a, b) => a.localeCompare(b));
 }
 
 async function loadPromptFile(dirPath: string) {
@@ -126,12 +142,36 @@ async function loadScriptModule(filePath: string): Promise<AgentScript | null> {
     const moduleValue = loaded.default ?? loaded.tool ?? loaded;
     return toRunnableScript({ filePath, source, moduleValue });
   } catch {
-    return null;
+    if (path.extname(filePath).toLowerCase() !== ".ts") {
+      return null;
+    }
+
+    const fallbackJs = filePath.slice(0, -3) + ".js";
+    const fallbackStat = await safeStat(fallbackJs);
+    if (!fallbackStat?.isFile()) {
+      return null;
+    }
+
+    try {
+      const fallbackSource = await readUtf8(fallbackJs);
+      if (!fallbackSource.trim()) return null;
+
+      const href = pathToFileURL(fallbackJs).href;
+      const loaded = (await import(href)) as Record<string, unknown>;
+      const moduleValue = loaded.default ?? loaded.tool ?? loaded;
+      return toRunnableScript({
+        filePath: fallbackJs,
+        source: fallbackSource,
+        moduleValue
+      });
+    } catch {
+      return null;
+    }
   }
 }
 
 async function loadScripts(dirPath: string): Promise<AgentScript[]> {
-  const files = await listFilesByExtension(dirPath, ".js");
+  const files = await listFilesByExtensions(dirPath, [".js", ".ts"]);
   const scripts: AgentScript[] = [];
 
   for (const filePath of files) {
@@ -140,19 +180,6 @@ async function loadScripts(dirPath: string): Promise<AgentScript[]> {
   }
 
   return scripts;
-}
-
-export async function loadOrchestratorAgent(orchestratorDir: string): Promise<AgentDefinition> {
-  const resolved = path.resolve(orchestratorDir);
-  const projectKey = normalizeProjectKey(path.basename(resolved)) || "orchestrator";
-  const promptFile = await loadPromptFile(resolved);
-  return {
-    project_key: projectKey,
-    dir: resolved,
-    prompt_file: promptFile,
-    prompt: promptFile ? await readUtf8(promptFile) : "",
-    scripts: await loadScripts(path.join(resolved, "scripts"))
-  };
 }
 
 export async function listProjectKeys(agentsDir: string, excludedKeys: string[] = []) {
@@ -189,28 +216,35 @@ export async function loadProjectAgent(agentsDir: string, projectKey: string): P
   };
 }
 
-export function buildAgentContext(input: {
-  orchestrator: AgentDefinition;
-  project: AgentDefinition;
-}) {
+export async function listProjectAgents(agentsDir: string, excludedKeys: string[] = []) {
+  const keys = await listProjectKeys(agentsDir, excludedKeys);
+  const loaded = await Promise.all(keys.map((key) => loadProjectAgent(agentsDir, key)));
+  return loaded.filter((item): item is AgentDefinition => !!item);
+}
+
+export function toPublicAgent(agent: AgentDefinition) {
+  return {
+    project_key: agent.project_key,
+    dir: agent.dir,
+    prompt_file: agent.prompt_file,
+    prompt: agent.prompt,
+    scripts: agent.scripts.map((script) => ({
+      name: script.name,
+      file: script.file,
+      description: script.description,
+      parameters: script.parameters
+    }))
+  };
+}
+
+export function buildProjectContext(project: AgentDefinition) {
   const lines: string[] = [];
-  lines.push("[orchestrator.prompt]");
-  lines.push(input.orchestrator.prompt || "");
+  lines.push(`[project:${project.project_key}.prompt]`);
+  lines.push(project.prompt || "");
   lines.push("");
 
-  for (const script of input.orchestrator.scripts) {
-    lines.push(`[orchestrator.script:${script.name}]`);
-    lines.push(`description=${script.description}`);
-    lines.push(JSON.stringify(script.parameters));
-    lines.push("");
-  }
-
-  lines.push(`[project:${input.project.project_key}.prompt]`);
-  lines.push(input.project.prompt || "");
-  lines.push("");
-
-  for (const script of input.project.scripts) {
-    lines.push(`[project:${input.project.project_key}.script:${script.name}]`);
+  for (const script of project.scripts) {
+    lines.push(`[project:${project.project_key}.script:${script.name}]`);
     lines.push(`description=${script.description}`);
     lines.push(JSON.stringify(script.parameters));
     lines.push("");
