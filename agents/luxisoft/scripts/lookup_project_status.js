@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 
-const PROJECT_STATUS_FILE = new URL("../project_statuses.json", import.meta.url);
+const PROJECT_STATUS_FILE = new URL("../project_statuses.txt", import.meta.url);
 
 const STATUS_NOISE_TOKENS = new Set([
   "estado",
@@ -13,6 +13,8 @@ const STATUS_NOISE_TOKENS = new Set([
   "actualmente",
   "proyecto",
   "proyectos",
+  "trabajo",
+  "trabajos",
   "servicio",
   "servicios",
   "tienda",
@@ -87,58 +89,56 @@ function stripStatusNoise(value) {
   return tokens.join(" ");
 }
 
-function isRecord(value) {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
+function parseProjectHeader(value) {
+  const header = compact(value, 180);
+  if (!header) return null;
 
-function normalizeAliases(value, name) {
-  const rawAliases = Array.isArray(value)
-    ? value.map((item) => compact(item, 120)).filter(Boolean)
-    : [];
-  return unique([compact(name, 120), ...rawAliases]).map((item) => String(item));
-}
-
-function sanitizeProjectStatusEntry(entry) {
-  if (!isRecord(entry)) return null;
-
-  const name = compact(entry.name, 120);
+  const aliasMatch = header.match(/^(.*?)\s*\((.*?)\)\s*$/);
+  const name = compact(aliasMatch?.[1] ?? header, 120);
   if (!name) return null;
+
+  const aliases = aliasMatch?.[2]
+    ? aliasMatch[2]
+        .split(",")
+        .map((item) => compact(item, 120))
+        .filter(Boolean)
+    : [];
 
   return {
     name,
-    aliases: normalizeAliases(entry.aliases, name),
-    status: compact(entry.status, 180),
-    updated_at: compact(entry.updated_at, 40),
-    owner: compact(entry.owner, 120),
-    summary: compact(entry.summary, 320),
-    next_step: compact(entry.next_step, 320),
-    blockers: compact(entry.blockers, 320)
+    aliases: unique([name, ...aliases]).map((item) => String(item))
   };
 }
 
-export function parseProjectStatusesJson(text) {
-  const raw = String(text ?? "").trim();
-  if (!raw) {
-    return { ok: true, projects: [] };
-  }
+export function parseProjectStatusesText(text) {
+  const paragraphs = String(text ?? "")
+    .split(/\r?\n\s*\r?\n+/)
+    .map((paragraph) =>
+      paragraph
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("#"))
+        .join(" ")
+    )
+    .map((paragraph) => compact(paragraph, 900))
+    .filter(Boolean);
 
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { ok: false, error: "invalid_projects_json", projects: [] };
-  }
+  return paragraphs
+    .map((paragraph) => {
+      const match = String(paragraph).match(/^([^:]{2,180})\s*:\s*(.+)$/);
+      if (!match?.[1] || !match?.[2]) return null;
 
-  const collection = Array.isArray(parsed)
-    ? parsed
-    : Array.isArray(parsed?.projects)
-      ? parsed.projects
-      : [];
+      const header = parseProjectHeader(match[1]);
+      const statusParagraph = compact(match[2], 700);
+      if (!header || !statusParagraph) return null;
 
-  return {
-    ok: true,
-    projects: collection.map((item) => sanitizeProjectStatusEntry(item)).filter(Boolean)
-  };
+      return {
+        name: header.name,
+        aliases: header.aliases,
+        status_paragraph: statusParagraph
+      };
+    })
+    .filter(Boolean);
 }
 
 function buildSearchTexts(input, context) {
@@ -225,20 +225,13 @@ export function findProjectStatusMatches(projects, searchTexts) {
 }
 
 function buildStatusReply(project) {
-  const parts = [`Proyecto: ${project.name}`];
-  if (project.status) parts.push(`Estado actual: ${project.status}`);
-  if (project.summary) parts.push(`Resumen: ${project.summary}`);
-  if (project.next_step) parts.push(`Siguiente paso: ${project.next_step}`);
-  if (project.blockers) parts.push(`Pendientes o bloqueos: ${project.blockers}`);
-  if (project.updated_at) parts.push(`Ultima actualizacion: ${project.updated_at}`);
-  if (project.owner) parts.push(`Responsable: ${project.owner}`);
-  return parts.join("\n");
+  return `Proyecto: ${project.name}\nEstado actual: ${project.status_paragraph}`;
 }
 
 export default {
   name: "lookup_project_status",
   description:
-    "Consulta el estado actual de proyectos desde un archivo JSON editable para responder avances, progreso y situacion actual.",
+    "Consulta el estado actual de proyectos desde un archivo TXT plano editable, con un parrafo por proyecto.",
   parameters: {
     type: "object",
     properties: {
@@ -255,26 +248,13 @@ export default {
   },
   async run(input, context) {
     const raw = await fs.readFile(PROJECT_STATUS_FILE, "utf8").catch(() => "");
-    const parsed = parseProjectStatusesJson(raw);
-    const projects = parsed.projects;
+    const projects = parseProjectStatusesText(raw);
     const availableProjects = projects.map((project) => project.name);
     const searchTexts = buildSearchTexts(input, context);
     const requestedProject =
       compact(input?.project_name, 160) ??
       compact(stripStatusNoise(input?.query), 160) ??
       compact(stripStatusNoise(context?.userMessage), 160);
-
-    if (!parsed.ok) {
-      return {
-        ok: true,
-        found: false,
-        error: parsed.error,
-        requested_project: requestedProject ?? null,
-        available_projects: [],
-        response_hint:
-          "El archivo de estados JSON no tiene un formato valido. Revisa agents/luxisoft/project_statuses.json."
-      };
-    }
 
     if (!projects.length) {
       return {
@@ -284,12 +264,16 @@ export default {
         requested_project: requestedProject ?? null,
         available_projects: [],
         response_hint:
-          "No hay proyectos cargados en el archivo de estados. Actualiza agents/luxisoft/project_statuses.json para responder esta consulta."
+          "No hay proyectos cargados en el archivo de estados. Actualiza agents/luxisoft/project_statuses.txt para responder esta consulta."
       };
     }
 
     let matches = findProjectStatusMatches(projects, searchTexts);
-    if (!matches.length && projects.length === 1 && /(?:mi proyecto|el proyecto|la tienda|la web|la app)/i.test(context?.userMessage ?? "")) {
+    if (
+      !matches.length &&
+      projects.length === 1 &&
+      /(?:mi proyecto|el proyecto|la tienda|la web|la app)/i.test(context?.userMessage ?? "")
+    ) {
       matches = [{ project: projects[0], score: 60, matched_by: projects[0].name }];
     }
 
@@ -315,12 +299,7 @@ export default {
       project: {
         name: best.project.name,
         aliases: best.project.aliases,
-        status: best.project.status,
-        updated_at: best.project.updated_at,
-        owner: best.project.owner,
-        summary: best.project.summary,
-        next_step: best.project.next_step,
-        blockers: best.project.blockers
+        status_paragraph: best.project.status_paragraph
       },
       response_hint: buildStatusReply(best.project),
       available_projects: availableProjects

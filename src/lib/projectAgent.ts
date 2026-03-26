@@ -424,6 +424,44 @@ function normalizeProjectStatusSearchText(value: string | null | undefined) {
     .trim();
 }
 
+function parseConfiguredProjectStatusEntriesText(text: string) {
+  return String(text ?? "")
+    .split(/\r?\n\s*\r?\n+/)
+    .map((paragraph) =>
+      paragraph
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("#"))
+        .join(" ")
+    )
+    .map((paragraph) => sanitizeValue(paragraph, 900))
+    .filter((paragraph): paragraph is string => Boolean(paragraph))
+    .map((paragraph): ConfiguredProjectStatusEntry | null => {
+      const match = paragraph.match(/^([^:]{2,180})\s*:\s*(.+)$/);
+      if (!match?.[1]) return null;
+
+      const rawHeader = sanitizeValue(match[1], 180);
+      if (!rawHeader) return null;
+
+      const aliasMatch = rawHeader.match(/^(.*?)\s*\((.*?)\)\s*$/);
+      const name = sanitizeValue(aliasMatch?.[1] ?? rawHeader, 120);
+      if (!name) return null;
+
+      const aliases = aliasMatch?.[2]
+        ? aliasMatch[2]
+            .split(",")
+            .map((alias) => sanitizeValue(alias, 120))
+            .filter((alias): alias is string => Boolean(alias))
+        : [];
+
+      return {
+        name,
+        aliases: Array.from(new Set([name, ...aliases]))
+      };
+    })
+    .filter((item): item is ConfiguredProjectStatusEntry => Boolean(item));
+}
+
 function normalizeText(value: string) {
   return value
     .toLowerCase()
@@ -718,34 +756,9 @@ function loadConfiguredProjectStatusEntries(projectKey: string) {
   }
 
   try {
-    const filePath = path.join(resolveAgentsDir(), normalizedProjectKey, "project_statuses.json");
+    const filePath = path.join(resolveAgentsDir(), normalizedProjectKey, "project_statuses.txt");
     const raw = readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw);
-    const collection: unknown[] = Array.isArray(parsed)
-      ? parsed
-      : Array.isArray(parsed?.projects)
-        ? parsed.projects
-        : [];
-
-    const entries = collection
-      .map((item: unknown): ConfiguredProjectStatusEntry | null => {
-        if (!item || typeof item !== "object" || Array.isArray(item)) return null;
-        const record = item as Record<string, unknown>;
-        const name = sanitizeValue(String(record.name ?? ""), 120);
-        if (!name) return null;
-
-        const aliases = Array.isArray(record.aliases)
-          ? record.aliases
-              .map((alias: unknown) => sanitizeValue(String(alias ?? ""), 120))
-              .filter((alias): alias is string => Boolean(alias))
-          : [];
-
-        return {
-          name,
-          aliases: Array.from(new Set([name, ...aliases]))
-        };
-      })
-      .filter((item): item is ConfiguredProjectStatusEntry => Boolean(item));
+    const entries = parseConfiguredProjectStatusEntriesText(raw);
 
     projectStatusEntryCache.set(normalizedProjectKey, {
       loadedAt: now,
