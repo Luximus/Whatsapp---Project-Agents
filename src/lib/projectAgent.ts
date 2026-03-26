@@ -131,9 +131,13 @@ const BUY_KEYWORDS = [
   "ecommerce",
   "e-commerce",
   "pasarela de pago",
+  "pagina",
   "pagina web",
+  "web",
+  "sitio",
   "sitio web",
   "landing page",
+  "tienda",
   "app",
   "aplicacion",
   "aplicacion movil",
@@ -167,6 +171,35 @@ const MEETING_KEYWORDS = [
   "llamada",
   "videollamada"
 ];
+
+const GREETING_TOKENS = new Set([
+  "hola",
+  "hello",
+  "hi",
+  "buenos",
+  "buenas",
+  "buen",
+  "dia",
+  "dias",
+  "tardes",
+  "noches",
+  "saludos",
+  "que",
+  "como",
+  "tal",
+  "estas",
+  "estoy",
+  "soy",
+  "gracias",
+  "vale",
+  "ok",
+  "okay",
+  "ey",
+  "hey"
+]);
+
+const NEED_SIGNAL_REGEX =
+  /(?:necesit|quier|quisier|busc|requier|cotiz|presupuesto|interesad[oa]|me interesa|me gustaria|deseo|pagina|sitio|tienda|ecommerce|app|aplicacion|automatiz|ia|inteligencia artificial|asistente virtual)/i;
 
 const ASSISTANT_NAME = "Valeria";
 const ASSISTANT_COMPANY = "LUXISOFT";
@@ -437,6 +470,28 @@ function containsKeyword(text: string, keywords: string[]) {
   return keywords.some((keyword) => normalized.includes(normalizeText(keyword)));
 }
 
+function tokenizeNormalizedWords(value: string) {
+  return normalizeText(value)
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function isGreetingOnlyMessage(message: string) {
+  const tokens = tokenizeNormalizedWords(message);
+  if (!tokens.length) return true;
+  const meaningfulTokens = tokens.filter((token) => !GREETING_TOKENS.has(token));
+  return meaningfulTokens.length === 0;
+}
+
+function hasNeedSignalInMessage(message: string) {
+  const normalized = normalizeText(message);
+  if (!normalized) return false;
+  if (containsKeyword(normalized, BUY_KEYWORDS)) return true;
+  return NEED_SIGNAL_REGEX.test(normalized);
+}
+
 function extractEmail(text: string) {
   const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   return match?.[0]?.toLowerCase() ?? null;
@@ -502,10 +557,20 @@ function updateLeadProfileFromMessage(profile: LeadProfile, message: string): Le
   }
 
   const needField = text.match(
-    /(?:necesito|quiero|quisiera|busco|requiero|necesitaria|me interesa|me gustaria|deseo)\s+([^.!?\n]+)/i
+    /(?:necesito|quiero|quisiera|busco|requiero|necesitaria|me interesa|me gustaria|deseo|estoy interesad[oa] en|interesad[oa] en)\s+([^.!?\n]+)/i
   );
   if (needField?.[1]) {
     next.need = sanitizeValue(needField[1], 220);
+  }
+
+  if (!sanitizeValue(next.need, 220) && hasNeedSignalInMessage(text) && !isGreetingOnlyMessage(text)) {
+    const withoutGreeting = text
+      .replace(
+        /^(?:hola|buen(?:os)?(?:\s+dias)?|buenas(?:\s+tardes|\s+noches)?|saludos?)\s*[,:\-.]?\s*/i,
+        ""
+      )
+      .trim();
+    next.need = sanitizeValue(withoutGreeting || text, 220);
   }
 
   return next;
@@ -1810,10 +1875,12 @@ export async function handleProjectAgentMessage(input: {
     const isFirstAssistantTurn = assistantMessageCount(state) === 0;
 
     const hasClearNeed = Boolean(sanitizeValue(state.lead.need, 220));
+    const hasNeedSignal = hasClearNeed || hasNeedSignalInMessage(message);
     const shouldUseInitialDiscovery =
       isFirstAssistantTurn &&
       decision.kind === "general" &&
-      !hasClearNeed;
+      !hasNeedSignal &&
+      isGreetingOnlyMessage(message);
 
     if (shouldUseInitialDiscovery) {
       const reply = finalizeAssistantReply(state, formatInitialDiscoveryReply(replyPlan), replyPlan);
