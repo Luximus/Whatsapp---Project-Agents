@@ -38,6 +38,7 @@ type ConversationState = {
   lead: LeadProfile;
   meeting: MeetingProfile;
   awaitingMeetingData: boolean;
+  meetingClosedAt: number | null;
   lastReplyStyle: ReplyStyle | null;
   openaiProjectPreviousResponseIds: Record<string, string>;
 };
@@ -196,6 +197,16 @@ const STEP_REQUEST_KEYWORDS = [
   "implementacion"
 ];
 
+const REOPEN_AFTER_MEETING_KEYWORDS = [
+  "nuevo proyecto",
+  "nueva consulta",
+  "otra consulta",
+  "otra cotizacion",
+  "nueva cotizacion",
+  "empezar de nuevo",
+  "reiniciar"
+];
+
 const LEAD_REQUIRED_FIELDS: Array<keyof LeadProfile> = [
   "firstName",
   "lastName",
@@ -256,6 +267,43 @@ function normalizeText(value: string) {
     .trim();
 }
 
+function toIsoDate(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function spanishWeekdayIndex(value: string | null | undefined) {
+  const normalized = normalizeText(String(value ?? ""));
+  if (normalized === "lunes") return 1;
+  if (normalized === "martes") return 2;
+  if (normalized === "miercoles") return 3;
+  if (normalized === "jueves") return 4;
+  if (normalized === "viernes") return 5;
+  if (normalized === "sabado") return 6;
+  if (normalized === "domingo") return 0;
+  return null;
+}
+
+function inferDateFromWeekday(dayName: string, text: string) {
+  const targetWeekday = spanishWeekdayIndex(dayName);
+  if (targetWeekday === null) return null;
+
+  const normalizedText = normalizeText(text);
+  const nextWeekBias =
+    normalizedText.includes("proxima semana") || normalizedText.includes("la otra semana");
+
+  const now = new Date();
+  const currentWeekday = now.getDay();
+  let delta = (targetWeekday - currentWeekday + 7) % 7;
+  if (nextWeekBias) delta += 7;
+
+  const inferred = new Date(now);
+  inferred.setDate(now.getDate() + delta);
+  return toIsoDate(inferred);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -297,6 +345,59 @@ function titleCase(value: string | null | undefined) {
     .join(" ");
 }
 
+function looksLikePersonName(value: string | null | undefined) {
+  const normalized = sanitizeValue(value, 180);
+  if (!normalized) return false;
+  if (/@|\d/.test(normalized)) return false;
+
+  const blocked = new Set([
+    "para",
+    "algo",
+    "existente",
+    "empresa",
+    "emprendimiento",
+    "tienda",
+    "virtual",
+    "producto",
+    "productos",
+    "correo",
+    "gmail",
+    "semana",
+    "dia",
+    "viernes",
+    "sabado",
+    "domingo",
+    "llamada",
+    "tarde",
+    "manana",
+    "noche"
+  ]);
+
+  const tokens = normalized
+    .split(" ")
+    .map((item) => normalizeText(item))
+    .filter(Boolean);
+  if (tokens.length < 2 || tokens.length > 5) return false;
+  if (tokens.some((item) => blocked.has(item))) return false;
+  return tokens.every((item) => /^[a-z]+$/i.test(item));
+}
+
+function applyPersonNameToLead(profile: LeadProfile, fullName: string) {
+  const compact = sanitizeValue(fullName, 180);
+  if (!compact || !looksLikePersonName(compact)) return profile;
+
+  const tokens = compact.split(" ").filter(Boolean);
+  if (tokens.length < 2) return profile;
+
+  const firstName = titleCase(tokens[0]);
+  const lastName = titleCase(tokens.slice(1).join(" "));
+  return {
+    ...profile,
+    firstName: firstName ?? profile.firstName,
+    lastName: lastName ?? profile.lastName
+  };
+}
+
 function ensureKnownProjectKey(value: string | null | undefined) {
   const normalized = normalizeProjectKey(value);
   if (!normalized) return null;
@@ -317,21 +418,25 @@ function extractEmail(text: string) {
 function updateLeadProfileFromMessage(profile: LeadProfile, message: string): LeadProfile {
   const next: LeadProfile = { ...profile };
   const text = String(message ?? "");
+  const normalizedText = normalizeText(text);
 
   const email = extractEmail(text);
   if (email) next.email = email;
 
   const fullName = text.match(
-    /(?:mi nombre es|me llamo|soy)\s+([A-Za-z\u00C0-\u017F]+)\s+([A-Za-z\u00C0-\u017F]+)(?:\s+([A-Za-z\u00C0-\u017F]+))?/i
+    /(?:mi nombre es|me llamo|soy|es)\s+([A-Za-z\u00C0-\u017F]+(?:\s+[A-Za-z\u00C0-\u017F]+){1,4})/i
   );
-  if (fullName) {
-    if (!next.firstName) next.firstName = titleCase(fullName[1]);
-    if (!next.lastName) next.lastName = titleCase(fullName[2]);
+  if (fullName?.[1]) {
+    const updated = applyPersonNameToLead(next, fullName[1]);
+    next.firstName = updated.firstName;
+    next.lastName = updated.lastName;
   }
 
-  const firstNameField = text.match(/(?:nombres?|nombre)\s*[:\-]\s*([^\n,.;]+)/i);
-  if (firstNameField?.[1]) {
-    next.firstName = titleCase(firstNameField[1]);
+  const explicitName = text.match(/(?:nombres?\s*(?:son|es)?|nombre(?: completo)?)\s*[:\-]?\s*([^\n,.;]+)/i);
+  if (explicitName?.[1] && looksLikePersonName(explicitName[1])) {
+    const updated = applyPersonNameToLead(next, explicitName[1]);
+    next.firstName = updated.firstName;
+    next.lastName = updated.lastName;
   }
 
   const lastNameField = text.match(/(?:apellidos?)\s*[:\-]\s*([^\n,.;]+)/i);
@@ -344,6 +449,29 @@ function updateLeadProfileFromMessage(profile: LeadProfile, message: string): Le
   );
   if (companyField?.[1]) {
     next.company = sanitizeValue(companyField[1], 140);
+  }
+
+  const ambiguousNameField = text.match(/(?:el nombre es|nombre es)\s*([^\n,.;]+)/i);
+  if (ambiguousNameField?.[1]) {
+    const candidate = sanitizeValue(ambiguousNameField[1], 140);
+    if (looksLikePersonName(candidate)) {
+      const updated = applyPersonNameToLead(next, candidate ?? "");
+      next.firstName = updated.firstName;
+      next.lastName = updated.lastName;
+    } else if (!next.company) {
+      next.company = candidate;
+    }
+  }
+
+  if (!next.company) {
+    const bareBrand = text.match(/^(?:es|soy)\s+([A-Za-z0-9][A-Za-z0-9\s_-]{1,60})$/i);
+    if (
+      bareBrand?.[1] &&
+      !looksLikePersonName(bareBrand[1]) &&
+      /(?:empresa|emprendimiento|negocio|marca|nombre)/i.test(normalizedText)
+    ) {
+      next.company = sanitizeValue(bareBrand[1], 140);
+    }
   }
 
   const needField = text.match(
@@ -374,6 +502,11 @@ function updateMeetingProfileFromMessage(profile: MeetingProfile, message: strin
   const dateMatch = text.match(/\b(\d{4}-\d{2}-\d{2}|\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?)\b/);
   if (dateMatch?.[1]) {
     next.meetingDate = sanitizeValue(dateMatch[1], 40);
+  } else if (next.meetingDay) {
+    const inferredDate = inferDateFromWeekday(next.meetingDay, text);
+    if (inferredDate) {
+      next.meetingDate = inferredDate;
+    }
   }
 
   const timeMatch = text.match(/\b([01]?\d|2[0-3])[:.]([0-5]\d)\s*(am|pm)?\b/i);
@@ -549,14 +682,21 @@ function formatAssistantPrivacyReply() {
   return `Por politica interna solo puedo compartir mi nombre (${ASSISTANT_NAME}) y que trabajo en ${ASSISTANT_COMPANY}. Si quieres, te ayudo con informacion oficial de la empresa.`;
 }
 
+function shouldReopenAfterMeeting(message: string) {
+  const normalized = normalizeText(message);
+  return REOPEN_AFTER_MEETING_KEYWORDS.some((item) => normalized.includes(normalizeText(item)));
+}
+
 function buildMeetingCollectionPrompt(state: ConversationState, firstInteraction: boolean, plan: ReplyPlan) {
   const { missingLead, missingMeeting } = getMissingMeetingFields(state);
   const nextLead = missingLead[0] ?? null;
   const nextMeeting = missingMeeting[0] ?? null;
   const nextQuestion = nextLead ? LEAD_FIELD_QUESTIONS[nextLead] : nextMeeting ? MEETING_FIELD_QUESTIONS[nextMeeting] : null;
   if (!nextQuestion) return null;
+  const totalMissing = missingLead.length + missingMeeting.length;
+  const shouldSendChecklist = firstInteraction && totalMissing >= 4;
 
-  if (firstInteraction) {
+  if (shouldSendChecklist) {
     if (plan.style === "steps") {
       return [
         "Perfecto, para agendar reunion con un especialista humano necesito:",
@@ -1196,6 +1336,9 @@ function getConversation(phoneE164: string, projectKey: string) {
   if (existing) {
     if (projectKey) existing.projectKey = projectKey;
     if (!existing.lastReplyStyle) existing.lastReplyStyle = null;
+    if (typeof existing.meetingClosedAt !== "number") {
+      existing.meetingClosedAt = null;
+    }
     if (
       !existing.openaiProjectPreviousResponseIds ||
       typeof existing.openaiProjectPreviousResponseIds !== "object" ||
@@ -1213,6 +1356,7 @@ function getConversation(phoneE164: string, projectKey: string) {
     lead: emptyLeadProfile(),
     meeting: emptyMeetingProfile(),
     awaitingMeetingData: false,
+    meetingClosedAt: null,
     lastReplyStyle: null,
     openaiProjectPreviousResponseIds: {}
   };
@@ -1449,9 +1593,10 @@ async function runMeetingQualification(input: {
     summary: buildMeetingSummary(input.state, input.phoneE164)
   });
   input.state.awaitingMeetingData = false;
+  input.state.meetingClosedAt = transfer.sent ? Date.now() : null;
 
   const rawReply = transfer.sent
-    ? "Perfecto, ya agende tu solicitud de reunion con especialista. Te contactaran con los datos registrados."
+    ? "Perfecto, ya agende tu solicitud de reunion con especialista. Te contactaran con los datos registrados. Con esto dejamos cerrada esta gestion por aqui."
     : "Registre tu solicitud, pero fallo el envio al agente humano en este momento. Intenta de nuevo en unos minutos.";
   const reply = finalizeAssistantReply(input.state, rawReply, input.replyPlan);
   appendHistory(input.state, "assistant", reply);
@@ -1519,6 +1664,41 @@ export async function handleProjectAgentMessage(input: {
   const replyPlan = buildReplyPlan(state, message);
 
   try {
+    if (state.meetingClosedAt) {
+      if (shouldReopenAfterMeeting(message)) {
+        state.meetingClosedAt = null;
+        state.awaitingMeetingData = false;
+        state.meeting = emptyMeetingProfile();
+        const reply = finalizeAssistantReply(
+          state,
+          "Perfecto, abrimos una nueva gestion. Cuentame que servicio necesitas ahora y avanzamos paso a paso.",
+          replyPlan
+        );
+        appendHistory(state, "assistant", reply);
+        return {
+          handled: true,
+          projectKey: state.projectKey,
+          reply,
+          escalated: false,
+          escalationSent: false
+        };
+      }
+
+      const reply = finalizeAssistantReply(
+        state,
+        "Tu solicitud de reunion ya quedo agendada y cerrada. Un especialista humano te contactara. Si quieres iniciar una nueva solicitud, escribe: nuevo proyecto.",
+        replyPlan
+      );
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
+    }
+
     if (state.awaitingMeetingData) {
       return await runMeetingQualification({
         state,
