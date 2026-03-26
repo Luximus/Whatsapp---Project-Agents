@@ -199,6 +199,7 @@ const envSchema = z.object({
   SMTP_PASS: z.string().optional().default(""),
   SMTP_FROM: z.string().optional().default(""),
   MEETING_QUOTE_EMAIL_TO: z.string().optional().default("quote@luxisoft.com"),
+  SUPPORT_TICKET_EMAIL_TO: z.string().optional().default("support@luxisoft.com"),
 
   REPORT_EMAIL_TO: z.string().optional().default("reports@luxisoft.com"),
   REPORT_CRON: z.string().optional().default("59 23 * * *"),
@@ -238,6 +239,7 @@ export const env = {
   smtpPass: raw.SMTP_PASS.trim(),
   smtpFrom: raw.SMTP_FROM.trim(),
   meetingQuoteEmailTo: raw.MEETING_QUOTE_EMAIL_TO.trim() || "quote@luxisoft.com",
+  supportTicketEmailTo: raw.SUPPORT_TICKET_EMAIL_TO.trim() || "support@luxisoft.com",
   reportEmailTo: raw.REPORT_EMAIL_TO.trim() || "reports@luxisoft.com",
   reportCron: raw.REPORT_CRON.trim() || "59 23 * * *",
   reportTimezone: raw.REPORT_TIMEZONE.trim() || "America/Bogota",

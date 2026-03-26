@@ -5,7 +5,9 @@ import PDFDocument from "pdfkit";
 import { createElement } from "react";
 import { env } from "../env.js";
 import { WhatsappDailyReportEmail } from "../emails/templates/WhatsappDailyReportEmail.js";
-import type { LuxisoftEmailSection } from "../emails/templates/LuxisoftEmailTemplate.js";
+import LuxisoftEmailTemplate, {
+  type LuxisoftEmailSection
+} from "../emails/templates/LuxisoftEmailTemplate.js";
 import { sendWhatsappText } from "./whatsapp.js";
 
 type LoggerLike = {
@@ -48,6 +50,7 @@ type DailyMetrics = {
   outboundAudio: number;
   meetingsScheduled: number;
   meetingsNotifiedHuman: number;
+  supportTicketsCreated: number;
   openaiFailures: number;
   errors: number;
   openaiByModel: Record<string, ModelUsage>;
@@ -69,6 +72,17 @@ type MeetingQuoteEmailInput = {
   meetingTime: string | null;
   reason: string;
   notifiedHuman: boolean;
+};
+
+type SupportTicketEmailInput = {
+  projectKey: string;
+  userPhone: string;
+  contactName: string;
+  contactEmail: string;
+  company: string;
+  topic: string;
+  summary: string;
+  transcript?: string[];
 };
 
 const metricsByDate = new Map<string, DailyMetrics>();
@@ -127,6 +141,7 @@ function ensureDailyMetrics(dateKey = currentDateKey()) {
     outboundAudio: 0,
     meetingsScheduled: 0,
     meetingsNotifiedHuman: 0,
+    supportTicketsCreated: 0,
     openaiFailures: 0,
     errors: 0,
     openaiByModel: {}
@@ -228,6 +243,10 @@ export function trackMeetingScheduled(input: MeetingRecord) {
   meetingsByDate.set(dateKey, current);
 }
 
+export function trackSupportTicketCreated() {
+  ensureDailyMetrics().supportTicketsCreated += 1;
+}
+
 export function trackOperationalError() {
   ensureDailyMetrics().errors += 1;
 }
@@ -268,6 +287,7 @@ function buildEmailSections(dateKey: string, metrics: DailyMetrics): LuxisoftEma
       rows: [
         { label: "Reuniones agendadas", value: String(metrics.meetingsScheduled) },
         { label: "Reuniones notificadas a agente humano", value: String(metrics.meetingsNotifiedHuman) },
+        { label: "Tickets de soporte creados", value: String(metrics.supportTicketsCreated) },
         { label: "Errores operativos", value: String(metrics.errors) },
         { label: "Errores OpenAI", value: String(metrics.openaiFailures) },
         { label: "Fecha de corte", value: dateLabelForReport(dateKey) }
@@ -317,6 +337,7 @@ function buildReportPdfBuffer(input: {
       `Salientes texto/audio: ${input.metrics.outboundText}/${input.metrics.outboundAudio}`,
       `Reuniones agendadas: ${input.metrics.meetingsScheduled}`,
       `Notificadas a humano: ${input.metrics.meetingsNotifiedHuman}`,
+      `Tickets de soporte creados: ${input.metrics.supportTicketsCreated}`,
       `Errores operativos: ${input.metrics.errors}`,
       `Errores OpenAI: ${input.metrics.openaiFailures}`
     ];
@@ -375,6 +396,48 @@ function buildMeetingQuoteEmailBody(input: MeetingQuoteEmailInput) {
   ].join("\n");
 }
 
+function buildSupportTicketSections(input: SupportTicketEmailInput, dateLabel: string): LuxisoftEmailSection[] {
+  return [
+    {
+      title: "Ticket",
+      rows: [
+        { label: "Fecha", value: dateLabel },
+        { label: "Proyecto", value: input.projectKey || "(sin dato)" },
+        { label: "Canal", value: "WhatsApp" },
+        { label: "Tipo", value: input.topic || "soporte" }
+      ]
+    },
+    {
+      title: "Contacto",
+      rows: [
+        { label: "Nombre", value: input.contactName || "(sin dato)" },
+        { label: "Empresa", value: input.company || "(sin dato)" },
+        { label: "Correo", value: input.contactEmail || "(sin dato)" },
+        { label: "Telefono", value: input.userPhone || "(sin dato)" }
+      ]
+    },
+    {
+      title: "Solicitud",
+      rows: [{ label: "Resumen", value: input.summary || "(sin dato)" }]
+    }
+  ];
+}
+
+function buildSupportTicketNotes(input: SupportTicketEmailInput) {
+  const submittedAt = new Date().toISOString();
+  const notes = [`Generado: ${submittedAt}`];
+  const transcript = Array.isArray(input.transcript) ? input.transcript.filter(Boolean) : [];
+
+  if (transcript.length) {
+    notes.push("Mensajes recientes del usuario:");
+    for (const item of transcript.slice(0, 8)) {
+      notes.push(item);
+    }
+  }
+
+  return notes;
+}
+
 export async function sendMeetingQuoteEmail(input: MeetingQuoteEmailInput) {
   if (!smtpConfigured()) {
     loggerRef.warn({ to: env.meetingQuoteEmailTo }, "Meeting quote email skipped: SMTP not configured");
@@ -420,6 +483,90 @@ export async function sendMeetingQuoteEmail(input: MeetingQuoteEmailInput) {
       ok: false,
       sent: false,
       error: String(err?.message ?? "meeting_quote_email_failed")
+    };
+  }
+}
+
+export async function sendSupportTicketEmail(input: SupportTicketEmailInput) {
+  if (!smtpConfigured()) {
+    loggerRef.warn(
+      { to: env.supportTicketEmailTo },
+      "Support ticket email skipped: SMTP not configured"
+    );
+    return {
+      ok: false,
+      sent: false,
+      error: "smtp_not_configured"
+    };
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: env.smtpHost,
+    port: env.smtpPort,
+    secure: env.smtpSecure,
+    auth: {
+      user: env.smtpUser,
+      pass: env.smtpPass
+    }
+  });
+
+  const dateKey = currentDateKey();
+  const dateLabel = dateLabelForReport(dateKey);
+  const sections = buildSupportTicketSections(input, dateLabel);
+  const notes = buildSupportTicketNotes(input);
+
+  const html = await render(
+    createElement(LuxisoftEmailTemplate, {
+      preview: `Nuevo ticket WhatsApp - ${dateLabel}`,
+      title: `Ticket WhatsApp - ${dateLabel}`,
+      subtitle: "Solicitud de soporte/comercial",
+      intro:
+        "Se registro un nuevo ticket desde WhatsApp. El equipo de soporte debe revisar el caso y responder al contacto registrado.",
+      reportDateLabel: dateLabel,
+      logoUrl: env.reportLogoUrl,
+      sections,
+      notes
+    })
+  );
+
+  const text = [
+    "Nuevo ticket de soporte desde WhatsApp",
+    "",
+    `Fecha: ${dateLabel}`,
+    `Proyecto: ${input.projectKey || "(sin dato)"}`,
+    `Tipo: ${input.topic || "soporte"}`,
+    `Nombre: ${input.contactName || "(sin dato)"}`,
+    `Empresa: ${input.company || "(sin dato)"}`,
+    `Correo: ${input.contactEmail || "(sin dato)"}`,
+    `Telefono: ${input.userPhone || "(sin dato)"}`,
+    `Resumen: ${input.summary || "(sin dato)"}`,
+    "",
+    `Generado: ${new Date().toISOString()}`
+  ].join("\n");
+
+  try {
+    await transporter.sendMail({
+      from: env.smtpFrom || env.smtpUser,
+      to: env.supportTicketEmailTo,
+      subject: `Ticket WhatsApp - ${dateLabel}`,
+      html,
+      text
+    });
+
+    loggerRef.info(
+      { to: env.supportTicketEmailTo, projectKey: input.projectKey, userPhone: input.userPhone },
+      "Support ticket email sent"
+    );
+    return { ok: true, sent: true };
+  } catch (err: any) {
+    loggerRef.error(
+      { err, to: env.supportTicketEmailTo, projectKey: input.projectKey, userPhone: input.userPhone },
+      "Support ticket email failed"
+    );
+    return {
+      ok: false,
+      sent: false,
+      error: String(err?.message ?? "support_ticket_email_failed")
     };
   }
 }

@@ -5,11 +5,13 @@ import {
 } from "../agents/repository.js";
 import { env } from "../env.js";
 import {
+  sendSupportTicketEmail,
   sendMeetingQuoteEmail,
   trackMeetingScheduled,
   trackOpenAIFailure,
   trackOpenAIUsage,
-  trackOperationalError
+  trackOperationalError,
+  trackSupportTicketCreated
 } from "./reporting.js";
 import { scrapePageTextFromHtml } from "./scraping/textWeb.js";
 import { normalizeE164, sendWhatsappText } from "./whatsapp.js";
@@ -43,6 +45,9 @@ type ConversationState = {
   history: Array<{ role: "user" | "assistant"; text: string; at: number }>;
   lead: LeadProfile;
   meeting: MeetingProfile;
+  supportTopic: string | null;
+  awaitingSupportTicketData: boolean;
+  supportClosedAt: number | null;
   awaitingMeetingData: boolean;
   meetingClosedAt: number | null;
   lastReplyStyle: ReplyStyle | null;
@@ -246,6 +251,16 @@ const REOPEN_AFTER_MEETING_KEYWORDS = [
   "reiniciar"
 ];
 
+const REOPEN_AFTER_SUPPORT_KEYWORDS = [
+  "nuevo ticket",
+  "nueva solicitud",
+  "otra solicitud",
+  "otro caso",
+  "nuevo caso",
+  "nuevo proyecto",
+  "reiniciar"
+];
+
 const POST_MEETING_COURTESY_KEYWORDS = [
   "gracias",
   "muchas gracias",
@@ -272,6 +287,14 @@ const LEAD_REQUIRED_FIELDS: Array<keyof LeadProfile> = [
   "lastName",
   "company",
   "email"
+];
+
+const SUPPORT_REQUIRED_FIELDS: Array<keyof LeadProfile> = [
+  "firstName",
+  "lastName",
+  "company",
+  "email",
+  "need"
 ];
 
 const LEAD_FIELD_QUESTIONS: Record<keyof LeadProfile, string> = {
@@ -580,6 +603,10 @@ function getMissingLeadFields(profile: LeadProfile) {
   return LEAD_REQUIRED_FIELDS.filter((field) => !sanitizeValue(profile[field], 220));
 }
 
+function getMissingSupportFields(profile: LeadProfile) {
+  return SUPPORT_REQUIRED_FIELDS.filter((field) => !sanitizeValue(profile[field], 220));
+}
+
 function updateMeetingProfileFromMessage(profile: MeetingProfile, message: string, lead: LeadProfile): MeetingProfile {
   const next: MeetingProfile = { ...profile };
   const text = String(message ?? "");
@@ -779,6 +806,11 @@ function shouldReopenAfterMeeting(message: string) {
   return REOPEN_AFTER_MEETING_KEYWORDS.some((item) => normalized.includes(normalizeText(item)));
 }
 
+function shouldReopenAfterSupport(message: string) {
+  const normalized = normalizeText(message);
+  return REOPEN_AFTER_SUPPORT_KEYWORDS.some((item) => normalized.includes(normalizeText(item)));
+}
+
 function isPostMeetingCourtesyMessage(message: string) {
   const normalized = normalizeText(message);
   if (!normalized) return false;
@@ -791,6 +823,17 @@ function isPostMeetingCourtesyMessage(message: string) {
 
   const tokens = normalized.split(/\s+/).filter(Boolean);
   return tokens.length <= 10;
+}
+
+function inferSupportTopic(message: string) {
+  const normalized = normalizeText(message);
+  if (!normalized) return "soporte general";
+  if (/(cotizacion|cotizar|presupuesto)/i.test(normalized)) return "cotizacion";
+  if (/(comprar|compra|adquirir|contratar)/i.test(normalized)) return "compra";
+  if (/(aplicacion|app|android|ios)/i.test(normalized)) return "aplicacion";
+  if (/(servicio|servicios)/i.test(normalized)) return "servicio";
+  if (/(soporte|problema|falla|error|incidencia)/i.test(normalized)) return "soporte";
+  return "soporte general";
 }
 
 function buildMeetingCollectionPrompt(state: ConversationState, firstInteraction: boolean, plan: ReplyPlan) {
@@ -830,6 +873,46 @@ function buildMeetingCollectionPrompt(state: ConversationState, firstInteraction
   return nextQuestion;
 }
 
+function buildSupportCollectionPrompt(
+  state: ConversationState,
+  firstInteraction: boolean,
+  plan: ReplyPlan,
+  topic: string
+) {
+  const missing = getMissingSupportFields(state.lead);
+  const nextField = missing[0] ?? null;
+  const nextQuestion = nextField ? LEAD_FIELD_QUESTIONS[nextField] : null;
+  if (!nextQuestion) return null;
+
+  const shouldSendChecklist = firstInteraction && missing.length >= 3;
+  if (shouldSendChecklist) {
+    if (plan.style === "steps") {
+      return [
+        `Perfecto, abrire un ticket de ${topic} para tu solicitud.`,
+        "1. Nombre(s)",
+        "2. Apellido(s)",
+        "3. Empresa",
+        "4. Correo",
+        "5. Detalle de lo que necesitas",
+        nextQuestion
+      ].join("\n");
+    }
+
+    return [
+      `Perfecto, abrire un ticket de ${topic}.`,
+      "Para registrarlo necesito estos datos:",
+      "- nombres",
+      "- apellidos",
+      "- empresa",
+      "- correo",
+      "- detalle de la solicitud",
+      nextQuestion
+    ].join("\n");
+  }
+
+  return nextQuestion;
+}
+
 function classifyRouting(message: string, state: ConversationState): RoutingDecision {
   const support = containsKeyword(message, SUPPORT_KEYWORDS);
   const buy = containsKeyword(message, BUY_KEYWORDS);
@@ -861,6 +944,15 @@ function classifyRouting(message: string, state: ConversationState): RoutingDeci
   }
 
   return { kind: "general" };
+}
+
+function isSupportTicketDecision(decision: RoutingDecision) {
+  return (
+    decision.kind === "support_project" ||
+    decision.kind === "support_project_unknown" ||
+    decision.kind === "sales_project" ||
+    decision.kind === "sales_offer_catalog"
+  );
 }
 
 function tokenize(input: string) {
@@ -1437,11 +1529,41 @@ function buildMeetingSummary(state: ConversationState, phoneE164: string) {
   ].join("\n");
 }
 
+function buildSupportTicketSummary(state: ConversationState, phoneE164: string) {
+  const recentUserMessages = state.history
+    .filter((item) => item.role === "user")
+    .slice(-6)
+    .map((item) => item.text.slice(0, 220));
+
+  const contactName = `${state.lead.firstName ?? ""} ${state.lead.lastName ?? ""}`.trim();
+  const topic = state.supportTopic ?? "soporte general";
+  const summary = state.lead.need ?? recentUserMessages[recentUserMessages.length - 1] ?? "(sin dato)";
+
+  return {
+    topic,
+    summary,
+    contactName,
+    contactEmail: state.lead.email ?? "",
+    company: state.lead.company ?? "",
+    transcript: recentUserMessages.map((msg, index) => `${index + 1}. ${msg}`),
+    userPhone: phoneE164
+  };
+}
+
 function getConversation(phoneE164: string, projectKey: string) {
   const existing = conversations.get(phoneE164);
   if (existing) {
     if (projectKey) existing.projectKey = projectKey;
     if (!existing.lastReplyStyle) existing.lastReplyStyle = null;
+    if (typeof existing.supportClosedAt !== "number") {
+      existing.supportClosedAt = null;
+    }
+    if (typeof existing.awaitingSupportTicketData !== "boolean") {
+      existing.awaitingSupportTicketData = false;
+    }
+    if (!existing.supportTopic) {
+      existing.supportTopic = null;
+    }
     if (typeof existing.meetingClosedAt !== "number") {
       existing.meetingClosedAt = null;
     }
@@ -1461,6 +1583,9 @@ function getConversation(phoneE164: string, projectKey: string) {
     history: [],
     lead: emptyLeadProfile(),
     meeting: emptyMeetingProfile(),
+    supportTopic: null,
+    awaitingSupportTicketData: false,
+    supportClosedAt: null,
     awaitingMeetingData: false,
     meetingClosedAt: null,
     lastReplyStyle: null,
@@ -1672,6 +1797,65 @@ async function notifyHumanMeeting(input: {
   }
 }
 
+async function runSupportTicketQualification(input: {
+  state: ConversationState;
+  phoneE164: string;
+  firstInteraction: boolean;
+  replyPlan: ReplyPlan;
+}) {
+  const topic = input.state.supportTopic ?? "soporte general";
+  const missing = getMissingSupportFields(input.state.lead);
+  if (missing.length > 0) {
+    const prompt = buildSupportCollectionPrompt(input.state, input.firstInteraction, input.replyPlan, topic);
+    const rawReply = prompt ?? "Necesito un dato adicional para registrar tu ticket.";
+    const reply = finalizeAssistantReply(input.state, rawReply, input.replyPlan);
+    appendHistory(input.state, "assistant", reply);
+    return {
+      handled: true,
+      projectKey: input.state.projectKey,
+      reply,
+      escalated: true,
+      escalationSent: false
+    } as AgentReply;
+  }
+
+  const ticket = buildSupportTicketSummary(input.state, input.phoneE164);
+  const mail = await sendSupportTicketEmail({
+    projectKey: input.state.projectKey,
+    userPhone: ticket.userPhone,
+    contactName: ticket.contactName,
+    contactEmail: ticket.contactEmail,
+    company: ticket.company,
+    topic: ticket.topic,
+    summary: ticket.summary,
+    transcript: ticket.transcript
+  });
+  if (!mail.sent) {
+    trackOperationalError();
+  }
+
+  input.state.awaitingSupportTicketData = false;
+  input.state.supportClosedAt = mail.sent ? Date.now() : null;
+
+  if (mail.sent) {
+    trackSupportTicketCreated();
+  }
+
+  const rawReply = mail.sent
+    ? "Perfecto, ya registre tu ticket de soporte y lo envie al equipo de LUXISOFT. Te daremos respuesta lo mas pronto posible."
+    : "Registre tu solicitud, pero fallo el envio del ticket en este momento. Intenta nuevamente en unos minutos.";
+  const reply = finalizeAssistantReply(input.state, rawReply, input.replyPlan);
+  appendHistory(input.state, "assistant", reply);
+
+  return {
+    handled: true,
+    projectKey: input.state.projectKey,
+    reply,
+    escalated: true,
+    escalationSent: mail.sent
+  } as AgentReply;
+}
+
 async function runMeetingQualification(input: {
   state: ConversationState;
   phoneE164: string;
@@ -1787,6 +1971,58 @@ export async function handleProjectAgentMessage(input: {
   const replyPlan = buildReplyPlan(state, message);
 
   try {
+    if (state.supportClosedAt) {
+      if (shouldReopenAfterSupport(message)) {
+        state.supportClosedAt = null;
+        state.awaitingSupportTicketData = false;
+        state.supportTopic = null;
+        state.lead.need = null;
+        const reply = finalizeAssistantReply(
+          state,
+          "Perfecto, abrimos un nuevo ticket. Cuentame brevemente que necesitas y lo registro.",
+          replyPlan
+        );
+        appendHistory(state, "assistant", reply);
+        return {
+          handled: true,
+          projectKey: state.projectKey,
+          reply,
+          escalated: false,
+          escalationSent: false
+        };
+      }
+
+      if (isPostMeetingCourtesyMessage(message)) {
+        const reply = finalizeAssistantReply(
+          state,
+          "Con gusto, gracias por escribirnos. Quedo atenta si deseas registrar otro ticket.",
+          replyPlan
+        );
+        appendHistory(state, "assistant", reply);
+        return {
+          handled: true,
+          projectKey: state.projectKey,
+          reply,
+          escalated: false,
+          escalationSent: false
+        };
+      }
+
+      const reply = finalizeAssistantReply(
+        state,
+        "Tu ticket ya fue registrado y enviado al equipo de LUXISOFT. Te responderemos lo mas pronto posible. Si deseas abrir otro, escribe: nuevo ticket.",
+        replyPlan
+      );
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
+    }
+
     if (state.meetingClosedAt) {
       if (shouldReopenAfterMeeting(message)) {
         state.meetingClosedAt = null;
@@ -1836,6 +2072,15 @@ export async function handleProjectAgentMessage(input: {
         escalated: false,
         escalationSent: false
       };
+    }
+
+    if (state.awaitingSupportTicketData) {
+      return await runSupportTicketQualification({
+        state,
+        phoneE164: phone,
+        firstInteraction: false,
+        replyPlan
+      });
     }
 
     if (state.awaitingMeetingData) {
@@ -1894,7 +2139,7 @@ export async function handleProjectAgentMessage(input: {
       };
     }
 
-    if (decision.kind === "support_project") {
+    if (decision.kind === "support_project" || decision.kind === "sales_project") {
       state.projectKey = env.defaultProject;
       state.projectConfirmed = true;
     }
@@ -1921,16 +2166,25 @@ export async function handleProjectAgentMessage(input: {
       });
     }
 
+    if (isSupportTicketDecision(decision)) {
+      state.projectKey = env.defaultProject || state.projectKey;
+      state.projectConfirmed = true;
+      state.awaitingSupportTicketData = true;
+      state.supportTopic = inferSupportTopic(state.lead.need ?? message);
+      return await runSupportTicketQualification({
+        state,
+        phoneE164: phone,
+        firstInteraction: true,
+        replyPlan
+      });
+    }
+
     const singleProjectKey = env.defaultProject || "luxisoft";
     state.projectKey = singleProjectKey;
     state.projectConfirmed = true;
 
     const objective =
-      decision.kind === "support_project" || decision.kind === "support_project_unknown"
-        ? "Atender una consulta de soporte del usuario y guiar el siguiente paso."
-        : decision.kind === "sales_project" || decision.kind === "sales_offer_catalog"
-          ? "Atender interes comercial del usuario y calificar su necesidad."
-          : "Entender la necesidad del usuario, explicar una solucion breve y guiar al siguiente paso comercial.";
+      "Entender la necesidad del usuario, explicar una solucion breve y guiar al siguiente paso comercial.";
 
     const resolved = await runProjectAgent({
       projectKey: singleProjectKey,
