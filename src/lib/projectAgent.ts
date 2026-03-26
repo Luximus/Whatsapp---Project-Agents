@@ -353,6 +353,14 @@ const SUPPORT_REQUIRED_FIELDS: Array<keyof LeadProfile> = [
   "need"
 ];
 
+const LEAD_PROGRESS_FIELDS: Array<keyof LeadProfile> = [
+  "firstName",
+  "lastName",
+  "company",
+  "email",
+  "need"
+];
+
 const LEAD_FIELD_QUESTIONS: Record<keyof LeadProfile, string> = {
   firstName: "Por favor indicame tus nombres.",
   lastName: "Ahora indicame tus apellidos.",
@@ -736,7 +744,40 @@ function extractEmail(text: string) {
   return match?.[0]?.toLowerCase() ?? null;
 }
 
-function updateLeadProfileFromMessage(
+function leadFieldMaxLength(field: keyof LeadProfile) {
+  return field === "need" ? 220 : 140;
+}
+
+function splitLeadMessageSegments(message: string) {
+  const raw = String(message ?? "");
+  const segments = raw
+    .split(/\r?\n+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (segments.length > 0) return segments;
+
+  const compact = raw.trim();
+  return compact ? [compact] : [];
+}
+
+function resolvePendingLeadField(profile: LeadProfile, pendingLeadField: keyof LeadProfile | null) {
+  if (!pendingLeadField) return null;
+
+  const startIndex = LEAD_PROGRESS_FIELDS.indexOf(pendingLeadField);
+  const fields =
+    startIndex >= 0 ? LEAD_PROGRESS_FIELDS.slice(startIndex) : LEAD_PROGRESS_FIELDS;
+
+  for (const field of fields) {
+    if (!sanitizeValue(profile[field], leadFieldMaxLength(field))) {
+      return field;
+    }
+  }
+
+  return null;
+}
+
+function updateLeadProfileFromSegment(
   profile: LeadProfile,
   message: string,
   pendingLeadField: keyof LeadProfile | null = null
@@ -765,7 +806,7 @@ function updateLeadProfileFromMessage(
   }
 
   const standaloneName = sanitizeValue(text, 180);
-  if (standaloneName && looksLikeStandaloneNameMessage(standaloneName) && (!next.firstName || !next.lastName)) {
+  if (standaloneName && looksLikeStandaloneNameMessage(standaloneName) && !next.firstName) {
     const updated = applyPersonNameToLead(next, standaloneName);
     next.firstName = updated.firstName;
     next.lastName = updated.lastName;
@@ -828,6 +869,25 @@ function updateLeadProfileFromMessage(
       )
       .trim();
     next.need = sanitizeValue(withoutGreeting || text, 220);
+  }
+
+  return next;
+}
+
+function updateLeadProfileFromMessage(
+  profile: LeadProfile,
+  message: string,
+  pendingLeadField: keyof LeadProfile | null = null
+): LeadProfile {
+  const segments = splitLeadMessageSegments(message);
+  if (!segments.length) return { ...profile };
+
+  let next: LeadProfile = { ...profile };
+  let activePending = pendingLeadField;
+
+  for (const segment of segments) {
+    next = updateLeadProfileFromSegment(next, segment, activePending);
+    activePending = resolvePendingLeadField(next, activePending);
   }
 
   return next;
