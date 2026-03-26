@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   loadProjectAgent,
@@ -100,10 +101,20 @@ type ProjectAgentResult = {
   responseId: string | null;
 };
 
+type ConfiguredProjectStatusEntry = {
+  name: string;
+  aliases: string[];
+};
+
 const knowledgeCache = new Map<string, CachedKnowledge>();
 const conversations = new Map<string, ConversationState>();
+const projectStatusEntryCache = new Map<
+  string,
+  { loadedAt: number; entries: ConfiguredProjectStatusEntry[] }
+>();
 
 const KNOWLEDGE_CACHE_TTL_MS = 10 * 60 * 1000;
+const PROJECT_STATUS_CACHE_TTL_MS = 60 * 1000;
 const MAX_HISTORY_ITEMS = 12;
 const MAX_RESPONSE_CHARS = 1400;
 const MAX_SOURCE_LINKS_PER_PAGE = 20;
@@ -406,6 +417,13 @@ function normalizeProjectKey(value: string | null | undefined) {
   return String(value ?? "").trim().toLowerCase();
 }
 
+function normalizeProjectStatusSearchText(value: string | null | undefined) {
+  return normalizeText(String(value ?? ""))
+    .replace(/[^a-z0-9\s_-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function normalizeText(value: string) {
   return value
     .toLowerCase()
@@ -689,6 +707,100 @@ function ensureKnownProjectKey(value: string | null | undefined) {
   if (!normalized) return null;
   const activeProject = normalizeProjectKey(env.defaultProject) || "luxisoft";
   return normalized === activeProject ? normalized : null;
+}
+
+function loadConfiguredProjectStatusEntries(projectKey: string) {
+  const normalizedProjectKey = normalizeProjectKey(projectKey) || env.defaultProject;
+  const now = Date.now();
+  const cached = projectStatusEntryCache.get(normalizedProjectKey);
+  if (cached && cached.loadedAt + PROJECT_STATUS_CACHE_TTL_MS > now) {
+    return cached.entries;
+  }
+
+  try {
+    const filePath = path.join(resolveAgentsDir(), normalizedProjectKey, "project_statuses.json");
+    const raw = readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const collection: unknown[] = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.projects)
+        ? parsed.projects
+        : [];
+
+    const entries = collection
+      .map((item: unknown): ConfiguredProjectStatusEntry | null => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+        const record = item as Record<string, unknown>;
+        const name = sanitizeValue(String(record.name ?? ""), 120);
+        if (!name) return null;
+
+        const aliases = Array.isArray(record.aliases)
+          ? record.aliases
+              .map((alias: unknown) => sanitizeValue(String(alias ?? ""), 120))
+              .filter((alias): alias is string => Boolean(alias))
+          : [];
+
+        return {
+          name,
+          aliases: Array.from(new Set([name, ...aliases]))
+        };
+      })
+      .filter((item): item is ConfiguredProjectStatusEntry => Boolean(item));
+
+    projectStatusEntryCache.set(normalizedProjectKey, {
+      loadedAt: now,
+      entries
+    });
+    return entries;
+  } catch {
+    projectStatusEntryCache.set(normalizedProjectKey, {
+      loadedAt: now,
+      entries: []
+    });
+    return [];
+  }
+}
+
+function findConfiguredProjectMention(message: string, projectKey: string) {
+  const normalizedMessage = normalizeProjectStatusSearchText(message);
+  if (!normalizedMessage) return null;
+
+  for (const entry of loadConfiguredProjectStatusEntries(projectKey)) {
+    for (const alias of entry.aliases) {
+      const normalizedAlias = normalizeProjectStatusSearchText(alias);
+      if (!normalizedAlias) continue;
+      if (normalizedMessage === normalizedAlias) return entry.name;
+
+      const escapedAlias = normalizedAlias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const aliasRegex = new RegExp(`(^|\\s)${escapedAlias}($|\\s)`, "i");
+      if (aliasRegex.test(normalizedMessage)) {
+        return entry.name;
+      }
+    }
+  }
+
+  return null;
+}
+
+function detectConfiguredProjectStatusInquiry(message: string, projectKey: string) {
+  const matchedProject = findConfiguredProjectMention(message, projectKey);
+  if (!matchedProject) return null;
+
+  const normalized = normalizeText(message);
+  const statusSignal =
+    /(?:estado|avance|progreso|seguimiento|situacion|estatus|actualizacion|como va|como sigue|en que va|en que estado)/i.test(
+      normalized
+    );
+  const ongoingSignal =
+    /(?:proyecto\s+que\s+empezamos|proyecto\s+que\s+estan\s+realizando|estan\s+realizando|estan\s+trabajando|negocio\s+llamado|llamado\s+[a-z0-9_-]+)/i.test(
+      normalized
+    );
+  const contactSignal =
+    /(?:necesito\s+(?:al|a la)|hablar\s+con|comunicarme\s+con|pasame\s+con|quiero\s+hablar\s+con)/i.test(
+      normalized
+    );
+
+  return statusSignal || ongoingSignal || contactSignal ? matchedProject : null;
 }
 
 function containsKeyword(text: string, keywords: string[]) {
@@ -1303,6 +1415,17 @@ function classifyRouting(message: string, state: ConversationState): RoutingDeci
   const mentionedProject = ensureKnownProjectKey(detectProjectByText(message));
   const currentProject = ensureKnownProjectKey(state.projectKey);
   const contextProject = state.projectConfirmed ? currentProject : null;
+  const configuredStatusProject =
+    !support
+      ? detectConfiguredProjectStatusInquiry(
+          message,
+          mentionedProject ?? contextProject ?? env.defaultProject
+        )
+      : null;
+
+  if (configuredStatusProject) {
+    return { kind: "general" };
+  }
 
   if (meeting) {
     return { kind: "meeting_interest" };
@@ -2060,7 +2183,7 @@ async function runProjectAgent(input: {
     "Responde exclusivamente con informacion confirmada por herramientas y fuentes oficiales.",
     "No uses conocimiento externo ni inventes datos no confirmados por fuentes oficiales.",
     "Si necesitas confirmar detalles de servicios o funcionalidades, usa la tool scrape_project_knowledge antes de responder.",
-    "Si el usuario pregunta por estado, avance o progreso actual de un proyecto, usa la tool lookup_project_status antes de responder.",
+    "Si el usuario pregunta por estado, avance o progreso actual de un proyecto, o menciona un proyecto en curso ya realizado por LUXISOFT, usa la tool lookup_project_status antes de responder.",
     "Si un dato no aparece en fuentes despues de consultar tools, responde con tono comercial seguro: explica lo que si esta publicado y el siguiente paso.",
     "Evita tono de inseguridad o frases ambiguas; habla con claridad.",
     "Si necesitas mas contexto del sitio, usa los tools disponibles antes de responder.",
@@ -2403,6 +2526,10 @@ export async function handleProjectAgentMessage(input: {
   }
   state.meeting = updateMeetingProfileFromMessage(state.meeting, message, state.lead);
   const replyPlan = buildReplyPlan(state, message);
+  const configuredProjectStatusInquiry = detectConfiguredProjectStatusInquiry(
+    message,
+    state.projectKey || env.defaultProject
+  );
 
   try {
     if (state.supportClosedAt) {
@@ -2684,8 +2811,9 @@ export async function handleProjectAgentMessage(input: {
     state.projectKey = singleProjectKey;
     state.projectConfirmed = true;
 
-    const objective =
-      "Entender la necesidad del usuario, explicar una solucion breve y guiar al siguiente paso comercial.";
+    const objective = configuredProjectStatusInquiry
+      ? `El usuario esta consultando o mencionando el proyecto ${configuredProjectStatusInquiry}. Revisa su estado actual con lookup_project_status y responde con el avance vigente antes de sugerir el siguiente paso.`
+      : "Entender la necesidad del usuario, explicar una solucion breve y guiar al siguiente paso comercial.";
 
     const resolved = await runProjectAgent({
       projectKey: singleProjectKey,
