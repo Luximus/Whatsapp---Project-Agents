@@ -212,6 +212,49 @@ const GREETING_TOKENS = new Set([
   "hey"
 ]);
 
+const STANDALONE_NAME_BLOCKED_TOKENS = new Set([
+  "fue",
+  "adquirido",
+  "adquirida",
+  "adquirir",
+  "con",
+  "ustedes",
+  "luxisoft",
+  "tercero",
+  "terceros",
+  "proveedor",
+  "empresa",
+  "negocio",
+  "correo",
+  "mail",
+  "gmail",
+  "nombre",
+  "nombres",
+  "apellido",
+  "apellidos",
+  "necesito",
+  "ayuda",
+  "soporte",
+  "problema",
+  "error",
+  "falla",
+  "app",
+  "aplicacion",
+  "web",
+  "ia",
+  "agente",
+  "servicio",
+  "cotizacion",
+  "gracias",
+  "hola",
+  "buen",
+  "dia",
+  "buenos",
+  "buenas",
+  "si",
+  "no"
+]);
+
 const NEED_SIGNAL_REGEX =
   /(?:necesit|quier|quisier|busc|requier|cotiz|presupuesto|interesad[oa]|me interesa|me gustaria|deseo|pagina|sitio|tienda|ecommerce|app|aplicacion|automatiz|ia|inteligencia artificial|asistente virtual)/i;
 
@@ -477,6 +520,18 @@ function looksLikePersonName(value: string | null | undefined) {
   return tokens.every((item) => /^[a-z]+$/i.test(item));
 }
 
+function looksLikeStandaloneNameMessage(value: string | null | undefined) {
+  const compact = sanitizeValue(value, 180);
+  if (!compact) return false;
+
+  const tokens = tokenizeNormalizedWords(compact);
+  if (tokens.length < 2 || tokens.length > 4) return false;
+  if (tokens.some((token) => STANDALONE_NAME_BLOCKED_TOKENS.has(token))) return false;
+  if (tokens.some((token) => token.length < 2)) return false;
+
+  return looksLikePersonName(tokens.join(" "));
+}
+
 function applyPersonNameToLead(profile: LeadProfile, fullName: string) {
   const compact = sanitizeValue(fullName, 180);
   if (!compact || !looksLikePersonName(compact)) return profile;
@@ -573,6 +628,13 @@ function updateLeadProfileFromMessage(profile: LeadProfile, message: string): Le
   const explicitName = text.match(/(?:nombres?\s*(?:son|es)?|nombre(?: completo)?)\s*[:\-]?\s*([^\n,.;]+)/i);
   if (explicitName?.[1] && looksLikePersonName(explicitName[1])) {
     const updated = applyPersonNameToLead(next, explicitName[1]);
+    next.firstName = updated.firstName;
+    next.lastName = updated.lastName;
+  }
+
+  const standaloneName = sanitizeValue(text, 180);
+  if (standaloneName && looksLikeStandaloneNameMessage(standaloneName) && (!next.firstName || !next.lastName)) {
+    const updated = applyPersonNameToLead(next, standaloneName);
     next.firstName = updated.firstName;
     next.lastName = updated.lastName;
   }
