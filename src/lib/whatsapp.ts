@@ -12,6 +12,7 @@ export type SendWhatsappTextOptions = {
 
 export type SendWhatsappAudioOptions = {
   replyToMessageId?: string | null;
+  asVoiceMessage?: boolean;
 };
 
 export type WhatsappMediaFile = {
@@ -200,7 +201,8 @@ export async function sendWhatsappAudio(
     to,
     type: "audio",
     audio: {
-      id: mediaId
+      id: mediaId,
+      ...(options.asVoiceMessage ? { voice: true } : {})
     }
   };
 
@@ -295,5 +297,18 @@ export async function sendWhatsappTypingIndicator(messageId: string) {
     typing_indicator: {
       type: "text"
     }
+  });
+}
+
+export async function markWhatsappMessageAsRead(messageId: string) {
+  const normalized = String(messageId ?? "").trim();
+  if (!normalized) {
+    throw new Error("whatsapp_message_id_required");
+  }
+
+  return sendWhatsappRequest({
+    messaging_product: "whatsapp",
+    status: "read",
+    message_id: normalized
   });
 }

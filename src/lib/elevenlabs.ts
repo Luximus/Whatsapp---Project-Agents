@@ -13,11 +13,23 @@ function resolveElevenLabsBaseUrl() {
 
 function inferAudioMetaFromFormat(outputFormat: string) {
   const normalized = outputFormat.toLowerCase();
+  if (normalized.startsWith("opus_")) {
+    return { mimeType: "audio/ogg", extension: "ogg" };
+  }
+  if (normalized.startsWith("wav_")) {
+    return { mimeType: "audio/wav", extension: "wav" };
+  }
+  if (normalized.startsWith("mp3_")) {
+    return { mimeType: "audio/mpeg", extension: "mp3" };
+  }
   if (normalized.startsWith("pcm_")) {
     return { mimeType: "audio/wav", extension: "wav" };
   }
   if (normalized.startsWith("ulaw_")) {
     return { mimeType: "audio/basic", extension: "ulaw" };
+  }
+  if (normalized.startsWith("alaw_")) {
+    return { mimeType: "audio/basic", extension: "alaw" };
   }
   return { mimeType: "audio/mpeg", extension: "mp3" };
 }

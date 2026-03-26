@@ -15,6 +15,7 @@ import {
 import {
   downloadWhatsappMedia,
   extractOtp,
+  markWhatsappMessageAsRead,
   normalizeE164,
   sendWhatsappAudio,
   sendWhatsappText,
@@ -49,6 +50,20 @@ type PendingInbound = {
   timer: NodeJS.Timeout | null;
 };
 
+function clampProbability(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  if (value <= 0) return 0;
+  if (value >= 100) return 100;
+  return value;
+}
+
+function shouldApplyProbability(probabilityPercent: number) {
+  const probability = clampProbability(probabilityPercent);
+  if (probability <= 0) return false;
+  if (probability >= 100) return true;
+  return Math.random() * 100 < probability;
+}
+
 function toTextChannelReply(input: string, maxChars = MAX_TEXT_REPLY_CHARS) {
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
   if (normalized.length <= maxChars) return normalized;
@@ -80,8 +95,12 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
   const safeReply = async (to: string, message: string, replyToMessageId?: string | null) => {
     try {
+      const contextualReplyId =
+        replyToMessageId && shouldApplyProbability(env.whatsappReplyContextProbability)
+          ? replyToMessageId
+          : null;
       await sendWhatsappText(to, message, {
-        replyToMessageId: replyToMessageId ?? null
+        replyToMessageId: contextualReplyId
       });
       trackOutboundMessage({ messageType: "text" });
       return true;
@@ -95,11 +114,17 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
   const safeAudioReply = async (
     to: string,
     input: { data: Buffer; mimeType: string; filename: string },
-    replyToMessageId?: string | null
+    replyToMessageId?: string | null,
+    asVoiceMessage = false
   ) => {
     try {
+      const contextualReplyId =
+        replyToMessageId && shouldApplyProbability(env.whatsappReplyContextProbability)
+          ? replyToMessageId
+          : null;
       await sendWhatsappAudio(to, input, {
-        replyToMessageId: replyToMessageId ?? null
+        replyToMessageId: contextualReplyId,
+        asVoiceMessage
       });
       trackOutboundMessage({ messageType: "audio" });
       return true;
@@ -115,6 +140,34 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     if (!pending) return;
     if (pending.timer) clearTimeout(pending.timer);
     pendingInboundByPhone.delete(phoneE164);
+  };
+
+  const markReadAndShowTyping = async (phoneE164: string, incomingMessageId: string | null) => {
+    if (!incomingMessageId) return;
+
+    if (shouldApplyProbability(env.whatsappMarkAsReadProbability)) {
+      try {
+        await markWhatsappMessageAsRead(incomingMessageId);
+      } catch (err) {
+        trackOperationalError();
+        fastify.log.warn(
+          { err, incomingMessageId, from: phoneE164 },
+          "WhatsApp mark-as-read failed"
+        );
+      }
+    }
+
+    if (shouldApplyProbability(env.whatsappTypingIndicatorProbability)) {
+      try {
+        await sendWhatsappTypingIndicator(incomingMessageId);
+      } catch (err) {
+        trackOperationalError();
+        fastify.log.warn(
+          { err, incomingMessageId, from: phoneE164 },
+          "WhatsApp typing indicator failed"
+        );
+      }
+    }
   };
 
   const processBufferedInbound = async (phoneE164: string) => {
@@ -133,18 +186,6 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       .join("\n")
       .trim();
     if (!text) return;
-
-    if (incomingMessageId) {
-      try {
-        await sendWhatsappTypingIndicator(incomingMessageId);
-      } catch (err) {
-        trackOperationalError();
-        fastify.log.warn(
-          { err, incomingMessageId, from: phoneE164 },
-          "WhatsApp typing indicator failed"
-        );
-      }
-    }
 
     const agentReply = await handleProjectAgentMessage({
       phoneE164,
@@ -165,6 +206,12 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     if (shouldSendAudio) {
       try {
         const generatedAudio = await synthesizeSpeechWithElevenLabs(replyText);
+        const isVoiceCompatible =
+          generatedAudio.mimeType === "audio/ogg" ||
+          generatedAudio.filename.toLowerCase().endsWith(".ogg");
+        const useVoiceNote =
+          isVoiceCompatible &&
+          shouldApplyProbability(env.whatsappAudioVoiceNoteProbability);
         audioSent = await safeAudioReply(
           phoneE164,
           {
@@ -172,8 +219,18 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
             mimeType: generatedAudio.mimeType,
             filename: generatedAudio.filename
           },
-          incomingMessageId
+          incomingMessageId,
+          useVoiceNote
         );
+        if (!isVoiceCompatible) {
+          fastify.log.info(
+            {
+              from: phoneE164,
+              outputFormat: env.elevenlabsOutputFormat
+            },
+            "Audio reply sent as regular audio. Configure ELEVENLABS_OUTPUT_FORMAT=opus_48000_64 for WhatsApp voice-note style."
+          );
+        }
       } catch (err) {
         trackOperationalError();
         fastify.log.warn(
@@ -184,7 +241,10 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     const textReply = toTextChannelReply(replyText);
-    const shouldAlsoSendText = !shouldSendAudio && env.whatsappAudioReplyIncludeText;
+    const shouldAlsoSendText =
+      audioSent &&
+      env.whatsappAudioReplyIncludeText &&
+      shouldApplyProbability(env.whatsappAudioIncludeTextProbability);
     if (!audioSent || shouldAlsoSendText) {
       await safeReply(phoneE164, textReply, incomingMessageId);
     }
@@ -273,6 +333,8 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       const from = msg.from ? normalizeE164(msg.from) : null;
       const messageType = String(msg.type ?? "").trim().toLowerCase();
       if (!from) continue;
+
+      await markReadAndShowTyping(from, incomingMessageId || null);
 
       let text = String(msg.text?.body ?? "").trim();
       const isAudioInput = messageType === "audio" || (!!msg.audio?.id && !text);
