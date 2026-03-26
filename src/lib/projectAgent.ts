@@ -2619,7 +2619,8 @@ export async function handleProjectAgentMessage(input: {
     };
   } catch (err: any) {
     state.pendingLeadField = null;
-    const rawFallback = `No pude responder por el momento (${String(err?.message ?? "agent_failed")}).`;
+    const rawFallback =
+      "Tuvimos un inconveniente momentaneo al procesar tu mensaje. Si quieres, comparte un poco mas de detalle y continuo ayudandote.";
     const fallback = finalizeAssistantReply(state, rawFallback, replyPlan);
     appendHistory(state, "assistant", fallback);
     return {
