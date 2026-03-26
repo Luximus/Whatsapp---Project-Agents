@@ -27,6 +27,10 @@ type WebhookMessage = {
   from?: string;
   type?: string;
   text?: { body?: string };
+  reaction?: {
+    emoji?: string;
+    message_id?: string;
+  };
   audio?: {
     id?: string;
     mime_type?: string;
@@ -332,6 +336,22 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       const from = msg.from ? normalizeE164(msg.from) : null;
       const messageType = String(msg.type ?? "").trim().toLowerCase();
       if (!from) continue;
+
+      const isReaction =
+        messageType === "reaction" ||
+        Boolean(String(msg.reaction?.emoji ?? "").trim());
+      if (isReaction) {
+        fastify.log.info(
+          {
+            from,
+            incomingMessageId: incomingMessageId || null,
+            reactionToMessageId: String(msg.reaction?.message_id ?? "").trim() || null,
+            reactionEmoji: String(msg.reaction?.emoji ?? "").trim() || null
+          },
+          "Ignoring WhatsApp reaction event"
+        );
+        continue;
+      }
 
       await markReadAndShowTyping(from, incomingMessageId || null);
 

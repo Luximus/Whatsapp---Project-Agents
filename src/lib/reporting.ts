@@ -58,6 +58,19 @@ type OpenAIUsageInput = {
   usage: Record<string, any> | null | undefined;
 };
 
+type MeetingQuoteEmailInput = {
+  projectKey: string;
+  userPhone: string;
+  contactName: string;
+  contactEmail: string;
+  company: string;
+  meetingDay: string;
+  meetingDate: string;
+  meetingTime: string | null;
+  reason: string;
+  notifiedHuman: boolean;
+};
+
 const metricsByDate = new Map<string, DailyMetrics>();
 const meetingsByDate = new Map<string, MeetingRecord[]>();
 let reportTask: ScheduledTask | null = null;
@@ -340,6 +353,75 @@ function buildReportPdfBuffer(input: {
 
 function smtpConfigured() {
   return Boolean(env.smtpHost && env.smtpUser && env.smtpPass && (env.smtpFrom || env.smtpUser));
+}
+
+function buildMeetingQuoteEmailBody(input: MeetingQuoteEmailInput) {
+  const submittedAt = new Date().toISOString();
+  return [
+    "Nuevo agendamiento desde WhatsApp",
+    "",
+    `Proyecto: ${input.projectKey || "(sin dato)"}`,
+    `Nombre: ${input.contactName || "(sin dato)"}`,
+    `Empresa: ${input.company || "(sin dato)"}`,
+    `Correo: ${input.contactEmail || "(sin dato)"}`,
+    `Telefono WhatsApp: ${input.userPhone || "(sin dato)"}`,
+    `Dia reunion: ${input.meetingDay || "(sin dato)"}`,
+    `Fecha reunion: ${input.meetingDate || "(sin dato)"}`,
+    `Hora reunion: ${input.meetingTime || "(sin dato)"}`,
+    `Motivo: ${input.reason || "(sin dato)"}`,
+    `Notificado a agente humano por WhatsApp: ${input.notifiedHuman ? "si" : "no"}`,
+    "",
+    `Generado: ${submittedAt}`
+  ].join("\n");
+}
+
+export async function sendMeetingQuoteEmail(input: MeetingQuoteEmailInput) {
+  if (!smtpConfigured()) {
+    loggerRef.warn({ to: env.meetingQuoteEmailTo }, "Meeting quote email skipped: SMTP not configured");
+    return {
+      ok: false,
+      sent: false,
+      error: "smtp_not_configured"
+    };
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: env.smtpHost,
+    port: env.smtpPort,
+    secure: env.smtpSecure,
+    auth: {
+      user: env.smtpUser,
+      pass: env.smtpPass
+    }
+  });
+
+  const dateKey = currentDateKey();
+  const subject = `Lead WhatsApp - Reunion agendada - ${dateLabelForReport(dateKey)}`;
+  const text = buildMeetingQuoteEmailBody(input);
+
+  try {
+    await transporter.sendMail({
+      from: env.smtpFrom || env.smtpUser,
+      to: env.meetingQuoteEmailTo,
+      subject,
+      text
+    });
+    loggerRef.info(
+      { to: env.meetingQuoteEmailTo, projectKey: input.projectKey, userPhone: input.userPhone },
+      "Meeting quote email sent"
+    );
+    return { ok: true, sent: true };
+  } catch (err: any) {
+    loggerRef.error(
+      { err, to: env.meetingQuoteEmailTo, projectKey: input.projectKey, userPhone: input.userPhone },
+      "Meeting quote email failed"
+    );
+    return {
+      ok: false,
+      sent: false,
+      error: String(err?.message ?? "meeting_quote_email_failed")
+    };
+  }
 }
 
 async function sendDailyReportEmail(input: {

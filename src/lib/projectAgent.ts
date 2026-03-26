@@ -4,7 +4,13 @@ import {
   type AgentScriptRuntimeContext
 } from "../agents/repository.js";
 import { env } from "../env.js";
-import { trackMeetingScheduled, trackOpenAIFailure, trackOpenAIUsage, trackOperationalError } from "./reporting.js";
+import {
+  sendMeetingQuoteEmail,
+  trackMeetingScheduled,
+  trackOpenAIFailure,
+  trackOpenAIUsage,
+  trackOperationalError
+} from "./reporting.js";
 import { scrapePageTextFromHtml } from "./scraping/textWeb.js";
 import { normalizeE164, sendWhatsappText } from "./whatsapp.js";
 
@@ -205,6 +211,27 @@ const REOPEN_AFTER_MEETING_KEYWORDS = [
   "nueva cotizacion",
   "empezar de nuevo",
   "reiniciar"
+];
+
+const POST_MEETING_COURTESY_KEYWORDS = [
+  "gracias",
+  "muchas gracias",
+  "vale",
+  "ok",
+  "okay",
+  "listo",
+  "perfecto",
+  "entendido",
+  "genial",
+  "excelente",
+  "bien",
+  "dale",
+  "de acuerdo",
+  "adios",
+  "chau",
+  "hasta luego",
+  "hasta pronto",
+  "bye"
 ];
 
 const LEAD_REQUIRED_FIELDS: Array<keyof LeadProfile> = [
@@ -685,6 +712,20 @@ function formatAssistantPrivacyReply() {
 function shouldReopenAfterMeeting(message: string) {
   const normalized = normalizeText(message);
   return REOPEN_AFTER_MEETING_KEYWORDS.some((item) => normalized.includes(normalizeText(item)));
+}
+
+function isPostMeetingCourtesyMessage(message: string) {
+  const normalized = normalizeText(message);
+  if (!normalized) return false;
+  if (normalized.includes("?")) return false;
+
+  const matched = POST_MEETING_COURTESY_KEYWORDS.some((item) =>
+    normalized.includes(normalizeText(item))
+  );
+  if (!matched) return false;
+
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  return tokens.length <= 10;
 }
 
 function buildMeetingCollectionPrompt(state: ConversationState, firstInteraction: boolean, plan: ReplyPlan) {
@@ -1592,6 +1633,23 @@ async function runMeetingQualification(input: {
     phoneE164: input.phoneE164,
     summary: buildMeetingSummary(input.state, input.phoneE164)
   });
+
+  const quoteEmail = await sendMeetingQuoteEmail({
+    projectKey: input.state.projectKey,
+    userPhone: input.phoneE164,
+    contactName: `${input.state.lead.firstName ?? ""} ${input.state.lead.lastName ?? ""}`.trim(),
+    contactEmail: input.state.lead.email ?? "",
+    company: input.state.lead.company ?? "",
+    meetingDay: input.state.meeting.meetingDay ?? "",
+    meetingDate: input.state.meeting.meetingDate ?? "",
+    meetingTime: input.state.meeting.meetingTime,
+    reason: input.state.meeting.meetingReason ?? input.state.lead.need ?? "",
+    notifiedHuman: transfer.sent
+  });
+  if (!quoteEmail.sent) {
+    trackOperationalError();
+  }
+
   input.state.awaitingMeetingData = false;
   input.state.meetingClosedAt = transfer.sent ? Date.now() : null;
 
@@ -1672,6 +1730,22 @@ export async function handleProjectAgentMessage(input: {
         const reply = finalizeAssistantReply(
           state,
           "Perfecto, abrimos una nueva gestion. Cuentame que servicio necesitas ahora y avanzamos paso a paso.",
+          replyPlan
+        );
+        appendHistory(state, "assistant", reply);
+        return {
+          handled: true,
+          projectKey: state.projectKey,
+          reply,
+          escalated: false,
+          escalationSent: false
+        };
+      }
+
+      if (isPostMeetingCourtesyMessage(message)) {
+        const reply = finalizeAssistantReply(
+          state,
+          "Con gusto, gracias a ti por escribirnos. Quedo atenta y te deseo un excelente dia.",
           replyPlan
         );
         appendHistory(state, "assistant", reply);
