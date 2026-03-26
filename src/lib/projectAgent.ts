@@ -41,6 +41,8 @@ type ConversationState = {
   meeting: MeetingProfile;
   awaitingMeetingData: boolean;
   lastReplyStyle: ReplyStyle | null;
+  openaiOrchestratorPreviousResponseId: string | null;
+  openaiProjectPreviousResponseIds: Record<string, string>;
 };
 
 type ReplyStyle = "natural" | "bullets" | "question" | "steps";
@@ -75,6 +77,21 @@ type CrawledKnowledgePage = {
   text: string;
   snippets: string[];
   links: string[];
+};
+
+type ProjectAgentResult = {
+  projectKey: string;
+  answer: string;
+  toolsUsed: string[];
+  responseId: string | null;
+};
+
+type OrchestratorResult = {
+  projectKey: string;
+  reply: string;
+  escalated: boolean;
+  escalationSent: boolean;
+  responseId: string | null;
 };
 
 const knowledgeCache = new Map<string, CachedKnowledge>();
@@ -1107,6 +1124,30 @@ function resolveOpenAIBaseUrl() {
   return base.replace(/\/+$/, "");
 }
 
+function normalizeResponseId(value: unknown) {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
+function shouldResetPreviousResponseHistory(err: any) {
+  const statusCode = Number(err?.statusCode ?? 0);
+  if (![400, 404].includes(statusCode)) return false;
+
+  const details = String(
+    err?.details?.error?.code ??
+      err?.details?.error?.message ??
+      err?.details?.message ??
+      ""
+  ).toLowerCase();
+
+  return (
+    details.includes("previous_response_id") ||
+    details.includes("response_not_found") ||
+    details.includes("invalid previous response") ||
+    details.includes("conversation")
+  );
+}
+
 async function openaiResponsesCreate(payload: Record<string, unknown>) {
   if (!env.openaiApiKey) {
     throw new Error("openai_not_configured");
@@ -1148,6 +1189,28 @@ async function openaiResponsesCreate(payload: Record<string, unknown>) {
   });
 
   return parsed;
+}
+
+async function openaiResponsesCreateWithHistory(input: {
+  payload: Record<string, unknown>;
+  previousResponseId?: string | null;
+}) {
+  const previousResponseId = normalizeResponseId(input.previousResponseId);
+  if (!previousResponseId) {
+    return openaiResponsesCreate(input.payload);
+  }
+
+  try {
+    return await openaiResponsesCreate({
+      ...input.payload,
+      previous_response_id: previousResponseId
+    });
+  } catch (err: any) {
+    if (!shouldResetPreviousResponseHistory(err)) {
+      throw err;
+    }
+    return openaiResponsesCreate(input.payload);
+  }
 }
 
 function extractResponseText(response: any) {
@@ -1222,6 +1285,16 @@ function getConversation(phoneE164: string, projectKey: string) {
   if (existing) {
     if (projectKey) existing.projectKey = projectKey;
     if (!existing.lastReplyStyle) existing.lastReplyStyle = null;
+    existing.openaiOrchestratorPreviousResponseId = normalizeResponseId(
+      existing.openaiOrchestratorPreviousResponseId
+    );
+    if (
+      !existing.openaiProjectPreviousResponseIds ||
+      typeof existing.openaiProjectPreviousResponseIds !== "object" ||
+      Array.isArray(existing.openaiProjectPreviousResponseIds)
+    ) {
+      existing.openaiProjectPreviousResponseIds = {};
+    }
     return existing;
   }
 
@@ -1232,7 +1305,9 @@ function getConversation(phoneE164: string, projectKey: string) {
     lead: emptyLeadProfile(),
     meeting: emptyMeetingProfile(),
     awaitingMeetingData: false,
-    lastReplyStyle: null
+    lastReplyStyle: null,
+    openaiOrchestratorPreviousResponseId: null,
+    openaiProjectPreviousResponseIds: {}
   };
   conversations.set(phoneE164, initial);
   return initial;
@@ -1252,7 +1327,8 @@ async function runProjectAgent(input: {
   history: ConversationState["history"];
   objective?: string;
   replyPlan: ReplyPlan;
-}) {
+  previousResponseId?: string | null;
+}): Promise<ProjectAgentResult> {
   const agentsDir = resolveAgentsDir();
   const preferredProjectKey = normalizeProjectKey(input.projectKey) || env.defaultProject;
   const project =
@@ -1263,7 +1339,8 @@ async function runProjectAgent(input: {
     return {
       projectKey: env.defaultProject,
       answer: "No hay agente de proyecto configurado en el servidor.",
-      toolsUsed: [] as string[]
+      toolsUsed: [] as string[],
+      responseId: null
     };
   }
 
@@ -1283,7 +1360,8 @@ async function runProjectAgent(input: {
     return {
       projectKey: project.project_key,
       answer: buildNoGroundingReply(project.project_key, input.replyPlan, projectSources),
-      toolsUsed: [] as string[]
+      toolsUsed: [] as string[],
+      responseId: null
     };
   }
 
@@ -1347,13 +1425,16 @@ async function runProjectAgent(input: {
     .filter(Boolean)
     .join("\n");
 
-  let response: any = await openaiResponsesCreate({
-    model,
-    input: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt }
-    ],
-    ...(tools.length ? { tools } : {})
+  let response: any = await openaiResponsesCreateWithHistory({
+    previousResponseId: input.previousResponseId,
+    payload: {
+      model,
+      input: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      ...(tools.length ? { tools } : {})
+    }
   });
 
   for (let step = 0; step < env.openaiAgentMaxToolSteps; step += 1) {
@@ -1411,7 +1492,8 @@ async function runProjectAgent(input: {
   return {
     projectKey: project.project_key,
     answer: answer.slice(0, MAX_RESPONSE_CHARS),
-    toolsUsed: Array.from(toolsUsed)
+    toolsUsed: Array.from(toolsUsed),
+    responseId: normalizeResponseId(response?.id)
   };
 }
 
@@ -1461,7 +1543,8 @@ async function runOrchestrator(input: {
   state: ConversationState;
   preferredProjectKey: string;
   replyPlan: ReplyPlan;
-}) {
+  previousResponseId?: string | null;
+}): Promise<OrchestratorResult> {
   const agentsDir = resolveAgentsDir();
   const orchestratorDir = resolveOrchestratorDir();
   const orchestrator = await loadOrchestratorAgent(orchestratorDir);
@@ -1530,13 +1613,16 @@ async function runOrchestrator(input: {
     input.message
   ].join("\n");
 
-  let response: any = await openaiResponsesCreate({
-    model,
-    input: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt }
-    ],
-    tools
+  let response: any = await openaiResponsesCreateWithHistory({
+    previousResponseId: input.previousResponseId,
+    payload: {
+      model,
+      input: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      tools
+    }
   });
 
   for (let step = 0; step < env.openaiAgentMaxToolSteps; step += 1) {
@@ -1558,8 +1644,13 @@ async function runOrchestrator(input: {
           userMessage: String(args.user_message ?? input.message),
           objective: String(args.objective ?? "").trim() || undefined,
           history: input.state.history,
-          replyPlan: input.replyPlan
+          replyPlan: input.replyPlan,
+          previousResponseId:
+            input.state.openaiProjectPreviousResponseIds[requestedProject] ?? null
         });
+        if (delegated.responseId) {
+          input.state.openaiProjectPreviousResponseIds[delegated.projectKey] = delegated.responseId;
+        }
         selectedProject = delegated.projectKey;
         lastDelegatedReply = delegated.answer;
         toolOutputs.push({
@@ -1599,7 +1690,8 @@ async function runOrchestrator(input: {
     projectKey: selectedProject,
     reply,
     escalated: false,
-    escalationSent: false
+    escalationSent: false,
+    responseId: normalizeResponseId(response?.id)
   };
 }
 
@@ -1673,8 +1765,13 @@ async function runProjectRedirect(input: {
     userMessage: input.message,
     objective: input.objective,
     history: input.state.history,
-    replyPlan: input.replyPlan
+    replyPlan: input.replyPlan,
+    previousResponseId:
+      input.state.openaiProjectPreviousResponseIds[input.projectKey] ?? null
   });
+  if (delegated.responseId) {
+    input.state.openaiProjectPreviousResponseIds[delegated.projectKey] = delegated.responseId;
+  }
   input.state.projectKey = delegated.projectKey;
   input.state.projectConfirmed = true;
   const reply = finalizeAssistantReply(input.state, delegated.answer, input.replyPlan);
@@ -1855,8 +1952,11 @@ export async function handleProjectAgentMessage(input: {
       message,
       state,
       preferredProjectKey: projectKey,
-      replyPlan
+      replyPlan,
+      previousResponseId: state.openaiOrchestratorPreviousResponseId
     });
+    state.openaiOrchestratorPreviousResponseId =
+      orchestrated.responseId ?? state.openaiOrchestratorPreviousResponseId;
 
     state.projectKey = ensureKnownProjectKey(orchestrated.projectKey) ?? state.projectKey;
     const orchestratedReply = finalizeAssistantReply(state, orchestrated.reply, replyPlan);
