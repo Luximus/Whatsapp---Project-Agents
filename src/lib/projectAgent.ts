@@ -118,12 +118,17 @@ const DEFAULT_PROJECT_SOURCES: Record<string, string[]> = {
 
 const SUPPORT_KEYWORDS = [
   "soporte",
+  "ayuda",
   "problema",
   "error",
   "falla",
   "incidencia",
   "ayuda tecnica",
-  "no funciona"
+  "no funciona",
+  "no esta funcionando",
+  "funciona mal",
+  "responde mal",
+  "respondiendo mal"
 ];
 
 const BUY_KEYWORDS = [
@@ -209,6 +214,9 @@ const GREETING_TOKENS = new Set([
 
 const NEED_SIGNAL_REGEX =
   /(?:necesit|quier|quisier|busc|requier|cotiz|presupuesto|interesad[oa]|me interesa|me gustaria|deseo|pagina|sitio|tienda|ecommerce|app|aplicacion|automatiz|ia|inteligencia artificial|asistente virtual)/i;
+
+const SUPPORT_SIGNAL_REGEX =
+  /(?:ayuda|soporte|problema|error|falla|incidencia|no\s+funcion|no\s+esta\s+funcionando|funcionando\s+mal|funciona\s+mal|respondiendo\s+mal|responde\s+mal)/i;
 
 const ASSISTANT_NAME = "Valeria";
 const ASSISTANT_COMPANY = "LUXISOFT";
@@ -519,6 +527,27 @@ function hasNeedSignalInMessage(message: string) {
   return NEED_SIGNAL_REGEX.test(normalized);
 }
 
+function hasSupportSignal(message: string) {
+  const normalized = normalizeText(message);
+  if (!normalized) return false;
+  if (containsKeyword(normalized, SUPPORT_KEYWORDS)) return true;
+  return SUPPORT_SIGNAL_REGEX.test(normalized);
+}
+
+function stripLeadingGreeting(text: string) {
+  let output = text.trim();
+  const greetingRegex =
+    /^(?:hola|buen(?:os)?\s+dias|buen\s+dia|buenas\s+tardes|buenas\s+noches|saludos?)\s*[,!:.;\-]?\s*/i;
+
+  for (let i = 0; i < 2; i += 1) {
+    const next = output.replace(greetingRegex, "").trimStart();
+    if (next === output) break;
+    output = next;
+  }
+
+  return output;
+}
+
 function extractEmail(text: string) {
   const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   return match?.[0]?.toLowerCase() ?? null;
@@ -715,7 +744,9 @@ function maybeIdentityIntro(state: ConversationState, reply: string) {
   if (!trimmed) return trimmed;
 
   if (new RegExp(`\\b${ASSISTANT_NAME}\\b`, "i").test(trimmed)) return trimmed;
-  return `Hola, soy ${ASSISTANT_NAME}, asistente de ${ASSISTANT_COMPANY}. Encantada de ayudarte.\n${trimmed}`;
+  const withoutGreeting = stripLeadingGreeting(trimmed);
+  const body = withoutGreeting || trimmed;
+  return `Hola, soy ${ASSISTANT_NAME}, asistente de ${ASSISTANT_COMPANY}. Encantada de ayudarte.\n${body}`;
 }
 
 function finalizeAssistantReply(state: ConversationState, reply: string, plan: ReplyPlan) {
@@ -970,7 +1001,7 @@ function buildSupportCollectionPrompt(
 }
 
 function classifyRouting(message: string, state: ConversationState): RoutingDecision {
-  const support = containsKeyword(message, SUPPORT_KEYWORDS);
+  const support = hasSupportSignal(message);
   const buy = containsKeyword(message, BUY_KEYWORDS);
   const human = containsKeyword(message, HUMAN_KEYWORDS);
   const meeting = containsKeyword(message, MEETING_KEYWORDS);
@@ -1725,6 +1756,7 @@ async function runProjectAgent(input: {
     `Tu identidad comercial fija es ${ASSISTANT_NAME}, asistente de ${ASSISTANT_COMPANY}.`,
     "Cuando hables de ti, usa voz femenina.",
     `No compartas datos personales tuyos; solo puedes compartir tu nombre (${ASSISTANT_NAME}) y que trabajas en ${ASSISTANT_COMPANY}.`,
+    "No abras con saludo ni presentacion al iniciar la respuesta; el sistema ya agrega la presentacion del primer turno.",
     "No repitas siempre el mismo formato. Sigue el FORMATO_DINAMICO_RECOMENDADO enviado por el sistema.",
     "No incluyas URLs en todas las respuestas. Sigue la POLITICA_DE_ENLACES enviada por el sistema.",
     "Responde exclusivamente con informacion confirmada por herramientas y fuentes oficiales.",
