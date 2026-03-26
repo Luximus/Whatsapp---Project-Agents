@@ -198,8 +198,9 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     trackAgentReplyGenerated();
 
     let audioSent = false;
+    const isLongReply = replyText.length > MAX_TEXT_REPLY_CHARS;
     const shouldSendAudio =
-      replyText.length > MAX_TEXT_REPLY_CHARS &&
+      isLongReply &&
       env.whatsappAudioReplyEnabled &&
       isElevenLabsConfigured();
 
@@ -240,14 +241,12 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
 
-    const textReply = toTextChannelReply(replyText);
-    const shouldAlsoSendText =
-      audioSent &&
-      env.whatsappAudioReplyIncludeText &&
-      shouldApplyProbability(env.whatsappAudioIncludeTextProbability);
-    if (!audioSent || shouldAlsoSendText) {
-      await safeReply(phoneE164, textReply, incomingMessageId);
+    if (audioSent) {
+      return;
     }
+
+    const textReply = toTextChannelReply(replyText);
+    await safeReply(phoneE164, textReply, incomingMessageId);
   };
 
   const enqueueInbound = (input: {
