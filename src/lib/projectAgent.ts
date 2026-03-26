@@ -39,6 +39,8 @@ type MeetingProfile = {
   meetingReason: string | null;
 };
 
+type SupportOwnership = "luxisoft" | "third_party";
+
 type ConversationState = {
   projectKey: string;
   projectConfirmed: boolean;
@@ -46,6 +48,8 @@ type ConversationState = {
   lead: LeadProfile;
   meeting: MeetingProfile;
   supportTopic: string | null;
+  supportOwnership: SupportOwnership | null;
+  awaitingSupportOwnership: boolean;
   awaitingSupportTicketData: boolean;
   supportClosedAt: number | null;
   awaitingMeetingData: boolean;
@@ -836,6 +840,51 @@ function inferSupportTopic(message: string) {
   return "soporte general";
 }
 
+function detectSupportOwnership(message: string): SupportOwnership | null {
+  const normalized = normalizeText(message);
+  if (!normalized) return null;
+
+  if (
+    /(?:no\s+fue\s+con\s+(?:ustedes|luxisoft)|no\s+con\s+(?:ustedes|luxisoft)|con\s+terceros?|otro\s+proveedor|otra\s+empresa|externo|externa|freelancer|agencia\s+externa|tercerizado)/i.test(
+      normalized
+    )
+  ) {
+    return "third_party";
+  }
+
+  if (
+    /(?:con\s+(?:ustedes|luxisoft)|fue\s+con\s+(?:ustedes|luxisoft)|lo\s+hizo\s+luxisoft|lo\s+hizo\s+su\s+equipo|desarrollado\s+por\s+ustedes|implementado\s+por\s+ustedes)/i.test(
+      normalized
+    )
+  ) {
+    return "luxisoft";
+  }
+
+  return null;
+}
+
+function formatSupportOwnershipQuestion(plan: ReplyPlan, topic: string) {
+  if (plan.style === "steps") {
+    return [
+      `Antes de seguir con ${topic}, confirma esto:`,
+      "1. El servicio fue desarrollado/implementado por LUXISOFT.",
+      "2. O fue desarrollado/implementado por terceros.",
+      "Cual de los dos casos aplica?"
+    ].join("\n");
+  }
+
+  if (plan.style === "bullets") {
+    return [
+      `Antes de continuar con ${topic}, necesito confirmar:`,
+      "- Fue un servicio de LUXISOFT",
+      "- Fue un servicio de terceros",
+      "Cual aplica en tu caso?"
+    ].join("\n");
+  }
+
+  return `Antes de continuar con ${topic}, confirmame algo: ese servicio fue adquirido con LUXISOFT o con un tercero?`;
+}
+
 function buildMeetingCollectionPrompt(state: ConversationState, firstInteraction: boolean, plan: ReplyPlan) {
   const { missingLead, missingMeeting } = getMissingMeetingFields(state);
   const nextLead = missingLead[0] ?? null;
@@ -843,11 +892,15 @@ function buildMeetingCollectionPrompt(state: ConversationState, firstInteraction
   const nextQuestion = nextLead ? LEAD_FIELD_QUESTIONS[nextLead] : nextMeeting ? MEETING_FIELD_QUESTIONS[nextMeeting] : null;
   if (!nextQuestion) return null;
   const totalMissing = missingLead.length + missingMeeting.length;
+  const thirdPartySupportQuote = firstInteraction && state.supportOwnership === "third_party";
   const shouldSendChecklist = firstInteraction && totalMissing >= 4;
 
   if (shouldSendChecklist) {
     if (plan.style === "steps") {
       return [
+        ...(thirdPartySupportQuote
+          ? ["Como el servicio actual es de terceros, agendemos reunion para cotizar el soporte."]
+          : []),
         "Perfecto, para agendar reunion con un especialista humano necesito:",
         "1. nombres y apellidos",
         "2. empresa",
@@ -859,6 +912,9 @@ function buildMeetingCollectionPrompt(state: ConversationState, firstInteraction
     }
 
     return [
+      ...(thirdPartySupportQuote
+        ? ["Como el servicio actual es de terceros, agendemos reunion para cotizar el soporte."]
+        : []),
       "Perfecto, para agendar reunion con un especialista humano necesito estos datos:",
       "- nombres",
       "- apellidos",
@@ -1555,6 +1611,12 @@ function getConversation(phoneE164: string, projectKey: string) {
   if (existing) {
     if (projectKey) existing.projectKey = projectKey;
     if (!existing.lastReplyStyle) existing.lastReplyStyle = null;
+    if (typeof existing.awaitingSupportOwnership !== "boolean") {
+      existing.awaitingSupportOwnership = false;
+    }
+    if (!existing.supportOwnership) {
+      existing.supportOwnership = null;
+    }
     if (typeof existing.supportClosedAt !== "number") {
       existing.supportClosedAt = null;
     }
@@ -1584,6 +1646,8 @@ function getConversation(phoneE164: string, projectKey: string) {
     lead: emptyLeadProfile(),
     meeting: emptyMeetingProfile(),
     supportTopic: null,
+    supportOwnership: null,
+    awaitingSupportOwnership: false,
     awaitingSupportTicketData: false,
     supportClosedAt: null,
     awaitingMeetingData: false,
@@ -1856,6 +1920,37 @@ async function runSupportTicketQualification(input: {
   } as AgentReply;
 }
 
+async function continueSupportFlowByOwnership(input: {
+  state: ConversationState;
+  phoneE164: string;
+  firstInteraction: boolean;
+  replyPlan: ReplyPlan;
+}) {
+  if (input.state.supportOwnership === "third_party") {
+    input.state.awaitingSupportTicketData = false;
+    input.state.awaitingMeetingData = true;
+    if (!sanitizeValue(input.state.meeting.meetingReason, 220)) {
+      const baseReason = sanitizeValue(input.state.lead.need, 220) ?? "Cotizar soporte para servicio de terceros";
+      input.state.meeting.meetingReason = sanitizeValue(baseReason, 220);
+    }
+    return runMeetingQualification({
+      state: input.state,
+      phoneE164: input.phoneE164,
+      firstInteraction: input.firstInteraction,
+      replyPlan: input.replyPlan
+    });
+  }
+
+  input.state.awaitingMeetingData = false;
+  input.state.awaitingSupportTicketData = true;
+  return runSupportTicketQualification({
+    state: input.state,
+    phoneE164: input.phoneE164,
+    firstInteraction: input.firstInteraction,
+    replyPlan: input.replyPlan
+  });
+}
+
 async function runMeetingQualification(input: {
   state: ConversationState;
   phoneE164: string;
@@ -1974,6 +2069,8 @@ export async function handleProjectAgentMessage(input: {
     if (state.supportClosedAt) {
       if (shouldReopenAfterSupport(message)) {
         state.supportClosedAt = null;
+        state.awaitingSupportOwnership = false;
+        state.supportOwnership = null;
         state.awaitingSupportTicketData = false;
         state.supportTopic = null;
         state.lead.need = null;
@@ -2028,6 +2125,10 @@ export async function handleProjectAgentMessage(input: {
         state.meetingClosedAt = null;
         state.awaitingMeetingData = false;
         state.meeting = emptyMeetingProfile();
+        state.awaitingSupportOwnership = false;
+        state.awaitingSupportTicketData = false;
+        state.supportOwnership = null;
+        state.supportTopic = null;
         const reply = finalizeAssistantReply(
           state,
           "Perfecto, abrimos una nueva gestion. Cuentame que servicio necesitas ahora y avanzamos paso a paso.",
@@ -2072,6 +2173,35 @@ export async function handleProjectAgentMessage(input: {
         escalated: false,
         escalationSent: false
       };
+    }
+
+    if (state.awaitingSupportOwnership) {
+      const ownership = detectSupportOwnership(message);
+      if (!ownership) {
+        const topic = state.supportTopic ?? inferSupportTopic(state.lead.need ?? message);
+        const reply = finalizeAssistantReply(
+          state,
+          formatSupportOwnershipQuestion(replyPlan, topic),
+          replyPlan
+        );
+        appendHistory(state, "assistant", reply);
+        return {
+          handled: true,
+          projectKey: state.projectKey,
+          reply,
+          escalated: false,
+          escalationSent: false
+        };
+      }
+
+      state.supportOwnership = ownership;
+      state.awaitingSupportOwnership = false;
+      return await continueSupportFlowByOwnership({
+        state,
+        phoneE164: phone,
+        firstInteraction: true,
+        replyPlan
+      });
     }
 
     if (state.awaitingSupportTicketData) {
@@ -2169,9 +2299,31 @@ export async function handleProjectAgentMessage(input: {
     if (isSupportTicketDecision(decision)) {
       state.projectKey = env.defaultProject || state.projectKey;
       state.projectConfirmed = true;
-      state.awaitingSupportTicketData = true;
       state.supportTopic = inferSupportTopic(state.lead.need ?? message);
-      return await runSupportTicketQualification({
+
+      const ownership = detectSupportOwnership(message);
+      if (!ownership) {
+        state.awaitingSupportOwnership = true;
+        state.supportOwnership = null;
+        state.awaitingSupportTicketData = false;
+        const reply = finalizeAssistantReply(
+          state,
+          formatSupportOwnershipQuestion(replyPlan, state.supportTopic),
+          replyPlan
+        );
+        appendHistory(state, "assistant", reply);
+        return {
+          handled: true,
+          projectKey: state.projectKey,
+          reply,
+          escalated: false,
+          escalationSent: false
+        };
+      }
+
+      state.awaitingSupportOwnership = false;
+      state.supportOwnership = ownership;
+      return await continueSupportFlowByOwnership({
         state,
         phoneE164: phone,
         firstInteraction: true,
