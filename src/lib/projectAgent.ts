@@ -46,6 +46,7 @@ type ConversationState = {
   projectConfirmed: boolean;
   history: Array<{ role: "user" | "assistant"; text: string; at: number }>;
   lead: LeadProfile;
+  pendingLeadField: keyof LeadProfile | null;
   meeting: MeetingProfile;
   supportTopic: string | null;
   supportOwnership: SupportOwnership | null;
@@ -489,6 +490,15 @@ function looksLikePersonName(value: string | null | undefined) {
   if (/@|\d/.test(normalized)) return false;
 
   const blocked = new Set([
+    "con",
+    "ustedes",
+    "luxisoft",
+    "tercero",
+    "terceros",
+    "ticket",
+    "soporte",
+    "servicio",
+    "proyecto",
     "para",
     "algo",
     "existente",
@@ -530,6 +540,124 @@ function looksLikeStandaloneNameMessage(value: string | null | undefined) {
   if (tokens.some((token) => token.length < 2)) return false;
 
   return looksLikePersonName(tokens.join(" "));
+}
+
+function isKnownNonAnswerReply(value: string | null | undefined) {
+  const normalized = normalizeText(String(value ?? ""));
+  if (!normalized) return true;
+
+  if (POST_MEETING_COURTESY_KEYWORDS.some((item) => normalized === normalizeText(item))) {
+    return true;
+  }
+
+  return [
+    "si",
+    "no",
+    "claro",
+    "obvio",
+    "correcto",
+    "confirmado",
+    "no se",
+    "nose",
+    "ninguno",
+    "ninguna",
+    "n/a",
+    "na"
+  ].includes(normalized);
+}
+
+function looksLikePromptedNamePart(value: string | null | undefined) {
+  const compact = sanitizeValue(value, 120);
+  if (!compact || isKnownNonAnswerReply(compact) || /[?!@0-9]/.test(compact)) return false;
+
+  const tokens = tokenizeNormalizedWords(compact);
+  if (tokens.length < 1 || tokens.length > 3) return false;
+  if (tokens.some((token) => STANDALONE_NAME_BLOCKED_TOKENS.has(token))) return false;
+  return tokens.every((token) => /^[a-z]+$/i.test(token));
+}
+
+function looksLikePromptedCompanyAnswer(value: string | null | undefined) {
+  const compact = sanitizeValue(value, 140);
+  if (!compact || isKnownNonAnswerReply(compact) || /[?!@]/.test(compact)) return false;
+
+  const tokens = tokenizeNormalizedWords(compact);
+  if (tokens.length < 1 || tokens.length > 6) return false;
+
+  const blocked = new Set([
+    "es",
+    "era",
+    "fue",
+    "soy",
+    "somos",
+    "para",
+    "proyecto",
+    "necesito",
+    "quiero",
+    "busco",
+    "soporte",
+    "ayuda",
+    "error",
+    "falla",
+    "app",
+    "aplicacion",
+    "pagina",
+    "web",
+    "ecommerce",
+    "servicio",
+    "ustedes",
+    "luxisoft",
+    "terceros",
+    "tercero",
+    "correo",
+    "gmail"
+  ]);
+
+  return !tokens.some((token) => blocked.has(token));
+}
+
+function looksLikePromptedNeedAnswer(value: string | null | undefined) {
+  const compact = sanitizeValue(value, 220);
+  if (!compact || isKnownNonAnswerReply(compact) || /[?@]/.test(compact)) return false;
+  return tokenizeNormalizedWords(compact).length <= 28;
+}
+
+function applyPendingLeadFieldAnswer(
+  profile: LeadProfile,
+  message: string,
+  pendingLeadField: keyof LeadProfile | null
+) {
+  if (!pendingLeadField) return profile;
+  if (sanitizeValue(profile[pendingLeadField], pendingLeadField === "need" ? 220 : 140)) {
+    return profile;
+  }
+
+  const compact = sanitizeValue(message, pendingLeadField === "need" ? 220 : 140);
+  if (!compact || isKnownNonAnswerReply(compact) || detectSupportOwnership(compact)) {
+    return profile;
+  }
+
+  if (pendingLeadField === "email") {
+    const email = extractEmail(compact);
+    return email ? { ...profile, email } : profile;
+  }
+
+  if (pendingLeadField === "firstName" && looksLikePromptedNamePart(compact)) {
+    return { ...profile, firstName: titleCase(compact) };
+  }
+
+  if (pendingLeadField === "lastName" && looksLikePromptedNamePart(compact)) {
+    return { ...profile, lastName: titleCase(compact) };
+  }
+
+  if (pendingLeadField === "company" && looksLikePromptedCompanyAnswer(compact)) {
+    return { ...profile, company: sanitizeValue(compact, 140) };
+  }
+
+  if (pendingLeadField === "need" && looksLikePromptedNeedAnswer(compact)) {
+    return { ...profile, need: sanitizeValue(compact, 220) };
+  }
+
+  return profile;
 }
 
 function applyPersonNameToLead(profile: LeadProfile, fullName: string) {
@@ -608,7 +736,11 @@ function extractEmail(text: string) {
   return match?.[0]?.toLowerCase() ?? null;
 }
 
-function updateLeadProfileFromMessage(profile: LeadProfile, message: string): LeadProfile {
+function updateLeadProfileFromMessage(
+  profile: LeadProfile,
+  message: string,
+  pendingLeadField: keyof LeadProfile | null = null
+): LeadProfile {
   const next: LeadProfile = { ...profile };
   const text = String(message ?? "");
   const normalizedText = normalizeText(text);
@@ -617,7 +749,7 @@ function updateLeadProfileFromMessage(profile: LeadProfile, message: string): Le
   if (email) next.email = email;
 
   const fullName = text.match(
-    /(?:mi nombre es|me llamo|soy|es)\s+([A-Za-z\u00C0-\u017F]+(?:\s+[A-Za-z\u00C0-\u017F]+){1,4})/i
+    /(?:mi nombre es|me llamo|soy)\s+([A-Za-z\u00C0-\u017F]+(?:\s+[A-Za-z\u00C0-\u017F]+){1,4})/i
   );
   if (fullName?.[1]) {
     const updated = applyPersonNameToLead(next, fullName[1]);
@@ -662,6 +794,13 @@ function updateLeadProfileFromMessage(profile: LeadProfile, message: string): Le
       next.company = candidate;
     }
   }
+
+  const fromPendingField = applyPendingLeadFieldAnswer(next, text, pendingLeadField);
+  next.firstName = fromPendingField.firstName;
+  next.lastName = fromPendingField.lastName;
+  next.company = fromPendingField.company;
+  next.email = fromPendingField.email;
+  next.need = fromPendingField.need;
 
   if (!next.company) {
     const bareBrand = text.match(/^(?:es|soy)\s+([A-Za-z0-9][A-Za-z0-9\s_-]{1,60})$/i);
@@ -1703,6 +1842,9 @@ function getConversation(phoneE164: string, projectKey: string) {
   const existing = conversations.get(phoneE164);
   if (existing) {
     if (projectKey) existing.projectKey = projectKey;
+    if (typeof existing.pendingLeadField === "undefined") {
+      existing.pendingLeadField = null;
+    }
     if (!existing.lastReplyStyle) existing.lastReplyStyle = null;
     if (typeof existing.awaitingSupportOwnership !== "boolean") {
       existing.awaitingSupportOwnership = false;
@@ -1737,6 +1879,7 @@ function getConversation(phoneE164: string, projectKey: string) {
     projectConfirmed: false,
     history: [],
     lead: emptyLeadProfile(),
+    pendingLeadField: null,
     meeting: emptyMeetingProfile(),
     supportTopic: null,
     supportOwnership: null,
@@ -1964,6 +2107,7 @@ async function runSupportTicketQualification(input: {
   const topic = input.state.supportTopic ?? "soporte general";
   const missing = getMissingSupportFields(input.state.lead);
   if (missing.length > 0) {
+    input.state.pendingLeadField = missing[0] ?? null;
     const prompt = buildSupportCollectionPrompt(input.state, input.firstInteraction, input.replyPlan, topic);
     const rawReply = prompt ?? "Necesito un dato adicional para registrar tu ticket.";
     const reply = finalizeAssistantReply(input.state, rawReply, input.replyPlan);
@@ -1977,6 +2121,7 @@ async function runSupportTicketQualification(input: {
     } as AgentReply;
   }
 
+  input.state.pendingLeadField = null;
   const ticket = buildSupportTicketSummary(input.state, input.phoneE164);
   const mail = await sendSupportTicketEmail({
     projectKey: input.state.projectKey,
@@ -2053,6 +2198,7 @@ async function runMeetingQualification(input: {
 }) {
   const missing = getMissingMeetingFields(input.state);
   if (missing.missingLead.length > 0 || missing.missingMeeting.length > 0) {
+    input.state.pendingLeadField = missing.missingLead[0] ?? null;
     const prompt = buildMeetingCollectionPrompt(input.state, input.firstInteraction, input.replyPlan);
     const rawReply = prompt ?? "Necesito un dato adicional para continuar con la agenda de reunion.";
     const reply = finalizeAssistantReply(input.state, rawReply, input.replyPlan);
@@ -2066,6 +2212,7 @@ async function runMeetingQualification(input: {
     } as AgentReply;
   }
 
+  input.state.pendingLeadField = null;
   const transfer = await notifyHumanMeeting({
     projectKey: input.state.projectKey,
     phoneE164: input.phoneE164,
@@ -2155,12 +2302,16 @@ export async function handleProjectAgentMessage(input: {
     state.projectConfirmed = true;
   }
   appendHistory(state, "user", message);
-  state.lead = updateLeadProfileFromMessage(state.lead, message);
+  state.lead = updateLeadProfileFromMessage(state.lead, message, state.pendingLeadField);
+  if (state.pendingLeadField && sanitizeValue(state.lead[state.pendingLeadField], 220)) {
+    state.pendingLeadField = null;
+  }
   state.meeting = updateMeetingProfileFromMessage(state.meeting, message, state.lead);
   const replyPlan = buildReplyPlan(state, message);
 
   try {
     if (state.supportClosedAt) {
+      state.pendingLeadField = null;
       if (shouldReopenAfterSupport(message)) {
         state.supportClosedAt = null;
         state.awaitingSupportOwnership = false;
@@ -2168,6 +2319,7 @@ export async function handleProjectAgentMessage(input: {
         state.awaitingSupportTicketData = false;
         state.supportTopic = null;
         state.lead.need = null;
+        state.pendingLeadField = null;
         const reply = finalizeAssistantReply(
           state,
           "Perfecto, abrimos un nuevo ticket. Cuentame brevemente que necesitas y lo registro.",
@@ -2215,6 +2367,7 @@ export async function handleProjectAgentMessage(input: {
     }
 
     if (state.meetingClosedAt) {
+      state.pendingLeadField = null;
       if (shouldReopenAfterMeeting(message)) {
         state.meetingClosedAt = null;
         state.awaitingMeetingData = false;
@@ -2223,6 +2376,7 @@ export async function handleProjectAgentMessage(input: {
         state.awaitingSupportTicketData = false;
         state.supportOwnership = null;
         state.supportTopic = null;
+        state.pendingLeadField = null;
         const reply = finalizeAssistantReply(
           state,
           "Perfecto, abrimos una nueva gestion. Cuentame que servicio necesitas ahora y avanzamos paso a paso.",
@@ -2270,6 +2424,7 @@ export async function handleProjectAgentMessage(input: {
     }
 
     if (state.awaitingSupportOwnership) {
+      state.pendingLeadField = null;
       const ownership = detectSupportOwnership(message);
       if (!ownership) {
         const topic = state.supportTopic ?? inferSupportTopic(state.lead.need ?? message);
@@ -2317,6 +2472,7 @@ export async function handleProjectAgentMessage(input: {
     }
 
     if (isAssistantPersonalInfoRequest(message)) {
+      state.pendingLeadField = null;
       const reply = finalizeAssistantReply(state, formatAssistantPrivacyReply(), replyPlan);
       appendHistory(state, "assistant", reply);
       return {
@@ -2329,6 +2485,7 @@ export async function handleProjectAgentMessage(input: {
     }
 
     if (isAssistantIdentityRequest(message)) {
+      state.pendingLeadField = null;
       const reply = finalizeAssistantReply(state, formatAssistantIdentityReply(replyPlan), replyPlan);
       appendHistory(state, "assistant", reply);
       return {
@@ -2352,6 +2509,7 @@ export async function handleProjectAgentMessage(input: {
       isGreetingOnlyMessage(message);
 
     if (shouldUseInitialDiscovery) {
+      state.pendingLeadField = null;
       const reply = finalizeAssistantReply(state, formatInitialDiscoveryReply(replyPlan), replyPlan);
       appendHistory(state, "assistant", reply);
       return {
@@ -2369,6 +2527,7 @@ export async function handleProjectAgentMessage(input: {
     }
 
     if (decision.kind === "human_scope_check") {
+      state.pendingLeadField = null;
       const reply = finalizeAssistantReply(state, formatHumanScopeCheckReply(replyPlan), replyPlan);
       appendHistory(state, "assistant", reply);
       return {
@@ -2400,6 +2559,7 @@ export async function handleProjectAgentMessage(input: {
         state.awaitingSupportOwnership = true;
         state.supportOwnership = null;
         state.awaitingSupportTicketData = false;
+        state.pendingLeadField = null;
         const reply = finalizeAssistantReply(
           state,
           formatSupportOwnershipQuestion(replyPlan, state.supportTopic),
@@ -2446,6 +2606,7 @@ export async function handleProjectAgentMessage(input: {
       state.openaiProjectPreviousResponseIds[singleProjectKey] = resolved.responseId;
     }
 
+    state.pendingLeadField = null;
     const agentReply = finalizeAssistantReply(state, resolved.answer, replyPlan);
     appendHistory(state, "assistant", agentReply);
 
@@ -2457,6 +2618,7 @@ export async function handleProjectAgentMessage(input: {
       escalationSent: false
     };
   } catch (err: any) {
+    state.pendingLeadField = null;
     const rawFallback = `No pude responder por el momento (${String(err?.message ?? "agent_failed")}).`;
     const fallback = finalizeAssistantReply(state, rawFallback, replyPlan);
     appendHistory(state, "assistant", fallback);
