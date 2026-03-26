@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 
-const PROJECT_STATUS_FILE = new URL("../project_statuses.txt", import.meta.url);
+const PROJECT_STATUS_FILE = new URL("../project_statuses.json", import.meta.url);
 
 const STATUS_NOISE_TOKENS = new Set([
   "estado",
@@ -69,13 +69,6 @@ function normalizeSearchText(value) {
     .trim();
 }
 
-function splitCsv(value) {
-  return String(value ?? "")
-    .split(",")
-    .map((item) => compact(item, 120))
-    .filter(Boolean);
-}
-
 function unique(values) {
   return Array.from(new Set(values.filter(Boolean)));
 }
@@ -94,59 +87,58 @@ function stripStatusNoise(value) {
   return tokens.join(" ");
 }
 
-function parseProjectBlock(block) {
-  const fields = {};
-  let currentKey = null;
+function isRecord(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
 
-  for (const rawLine of String(block ?? "").split(/\r?\n/)) {
-    const trimmed = rawLine.trim();
-    if (!trimmed) {
-      currentKey = null;
-      continue;
-    }
+function normalizeAliases(value, name) {
+  const rawAliases = Array.isArray(value)
+    ? value.map((item) => compact(item, 120)).filter(Boolean)
+    : [];
+  return unique([compact(name, 120), ...rawAliases]).map((item) => String(item));
+}
 
-    if (trimmed.startsWith("#")) continue;
+function sanitizeProjectStatusEntry(entry) {
+  if (!isRecord(entry)) return null;
 
-    const fieldMatch = rawLine.match(/^\s*([a-z_]+)\s*:\s*(.*)$/i);
-    if (fieldMatch) {
-      currentKey = normalize(fieldMatch[1]);
-      fields[currentKey] = compact(fieldMatch[2], 400) ?? "";
-      continue;
-    }
-
-    if (currentKey && /^\s+/.test(rawLine)) {
-      const continued = compact(rawLine, 300);
-      if (continued) {
-        fields[currentKey] = compact(`${fields[currentKey] ?? ""} ${continued}`, 400) ?? fields[currentKey];
-      }
-      continue;
-    }
-
-    currentKey = null;
-  }
-
-  const name = compact(fields.name, 120);
+  const name = compact(entry.name, 120);
   if (!name) return null;
 
-  const aliases = unique([name, ...splitCsv(fields.aliases)]).map((item) => String(item));
   return {
     name,
-    aliases,
-    status: compact(fields.status, 120),
-    updated_at: compact(fields.updated_at, 40),
-    owner: compact(fields.owner, 120),
-    summary: compact(fields.summary, 320),
-    next_step: compact(fields.next_step, 320),
-    blockers: compact(fields.blockers, 320)
+    aliases: normalizeAliases(entry.aliases, name),
+    status: compact(entry.status, 180),
+    updated_at: compact(entry.updated_at, 40),
+    owner: compact(entry.owner, 120),
+    summary: compact(entry.summary, 320),
+    next_step: compact(entry.next_step, 320),
+    blockers: compact(entry.blockers, 320)
   };
 }
 
-export function parseProjectStatusesText(text) {
-  const blocks = String(text ?? "")
-    .split(/\[project\]/i)
-    .slice(1);
+export function parseProjectStatusesJson(text) {
+  const raw = String(text ?? "").trim();
+  if (!raw) {
+    return { ok: true, projects: [] };
+  }
 
-  return blocks.map((block) => parseProjectBlock(block)).filter(Boolean);
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "invalid_projects_json", projects: [] };
+  }
+
+  const collection = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.projects)
+      ? parsed.projects
+      : [];
+
+  return {
+    ok: true,
+    projects: collection.map((item) => sanitizeProjectStatusEntry(item)).filter(Boolean)
+  };
 }
 
 function buildSearchTexts(input, context) {
@@ -246,7 +238,7 @@ function buildStatusReply(project) {
 export default {
   name: "lookup_project_status",
   description:
-    "Consulta el estado actual de proyectos desde un archivo TXT editable para responder avances, progreso y situacion actual.",
+    "Consulta el estado actual de proyectos desde un archivo JSON editable para responder avances, progreso y situacion actual.",
   parameters: {
     type: "object",
     properties: {
@@ -263,13 +255,26 @@ export default {
   },
   async run(input, context) {
     const raw = await fs.readFile(PROJECT_STATUS_FILE, "utf8").catch(() => "");
-    const projects = parseProjectStatusesText(raw);
+    const parsed = parseProjectStatusesJson(raw);
+    const projects = parsed.projects;
     const availableProjects = projects.map((project) => project.name);
     const searchTexts = buildSearchTexts(input, context);
     const requestedProject =
       compact(input?.project_name, 160) ??
       compact(stripStatusNoise(input?.query), 160) ??
       compact(stripStatusNoise(context?.userMessage), 160);
+
+    if (!parsed.ok) {
+      return {
+        ok: true,
+        found: false,
+        error: parsed.error,
+        requested_project: requestedProject ?? null,
+        available_projects: [],
+        response_hint:
+          "El archivo de estados JSON no tiene un formato valido. Revisa agents/luxisoft/project_statuses.json."
+      };
+    }
 
     if (!projects.length) {
       return {
@@ -279,7 +284,7 @@ export default {
         requested_project: requestedProject ?? null,
         available_projects: [],
         response_hint:
-          "No hay proyectos cargados en el archivo de estados. Actualiza agents/luxisoft/project_statuses.txt para responder esta consulta."
+          "No hay proyectos cargados en el archivo de estados. Actualiza agents/luxisoft/project_statuses.json para responder esta consulta."
       };
     }
 
