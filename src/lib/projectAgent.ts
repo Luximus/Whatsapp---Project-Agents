@@ -955,6 +955,11 @@ function finalizeAssistantReply(state: ConversationState, reply: string, plan: R
   return maybeIdentityIntro(state, reply).slice(0, MAX_RESPONSE_CHARS);
 }
 
+function finalizeFallbackReply(state: ConversationState, reply: string, plan: ReplyPlan) {
+  state.lastReplyStyle = plan.style;
+  return reply.trim().slice(0, MAX_RESPONSE_CHARS);
+}
+
 function formatHumanScopeCheckReply(plan: ReplyPlan) {
   if (plan.style === "question") {
     return "Puedo atenderte directamente por este canal. Si quieres que un especialista humano te contacte, puedo agendar una reunion. Te la agendo?";
@@ -999,6 +1004,34 @@ function formatInitialDiscoveryReply(plan: ReplyPlan) {
   }
 
   return "Para ayudarte mejor, cuentame que servicio digital necesitas y que objetivo quieres resolver.";
+}
+
+function formatOperationalFallbackReply(state: ConversationState, plan: ReplyPlan) {
+  const topic = state.supportTopic ?? "soporte general";
+
+  if (state.awaitingSupportOwnership) {
+    return formatSupportOwnershipQuestion(plan, topic);
+  }
+
+  if (state.awaitingSupportTicketData) {
+    return (
+      buildSupportCollectionPrompt(state, false, plan, topic) ??
+      "Cuentame brevemente que necesitas y continuo ayudandote."
+    );
+  }
+
+  if (state.awaitingMeetingData) {
+    return (
+      buildMeetingCollectionPrompt(state, false, plan) ??
+      "Cuentame brevemente que necesitas y continuo ayudandote."
+    );
+  }
+
+  if (assistantMessageCount(state) === 0) {
+    return formatInitialDiscoveryReply(plan);
+  }
+
+  return "Cuentame brevemente que necesitas y continuo ayudandote.";
 }
 
 function isAssistantIdentityRequest(message: string) {
@@ -2055,7 +2088,8 @@ async function runProjectAgent(input: {
     });
   }
 
-  const answer = extractResponseText(response) || "No pude generar respuesta en este momento.";
+  const answer =
+    extractResponseText(response) || "Cuentame brevemente que necesitas y te ayudo a orientarlo.";
   return {
     projectKey: project.project_key,
     answer: answer.slice(0, MAX_RESPONSE_CHARS),
@@ -2619,9 +2653,8 @@ export async function handleProjectAgentMessage(input: {
     };
   } catch (err: any) {
     state.pendingLeadField = null;
-    const rawFallback =
-      "Tuvimos un inconveniente momentaneo al procesar tu mensaje. Si quieres, comparte un poco mas de detalle y continuo ayudandote.";
-    const fallback = finalizeAssistantReply(state, rawFallback, replyPlan);
+    const rawFallback = formatOperationalFallbackReply(state, replyPlan);
+    const fallback = finalizeFallbackReply(state, rawFallback, replyPlan);
     appendHistory(state, "assistant", fallback);
     return {
       handled: true,
