@@ -119,7 +119,23 @@ const BUY_KEYWORDS = [
   "precio",
   "plan",
   "servicio",
-  "producto"
+  "producto",
+  "tienda virtual",
+  "ecommerce",
+  "e-commerce",
+  "pasarela de pago",
+  "pagina web",
+  "sitio web",
+  "landing page",
+  "app",
+  "aplicacion",
+  "aplicacion movil",
+  "android",
+  "ios",
+  "automatizacion",
+  "inteligencia artificial",
+  "asistente virtual",
+  "vender"
 ];
 
 const HUMAN_KEYWORDS = [
@@ -330,7 +346,9 @@ function updateLeadProfileFromMessage(profile: LeadProfile, message: string): Le
     next.company = sanitizeValue(companyField[1], 140);
   }
 
-  const needField = text.match(/(?:necesito|quiero|busco|requiero|me interesa)\s+([^.!?\n]+)/i);
+  const needField = text.match(
+    /(?:necesito|quiero|quisiera|busco|requiero|necesitaria|me interesa|me gustaria|deseo)\s+([^.!?\n]+)/i
+  );
   if (needField?.[1]) {
     next.need = sanitizeValue(needField[1], 220);
   }
@@ -1537,11 +1555,13 @@ export async function handleProjectAgentMessage(input: {
     const decision = classifyRouting(message, state);
     const isFirstAssistantTurn = assistantMessageCount(state) === 0;
 
-    if (
+    const hasClearNeed = Boolean(sanitizeValue(state.lead.need, 220));
+    const shouldUseInitialDiscovery =
       isFirstAssistantTurn &&
-      decision.kind !== "meeting_interest" &&
-      decision.kind !== "human_scope_check"
-    ) {
+      decision.kind === "general" &&
+      !hasClearNeed;
+
+    if (shouldUseInitialDiscovery) {
       const reply = finalizeAssistantReply(state, formatInitialDiscoveryReply(replyPlan), replyPlan);
       appendHistory(state, "assistant", reply);
       return {
