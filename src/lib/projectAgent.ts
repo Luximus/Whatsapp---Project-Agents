@@ -1,7 +1,17 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
+  Agent,
+  Runner,
+  assistant,
+  tool,
+  user,
+  type AgentInputItem
+} from "@openai/agents";
+import { OpenAIProvider } from "@openai/agents";
+import {
   loadProjectAgent,
+  type AgentScript,
   type AgentScriptRuntimeContext
 } from "../agents/repository.js";
 import { env } from "../env.js";
@@ -114,6 +124,7 @@ const projectStatusEntryCache = new Map<
   string,
   { loadedAt: number; entries: ConfiguredProjectStatusEntry[] }
 >();
+let projectAgentRunner: Runner | null | undefined;
 
 const KNOWLEDGE_CACHE_TTL_MS = 10 * 60 * 1000;
 const PROJECT_STATUS_CACHE_TTL_MS = 60 * 1000;
@@ -1983,19 +1994,32 @@ async function searchKnowledge(input: {
   return pickRelevantSnippets(knowledge.text, input.query);
 }
 
-function parseJsonObject(value: unknown) {
-  if (typeof value !== "string" || !value.trim()) return {} as Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(value);
-    return isRecord(parsed) ? parsed : ({} as Record<string, unknown>);
-  } catch {
-    return {} as Record<string, unknown>;
-  }
-}
-
 function resolveOpenAIBaseUrl() {
   const base = env.openaiBaseUrl.trim() || "https://api.openai.com/v1";
   return base.replace(/\/+$/, "");
+}
+
+function getProjectAgentRunner() {
+  if (typeof projectAgentRunner !== "undefined") {
+    return projectAgentRunner;
+  }
+
+  if (!env.openaiApiKey) {
+    projectAgentRunner = null;
+    return projectAgentRunner;
+  }
+
+  projectAgentRunner = new Runner({
+    modelProvider: new OpenAIProvider({
+      apiKey: env.openaiApiKey,
+      ...(env.openaiBaseUrl ? { baseURL: resolveOpenAIBaseUrl() } : {}),
+      useResponses: true
+    }),
+    tracingDisabled: true,
+    traceIncludeSensitiveData: false
+  });
+
+  return projectAgentRunner;
 }
 
 function normalizeResponseId(value: unknown) {
@@ -2004,13 +2028,18 @@ function normalizeResponseId(value: unknown) {
 }
 
 function shouldResetPreviousResponseHistory(err: any) {
-  const statusCode = Number(err?.statusCode ?? 0);
+  const statusCode = Number(err?.statusCode ?? err?.status ?? err?.cause?.statusCode ?? err?.cause?.status ?? 0);
   if (![400, 404].includes(statusCode)) return false;
 
   const details = String(
     err?.details?.error?.code ??
       err?.details?.error?.message ??
       err?.details?.message ??
+      err?.error?.code ??
+      err?.error?.message ??
+      err?.cause?.error?.code ??
+      err?.cause?.error?.message ??
+      err?.message ??
       ""
   ).toLowerCase();
 
@@ -2022,96 +2051,82 @@ function shouldResetPreviousResponseHistory(err: any) {
   );
 }
 
-async function openaiResponsesCreate(payload: Record<string, unknown>) {
-  if (!env.openaiApiKey) {
-    throw new Error("openai_not_configured");
-  }
-
-  const requestModel = String(payload.model ?? "").trim() || "unknown_model";
-
-  const response = await fetch(`${resolveOpenAIBaseUrl()}/responses`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${env.openaiApiKey}`,
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
-
-  const raw = await response.text().catch(() => "");
-  let parsed: any = {};
-  if (raw) {
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      parsed = { raw };
-    }
-  }
-
-  if (!response.ok) {
-    trackOpenAIFailure();
-    trackOperationalError();
-    throw Object.assign(new Error("openai_responses_failed"), {
-      statusCode: response.status,
-      details: parsed
-    });
-  }
-
-  trackOpenAIUsage({
-    model: String(parsed?.model ?? requestModel).trim() || requestModel,
-    usage: parsed?.usage ?? null
-  });
-
-  return parsed;
+function buildProjectAgentHistoryItems(history: ConversationState["history"]): AgentInputItem[] {
+  return history
+    .slice(-8)
+    .map((item) => (item.role === "assistant" ? assistant(item.text) : user(item.text)));
 }
 
-async function openaiResponsesCreateWithHistory(input: {
-  payload: Record<string, unknown>;
-  previousResponseId?: string | null;
+function buildProjectAgentInstructions(input: {
+  projectPrompt: string;
+  projectKey: string;
+  objective?: string;
+  replyPlan: ReplyPlan;
+  sources: string[];
 }) {
-  const previousResponseId = normalizeResponseId(input.previousResponseId);
-  if (!previousResponseId) {
-    return openaiResponsesCreate(input.payload);
-  }
+  return [
+    input.projectPrompt || `Eres el agente del proyecto ${input.projectKey}.`,
+    `PROYECTO_ACTUAL: ${input.projectKey}`,
+    "Responde en espanol claro, maximo 6 lineas si no requiere mas detalle.",
+    `Tu identidad comercial fija es ${ASSISTANT_NAME}, asistente de ${ASSISTANT_COMPANY}.`,
+    "Cuando hables de ti, usa voz femenina.",
+    `No compartas datos personales tuyos; solo puedes compartir tu nombre (${ASSISTANT_NAME}) y que trabajas en ${ASSISTANT_COMPANY}.`,
+    "No abras con saludo ni presentacion al iniciar la respuesta; el sistema ya agrega la presentacion del primer turno.",
+    "No repitas siempre el mismo formato. Sigue el FORMATO_DINAMICO_RECOMENDADO enviado por el sistema.",
+    `FORMATO_DINAMICO_RECOMENDADO: ${describeReplyStyle(input.replyPlan.style)}`,
+    "No incluyas URLs en todas las respuestas. Sigue la POLITICA_DE_ENLACES enviada por el sistema.",
+    `POLITICA_DE_ENLACES: ${describeLinkPolicy(input.replyPlan.linkPolicy)}`,
+    input.objective ? `OBJETIVO_DE_ATENCION_ACTUAL: ${input.objective}` : null,
+    "Responde exclusivamente con informacion confirmada por herramientas y fuentes oficiales.",
+    "No uses conocimiento externo ni inventes datos no confirmados por fuentes oficiales.",
+    "Si necesitas confirmar detalles de servicios o funcionalidades, usa la tool scrape_project_knowledge antes de responder.",
+    "Si el usuario pregunta por estado, avance o progreso actual de un proyecto, trabajo, aplicacion, pagina, o menciona un proyecto en curso ya realizado por LUXISOFT, usa la tool lookup_project_status antes de responder.",
+    "Si un dato no aparece en fuentes despues de consultar tools, responde con tono comercial seguro: explica lo que si esta publicado y el siguiente paso.",
+    "Evita tono de inseguridad o frases ambiguas; habla con claridad.",
+    "Si necesitas mas contexto del sitio, usa los tools disponibles antes de responder.",
+    "Si compartes enlaces, usa URL completa oficial.",
+    "Si el usuario pide contacto humano, ofrece agendar reunion con especialista.",
+    "FUENTES_OFICIALES_DISPONIBLES:",
+    input.sources.length ? input.sources.map((item) => `- ${item}`).join("\n") : "- Sin fuentes configuradas."
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
 
-  try {
-    return await openaiResponsesCreate({
-      ...input.payload,
-      previous_response_id: previousResponseId
+function buildProjectAgentTools(scripts: AgentScript[], runtimeContext: AgentScriptRuntimeContext, toolsUsed: Set<string>) {
+  return scripts.map((script) =>
+    tool({
+      name: script.name,
+      description: script.description,
+      parameters: script.parameters as any,
+      strict: false,
+      execute: async (payload) => {
+        toolsUsed.add(script.name);
+        const args = isRecord(payload) ? payload : ({} as Record<string, unknown>);
+        return script.run(args, runtimeContext);
+      },
+      errorFunction: (_context, error) =>
+        JSON.stringify({
+          ok: false,
+          error: String((error as any)?.message ?? "tool_execution_failed")
+        })
+    })
+  );
+}
+
+function trackProjectAgentRunUsage(result: any, fallbackModel: string) {
+  const rawResponses = Array.isArray(result?.rawResponses) ? result.rawResponses : [];
+  for (const rawResponse of rawResponses) {
+    trackOpenAIUsage({
+      model:
+        String(
+          rawResponse?.providerData?.response?.model ??
+            rawResponse?.providerData?.model ??
+            fallbackModel
+        ).trim() || fallbackModel,
+      usage: rawResponse?.usage ?? null
     });
-  } catch (err: any) {
-    if (!shouldResetPreviousResponseHistory(err)) {
-      throw err;
-    }
-    return openaiResponsesCreate(input.payload);
   }
-}
-
-function extractResponseText(response: any) {
-  if (typeof response?.output_text === "string" && response.output_text.trim()) {
-    return response.output_text.trim();
-  }
-
-  const output = Array.isArray(response?.output) ? response.output : [];
-  const chunks: string[] = [];
-  for (const item of output) {
-    if (item?.type !== "message") continue;
-    const content = Array.isArray(item?.content) ? item.content : [];
-    for (const part of content) {
-      if (part?.type === "output_text" && typeof part.text === "string") {
-        chunks.push(part.text);
-      } else if (part?.type === "text" && typeof part.text === "string") {
-        chunks.push(part.text);
-      }
-    }
-  }
-
-  return chunks.join("\n").trim();
-}
-
-function listFunctionCalls(response: any) {
-  const output = Array.isArray(response?.output) ? response.output : [];
-  return output.filter((item: any) => item?.type === "function_call");
 }
 
 function detectProjectByText(text: string) {
@@ -2126,13 +2141,6 @@ function detectProjectByText(text: string) {
   if (!command) return null;
   const requested = normalizeProjectKey(command) || null;
   return requested === activeProject ? requested : null;
-}
-
-function buildHistoryBlock(history: ConversationState["history"]) {
-  return history
-    .slice(-8)
-    .map((item) => `${item.role === "user" ? "Usuario" : "Asistente"}: ${item.text}`)
-    .join("\n");
 }
 
 function buildMeetingSummary(state: ConversationState, phoneE164: string) {
@@ -2287,126 +2295,69 @@ async function runProjectAgent(input: {
       })
   };
 
-  const scriptMap = new Map(project.scripts.map((script) => [script.name, script]));
-  const tools = project.scripts.map((script) => ({
-    type: "function",
-    name: script.name,
-    description: script.description,
-    parameters: script.parameters,
-    strict: false
-  }));
-
   const model = env.openaiProjectModel;
   const toolsUsed = new Set<string>();
-
-  const systemPrompt = [
-    project.prompt || `Eres el agente del proyecto ${project.project_key}.`,
-    "Responde en espanol claro, maximo 6 lineas si no requiere mas detalle.",
-    `Tu identidad comercial fija es ${ASSISTANT_NAME}, asistente de ${ASSISTANT_COMPANY}.`,
-    "Cuando hables de ti, usa voz femenina.",
-    `No compartas datos personales tuyos; solo puedes compartir tu nombre (${ASSISTANT_NAME}) y que trabajas en ${ASSISTANT_COMPANY}.`,
-    "No abras con saludo ni presentacion al iniciar la respuesta; el sistema ya agrega la presentacion del primer turno.",
-    "No repitas siempre el mismo formato. Sigue el FORMATO_DINAMICO_RECOMENDADO enviado por el sistema.",
-    "No incluyas URLs en todas las respuestas. Sigue la POLITICA_DE_ENLACES enviada por el sistema.",
-    "Responde exclusivamente con informacion confirmada por herramientas y fuentes oficiales.",
-    "No uses conocimiento externo ni inventes datos no confirmados por fuentes oficiales.",
-    "Si necesitas confirmar detalles de servicios o funcionalidades, usa la tool scrape_project_knowledge antes de responder.",
-    "Si el usuario pregunta por estado, avance o progreso actual de un proyecto, trabajo, aplicacion, pagina, o menciona un proyecto en curso ya realizado por LUXISOFT, usa la tool lookup_project_status antes de responder.",
-    "Si un dato no aparece en fuentes despues de consultar tools, responde con tono comercial seguro: explica lo que si esta publicado y el siguiente paso.",
-    "Evita tono de inseguridad o frases ambiguas; habla con claridad.",
-    "Si necesitas mas contexto del sitio, usa los tools disponibles antes de responder.",
-    "Si compartes enlaces, usa URL completa oficial.",
-    "Si el usuario pide contacto humano, ofrece agendar reunion con especialista."
-  ].join("\n\n");
-
-  const userPrompt = [
-    `Proyecto: ${project.project_key}`,
-    input.objective ? `Objetivo de atencion: ${input.objective}` : "",
-    `FORMATO_DINAMICO_RECOMENDADO: ${describeReplyStyle(input.replyPlan.style)}`,
-    `POLITICA_DE_ENLACES: ${describeLinkPolicy(input.replyPlan.linkPolicy)}`,
-    "FUENTES_OFICIALES_DISPONIBLES:",
-    projectSources.length ? projectSources.map((item) => `- ${item}`).join("\n") : "- Sin fuentes configuradas.",
-    "SNIPPETS_PRE-CARGADOS:",
-    "- Ninguno. Usa las tools de scraping cuando haga falta validar datos.",
-    `Historial reciente:`,
-    buildHistoryBlock(input.history) || "Sin historial.",
-    "",
-    `Mensaje actual del usuario:`,
-    input.userMessage
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  let response: any = await openaiResponsesCreateWithHistory({
-    previousResponseId: input.previousResponseId,
-    payload: {
-      model,
-      input: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ],
-      ...(tools.length ? { tools } : {})
-    }
+  const runner = getProjectAgentRunner();
+  if (!runner) {
+    throw new Error("openai_not_configured");
+  }
+  const agent = new Agent<AgentScriptRuntimeContext>({
+    name: `${project.project_key}_assistant`,
+    instructions: buildProjectAgentInstructions({
+      projectPrompt: project.prompt,
+      projectKey: project.project_key,
+      objective: input.objective,
+      replyPlan: input.replyPlan,
+      sources: projectSources
+    }),
+    model,
+    modelSettings: {
+      parallelToolCalls: false,
+      text: { verbosity: "low" }
+    },
+    tools: buildProjectAgentTools(project.scripts, runtimeContext, toolsUsed)
   });
 
-  for (let step = 0; step < env.openaiAgentMaxToolSteps; step += 1) {
-    const calls = listFunctionCalls(response);
-    if (!calls.length) break;
+  const historyInput = buildProjectAgentHistoryItems(input.history);
+  const previousResponseId = normalizeResponseId(input.previousResponseId);
+  let result: any;
 
-    const toolOutputs = [] as Array<{ type: "function_call_output"; call_id: string; output: string }>;
-    for (const call of calls) {
-      const toolName = String(call?.name ?? "").trim();
-      const callId = String(call?.call_id ?? call?.id ?? "");
-      if (!toolName || !callId) continue;
-      toolsUsed.add(toolName);
-
-      const script = scriptMap.get(toolName);
-      if (!script) {
-        toolOutputs.push({
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify({ ok: false, error: "tool_not_found" })
-        });
-        continue;
+  try {
+    result = await runner.run(
+      agent,
+      previousResponseId ? input.userMessage : historyInput,
+      {
+        context: runtimeContext,
+        maxTurns: Math.max(2, env.openaiAgentMaxToolSteps + 1),
+        ...(previousResponseId ? { previousResponseId } : {})
       }
-
-      const args = parseJsonObject(call?.arguments);
-      try {
-        const result = await script.run(args, runtimeContext);
-        toolOutputs.push({
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify({ ok: true, result: result ?? {} })
-        });
-      } catch (err: any) {
-        toolOutputs.push({
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify({
-            ok: false,
-            error: String(err?.message ?? "tool_execution_failed")
-          })
-        });
-      }
+    );
+  } catch (err: any) {
+    if (!previousResponseId || !shouldResetPreviousResponseHistory(err)) {
+      trackOpenAIFailure();
+      trackOperationalError();
+      throw err;
     }
-
-    if (!toolOutputs.length) break;
-
-    response = await openaiResponsesCreate({
-      model,
-      previous_response_id: response.id,
-      input: toolOutputs,
-      ...(tools.length ? { tools } : {})
-    });
+    try {
+      result = await runner.run(agent, historyInput, {
+        context: runtimeContext,
+        maxTurns: Math.max(2, env.openaiAgentMaxToolSteps + 1)
+      });
+    } catch (retryErr: any) {
+      trackOpenAIFailure();
+      trackOperationalError();
+      throw retryErr;
+    }
   }
 
+  trackProjectAgentRunUsage(result, model);
   const answer =
-    extractResponseText(response) || "Cuentame brevemente que necesitas y te ayudo a orientarlo.";
+    String(result?.finalOutput ?? "").trim() || "Cuentame brevemente que necesitas y te ayudo a orientarlo.";
   return {
     projectKey: project.project_key,
     answer: answer.slice(0, MAX_RESPONSE_CHARS),
     toolsUsed: Array.from(toolsUsed),
-    responseId: normalizeResponseId(response?.id)
+    responseId: normalizeResponseId(result?.lastResponseId)
   };
 }
 
