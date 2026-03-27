@@ -53,13 +53,17 @@ type MeetingProfile = {
 };
 
 type SupportOwnership = "luxisoft" | "third_party";
+type ActiveProcessKind = "project_status_name" | "support_ownership" | "support_data" | "meeting_data";
 
 type ConversationState = {
   projectKey: string;
   projectConfirmed: boolean;
   history: Array<{ role: "user" | "assistant"; text: string; at: number }>;
+  contextWindowStartedAt: number;
   lead: LeadProfile;
   pendingLeadField: keyof LeadProfile | null;
+  pendingTopicSwitchMessage: string | null;
+  pendingTopicSwitchProcess: ActiveProcessKind | null;
   awaitingProjectStatusName: boolean;
   meeting: MeetingProfile;
   supportTopic: string | null;
@@ -115,6 +119,7 @@ type ProjectAgentResult = {
   answer: string;
   toolsUsed: string[];
   responseId: string | null;
+  turnAnalysis: TurnAnalysis | null;
 };
 
 type ConfiguredProjectStatusEntry = {
@@ -1034,7 +1039,7 @@ function findConversationProjectHint(state: ConversationState, projectKey: strin
   const byCompany = findConfiguredProjectByName(state.lead.company, projectKey);
   if (byCompany) return byCompany.name;
 
-  const recentUserMessages = state.history
+  const recentUserMessages = getContextualHistory(state)
     .filter((item) => item.role === "user")
     .slice(-8)
     .reverse();
@@ -1445,20 +1450,25 @@ function cloneMeetingProfile(profile: MeetingProfile): MeetingProfile {
   };
 }
 
+function getContextualHistory(state: ConversationState) {
+  const startedAt = typeof state.contextWindowStartedAt === "number" ? state.contextWindowStartedAt : 0;
+  return state.history.filter((item) => item.at >= startedAt);
+}
+
 function recentUserMessages(state: ConversationState, limit = 6) {
-  return state.history
+  return getContextualHistory(state)
     .filter((item) => item.role === "user")
     .slice(-limit);
 }
 
 function recentAssistantMessages(state: ConversationState, limit = 3) {
-  return state.history
+  return getContextualHistory(state)
     .filter((item) => item.role === "assistant")
     .slice(-limit);
 }
 
 function assistantRecentlyAskedProjectName(state: ConversationState) {
-  return recentAssistantMessages(state, 2).some((item) =>
+  return recentAssistantMessages(state, 1).some((item) =>
     /(?:nombre\s+exacto\s+del\s+proyecto|nombre\s+del\s+proyecto\s+o\s+negocio)/i.test(item.text)
   );
 }
@@ -2350,6 +2360,211 @@ function detectSupportOwnership(message: string): SupportOwnership | null {
   return null;
 }
 
+function assistantRecentlyAskedSupportOwnership(state: ConversationState) {
+  return recentAssistantMessages(state, 1).some((item) =>
+    /(?:fue adquirido con nosotros o con un tercero|fue un servicio con nosotros|desarrollado o implementado por nuestro equipo|fue con nosotros o con terceros)/i.test(
+      item.text
+    )
+  );
+}
+
+function hasDirectContactRequestSignal(message: string) {
+  const normalized = normalizeText(message);
+  if (!normalized) return false;
+
+  return /(?:numero|telefono|telefono|correo|email|whatsapp|contacto|llamar|llame|llamada|escribir|comunicarme|comunicarse)/i.test(
+    normalized
+  );
+}
+
+function isAffirmativeTopicSwitchReply(message: string) {
+  const normalized = normalizeText(message);
+  if (!normalized) return false;
+
+  return [
+    "si",
+    "si por favor",
+    "claro",
+    "dale",
+    "ok",
+    "okay",
+    "de acuerdo",
+    "hazlo",
+    "adelante",
+    "continua con eso",
+    "atiende eso",
+    "atiende lo otro",
+    "cambia de tema",
+    "dejalo ahi"
+  ].includes(normalized);
+}
+
+function isNegativeTopicSwitchReply(message: string) {
+  const normalized = normalizeText(message);
+  if (!normalized) return false;
+
+  return [
+    "no",
+    "mejor no",
+    "no gracias",
+    "sigamos",
+    "continuemos",
+    "continua",
+    "sigue con esto",
+    "sigamos con esto"
+  ].includes(normalized);
+}
+
+function looksLikeStandaloneNewQuestion(message: string, projectKey: string) {
+  const normalized = normalizeText(message);
+  if (!normalized || isKnownNonAnswerReply(message) || isGreetingOnlyMessage(message)) {
+    return false;
+  }
+
+  if (isAssistantIdentityRequest(message) || isAssistantPersonalInfoRequest(message)) {
+    return true;
+  }
+
+  if (
+    hasNeedSignalInMessage(message) ||
+    hasSupportSignal(message) ||
+    containsKeyword(message, MEETING_KEYWORDS) ||
+    containsKeyword(message, HUMAN_KEYWORDS) ||
+    hasDirectContactRequestSignal(message)
+  ) {
+    return true;
+  }
+
+  if (
+    Boolean(findConfiguredProjectMention(message, projectKey)) ||
+    hasConfiguredProjectStatusSignal(normalized) ||
+    hasConfiguredProjectInfoSignal(normalized) ||
+    hasConfiguredProjectOngoingSignal(normalized) ||
+    hasGenericConfiguredProjectReference(normalized)
+  ) {
+    return true;
+  }
+
+  if (/[?]/.test(String(message))) return true;
+  return tokenizeNormalizedWords(message).length >= 5;
+}
+
+function getActiveProcessKind(state: ConversationState): ActiveProcessKind | null {
+  if (state.awaitingProjectStatusName || assistantRecentlyAskedProjectName(state)) {
+    return "project_status_name";
+  }
+  if (state.awaitingSupportOwnership || assistantRecentlyAskedSupportOwnership(state)) {
+    return "support_ownership";
+  }
+  if (state.awaitingSupportTicketData) {
+    return "support_data";
+  }
+  if (state.awaitingMeetingData) {
+    return "meeting_data";
+  }
+  return null;
+}
+
+function countMeetingMissingFieldsFromProfiles(lead: LeadProfile, meeting: MeetingProfile) {
+  return getMissingLeadFields(lead).length + MEETING_REQUIRED_FIELDS.filter((field) => !sanitizeValue(meeting[field], 220)).length;
+}
+
+function messageAdvancesActiveProcess(
+  state: ConversationState,
+  message: string,
+  projectKey: string,
+  activeProcess: ActiveProcessKind
+) {
+  if (activeProcess === "project_status_name") {
+    return Boolean(findConfiguredProjectMention(message, projectKey));
+  }
+
+  if (activeProcess === "support_ownership") {
+    return Boolean(detectSupportOwnership(message));
+  }
+
+  const nextLead = updateLeadProfileFromMessage(cloneLeadProfile(state.lead), message, state.pendingLeadField);
+  if (activeProcess === "support_data") {
+    return getMissingSupportFields(nextLead).length < getMissingSupportFields(state.lead).length;
+  }
+
+  const nextMeeting = updateMeetingProfileFromMessage(cloneMeetingProfile(state.meeting), message, nextLead);
+  return countMeetingMissingFieldsFromProfiles(nextLead, nextMeeting) <
+    countMeetingMissingFieldsFromProfiles(state.lead, state.meeting);
+}
+
+function shouldConfirmTopicSwitch(state: ConversationState, message: string, projectKey: string) {
+  const activeProcess = getActiveProcessKind(state);
+  if (!activeProcess) return null;
+  if (messageAdvancesActiveProcess(state, message, projectKey, activeProcess)) return null;
+  if (!looksLikeStandaloneNewQuestion(message, projectKey)) return null;
+  return activeProcess;
+}
+
+function formatTopicSwitchConfirmation(state: ConversationState, activeProcess: ActiveProcessKind) {
+  if (activeProcess === "project_status_name") {
+    return "Ahora mismo estaba esperando el nombre del proyecto para revisar ese caso. Si quieres, dejo este proceso aqui y atiendo primero tu nueva consulta. Te parece?";
+  }
+
+  if (activeProcess === "support_ownership") {
+    return "Ahora mismo estaba validando si ese servicio fue con nosotros o con otro proveedor. Si quieres, dejo este proceso aqui y atiendo primero tu nueva consulta. Te parece?";
+  }
+
+  if (activeProcess === "support_data") {
+    const nextField = getMissingSupportFields(state.lead)[0] ?? state.pendingLeadField;
+    const missingLabel = nextField ? SUPPORT_FIELD_LABELS[nextField] : "un dato del ticket";
+    return `Ahora mismo estaba registrando tu ticket y todavia me faltaba ${missingLabel}. Si quieres, dejo este proceso aqui y atiendo primero tu nueva consulta. Te parece?`;
+  }
+
+  return "Ahora mismo estaba completando los datos de la reunion. Si quieres, dejo este proceso aqui y atiendo primero tu nueva consulta. Te parece?";
+}
+
+function formatTopicSwitchContinueReply(state: ConversationState, activeProcess: ActiveProcessKind, plan: ReplyPlan) {
+  if (activeProcess === "project_status_name") {
+    return formatConfiguredProjectNameRetry();
+  }
+
+  if (activeProcess === "support_ownership") {
+    return formatSupportOwnershipQuestion(plan, state.supportTopic ?? "soporte general");
+  }
+
+  if (activeProcess === "support_data") {
+    return (
+      buildSupportCollectionPrompt(state, false, plan, state.supportTopic ?? "soporte general") ??
+      "Sigamos con este proceso. Cuentame el siguiente dato que te pedi."
+    );
+  }
+
+  return buildMeetingCollectionPrompt(state, false, plan) ?? "Sigamos con la reunion. Cuentame el siguiente dato que te pedi.";
+}
+
+function formatTopicSwitchClarification() {
+  return "Si quieres dejar este proceso actual y atender la nueva consulta, respondeme si. Si prefieres seguir con el proceso actual, respondeme no.";
+}
+
+function shouldStartFreshContextAfterClosure(state: ConversationState, message: string, projectKey: string) {
+  if (getActiveProcessKind(state)) return false;
+  if (!state.supportClosedAt && !state.meetingClosedAt && !state.projectFollowupClosedAt) return false;
+  if (!looksLikeStandaloneNewQuestion(message, projectKey)) return false;
+
+  const normalized = normalizeText(message);
+  const projectFollowupRelated =
+    Boolean(findConfiguredProjectMention(message, projectKey)) ||
+    hasConfiguredProjectStatusSignal(normalized) ||
+    hasConfiguredProjectInfoSignal(normalized) ||
+    hasConfiguredProjectOngoingSignal(normalized) ||
+    hasGenericConfiguredProjectReference(normalized) ||
+    hasProjectFollowupSignal(normalized);
+  const supportRelated = hasSupportSignal(message) || Boolean(detectSupportOwnership(message)) || shouldReopenAfterSupport(message);
+  const meetingRelated = containsKeyword(message, MEETING_KEYWORDS) || shouldReopenAfterMeeting(message);
+
+  if (state.projectFollowupClosedAt && projectFollowupRelated) return false;
+  if (state.supportClosedAt && supportRelated) return false;
+  if (state.meetingClosedAt && meetingRelated) return false;
+
+  return true;
+}
+
 function formatSupportOwnershipQuestion(plan: ReplyPlan, topic: string) {
   if (plan.style === "steps") {
     return [
@@ -3078,6 +3293,8 @@ function buildProjectAgentInstructions(input: {
     "Cuando ya exista contexto de un proyecto concreto y el usuario solo pida respuesta o seguimiento urgente, no lo desvies a discovery comercial ni pidas empresa salvo que realmente falte para ejecutar la gestion.",
     "No pidas datos que ya esten presentes en lead_profile o meeting_profile dentro del estado conversacional actual.",
     "Si el usuario insiste sobre un caso ya escalado, evita repetir literalmente la misma frase en turnos consecutivos. Reconoce la insistencia con una variacion natural y solo actualiza la gestion si realmente agrego un dato nuevo.",
+    "Si estas en mitad de una recoleccion de datos o validacion y el usuario cambia de tema con una pregunta distinta, primero confirma si desea dejar ese proceso actual para atender la nueva consulta.",
+    "Si el caso anterior ya quedo cerrado y el usuario hace una pregunta nueva, atiende esa nueva consulta sin obligarlo a reiniciar manualmente.",
     "Para seguimiento de proyecto, puedes usar el numero de WhatsApp como contacto. El correo y la empresa son opcionales salvo que el usuario ya los haya compartido.",
     "Cuando falten datos para soporte o reunion, pide solo el siguiente dato faltante y evita enumerar toda la lista en cada turno.",
     "Si el usuario pide seguimiento urgente de un proyecto y ya sabes que proyecto es, usa register_project_followup y confirma solo si la tool devolvio exito.",
@@ -3182,7 +3399,7 @@ function detectProjectByText(text: string) {
 }
 
 function buildMeetingSummary(state: ConversationState, phoneE164: string) {
-  const recentUserMessages = state.history
+  const recentUserMessages = getContextualHistory(state)
     .filter((item) => item.role === "user")
     .slice(-4)
     .map((item) => `- ${item.text.slice(0, 220)}`)
@@ -3204,7 +3421,7 @@ function buildMeetingSummary(state: ConversationState, phoneE164: string) {
 }
 
 function buildSupportTicketSummary(state: ConversationState, phoneE164: string) {
-  const recentUserMessages = state.history
+  const recentUserMessages = getContextualHistory(state)
     .filter((item) => item.role === "user")
     .slice(-6)
     .map((item) => item.text.slice(0, 220));
@@ -3228,8 +3445,17 @@ function getConversation(phoneE164: string, projectKey: string) {
   const existing = conversations.get(phoneE164);
   if (existing) {
     if (projectKey) existing.projectKey = projectKey;
+    if (typeof existing.contextWindowStartedAt !== "number") {
+      existing.contextWindowStartedAt = Date.now();
+    }
     if (typeof existing.pendingLeadField === "undefined") {
       existing.pendingLeadField = null;
+    }
+    if (!existing.pendingTopicSwitchMessage) {
+      existing.pendingTopicSwitchMessage = null;
+    }
+    if (!existing.pendingTopicSwitchProcess) {
+      existing.pendingTopicSwitchProcess = null;
     }
     if (typeof existing.awaitingProjectStatusName !== "boolean") {
       existing.awaitingProjectStatusName = false;
@@ -3276,8 +3502,11 @@ function getConversation(phoneE164: string, projectKey: string) {
     projectKey,
     projectConfirmed: false,
     history: [],
+    contextWindowStartedAt: Date.now(),
     lead: emptyLeadProfile(),
     pendingLeadField: null,
+    pendingTopicSwitchMessage: null,
+    pendingTopicSwitchProcess: null,
     awaitingProjectStatusName: false,
     meeting: emptyMeetingProfile(),
     supportTopic: null,
@@ -3325,7 +3554,8 @@ async function runProjectAgent(input: {
       projectKey: env.defaultProject,
       answer: "No hay agente de proyecto configurado en el servidor.",
       toolsUsed: [] as string[],
-      responseId: null
+      responseId: null,
+      turnAnalysis: null
     };
   }
 
@@ -3459,7 +3689,8 @@ async function runProjectAgent(input: {
     projectKey: project.project_key,
     answer: answer.slice(0, MAX_RESPONSE_CHARS),
     toolsUsed: Array.from(toolsUsed),
-    responseId: normalizeResponseId(result?.lastResponseId)
+    responseId: normalizeResponseId(result?.lastResponseId),
+    turnAnalysis
   };
 }
 
@@ -3971,6 +4202,8 @@ async function resetConversationCaseState(input: {
 
   input.state.awaitingProjectStatusName = false;
   input.state.pendingLeadField = null;
+  input.state.pendingTopicSwitchMessage = null;
+  input.state.pendingTopicSwitchProcess = null;
   input.state.lead.need = null;
 
   if (!keepContactData) {
@@ -3989,6 +4222,60 @@ async function resetConversationCaseState(input: {
       meeting_closed_at: input.state.meetingClosedAt
     }
   };
+}
+
+async function startFreshConversationContext(state: ConversationState, projectKey: string) {
+  await resetConversationCaseState({
+    state,
+    payload: {
+      target: "all",
+      keep_contact_data: "true"
+    }
+  });
+  state.contextWindowStartedAt = Date.now();
+  state.pendingTopicSwitchMessage = null;
+  state.pendingTopicSwitchProcess = null;
+  delete state.openaiProjectPreviousResponseIds[projectKey];
+}
+
+function syncConversationAwaitingState(state: ConversationState, turnAnalysis: TurnAnalysis | null) {
+  state.awaitingProjectStatusName = false;
+  state.awaitingSupportOwnership = false;
+  state.awaitingSupportTicketData = false;
+  state.awaitingMeetingData = false;
+  state.pendingLeadField = null;
+
+  if (!turnAnalysis) return;
+
+  if (turnAnalysis.recommended_action === "ask_project_name") {
+    state.awaitingProjectStatusName = true;
+    return;
+  }
+
+  if (turnAnalysis.recommended_action === "ask_support_ownership") {
+    state.awaitingSupportOwnership = true;
+    return;
+  }
+
+  const missingSupport = getMissingSupportFields(state.lead);
+  if (
+    turnAnalysis.recommended_action === "collect_support_data" ||
+    (turnAnalysis.recommended_action === "register_support_ticket" && missingSupport.length > 0)
+  ) {
+    state.awaitingSupportTicketData = true;
+    state.pendingLeadField = missingSupport[0] ?? null;
+    return;
+  }
+
+  const missingMeeting = getMissingMeetingFields(state);
+  if (
+    turnAnalysis.recommended_action === "collect_meeting_data" ||
+    (turnAnalysis.recommended_action === "schedule_meeting_request" &&
+      (missingMeeting.missingLead.length > 0 || missingMeeting.missingMeeting.length > 0))
+  ) {
+    state.awaitingMeetingData = true;
+    state.pendingLeadField = missingMeeting.missingLead[0] ?? null;
+  }
 }
 
 async function maybeCompleteCriticalAgentAction(input: {
@@ -4265,16 +4552,79 @@ export async function handleProjectAgentMessage(input: {
     state.projectKey = explicitProject;
     state.projectConfirmed = true;
   }
+  const replyPlan = buildReplyPlan(state, message);
+  const singleProjectKey = state.projectKey || env.defaultProject || "luxisoft";
+
+  if (state.pendingTopicSwitchMessage) {
+    if (isAffirmativeTopicSwitchReply(message)) {
+      appendHistory(state, "user", message);
+      const deferredMessage = state.pendingTopicSwitchMessage;
+      await startFreshConversationContext(state, singleProjectKey);
+      return handleProjectAgentMessage({
+        phoneE164: phone,
+        text: deferredMessage
+      });
+    }
+
+    if (isNegativeTopicSwitchReply(message)) {
+      appendHistory(state, "user", message);
+      const activeProcess = state.pendingTopicSwitchProcess ?? getActiveProcessKind(state) ?? "support_data";
+      state.pendingTopicSwitchMessage = null;
+      state.pendingTopicSwitchProcess = null;
+      const rawReply = formatTopicSwitchContinueReply(state, activeProcess, replyPlan);
+      const reply = finalizeAssistantReply(state, rawReply, replyPlan);
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
+    }
+
+    if (looksLikeStandaloneNewQuestion(message, singleProjectKey)) {
+      state.pendingTopicSwitchMessage = message;
+    }
+
+    const clarification = finalizeAssistantReply(state, formatTopicSwitchClarification(), replyPlan);
+    appendHistory(state, "assistant", clarification);
+    return {
+      handled: true,
+      projectKey: state.projectKey,
+      reply: clarification,
+      escalated: false,
+      escalationSent: false
+    };
+  }
+
+  if (shouldStartFreshContextAfterClosure(state, message, singleProjectKey)) {
+    await startFreshConversationContext(state, singleProjectKey);
+  }
+
+  const topicSwitchProcess = shouldConfirmTopicSwitch(state, message, singleProjectKey);
+  if (topicSwitchProcess) {
+    state.pendingTopicSwitchMessage = message;
+    state.pendingTopicSwitchProcess = topicSwitchProcess;
+    const confirmation = finalizeAssistantReply(state, formatTopicSwitchConfirmation(state, topicSwitchProcess), replyPlan);
+    appendHistory(state, "assistant", confirmation);
+    return {
+      handled: true,
+      projectKey: state.projectKey,
+      reply: confirmation,
+      escalated: false,
+      escalationSent: false
+    };
+  }
+
   appendHistory(state, "user", message);
   state.lead = updateLeadProfileFromMessage(state.lead, message, state.pendingLeadField);
   if (state.pendingLeadField && sanitizeValue(state.lead[state.pendingLeadField], 220)) {
     state.pendingLeadField = null;
   }
   state.meeting = updateMeetingProfileFromMessage(state.meeting, message, state.lead);
-  const replyPlan = buildReplyPlan(state, message);
 
   try {
-    const singleProjectKey = state.projectKey || env.defaultProject || "luxisoft";
     state.projectKey = singleProjectKey;
     state.projectConfirmed = true;
     state.pendingLeadField = null;
@@ -4288,7 +4638,7 @@ export async function handleProjectAgentMessage(input: {
       phoneE164: phone,
       userMessage: message,
       state,
-      history: state.history,
+      history: getContextualHistory(state),
       objective,
       replyPlan,
       previousResponseId:
@@ -4298,7 +4648,7 @@ export async function handleProjectAgentMessage(input: {
       state.openaiProjectPreviousResponseIds[singleProjectKey] = resolved.responseId;
     }
 
-    state.pendingLeadField = null;
+    syncConversationAwaitingState(state, resolved.turnAnalysis);
     const agentReply = finalizeAssistantReply(state, resolved.answer, replyPlan);
     appendHistory(state, "assistant", agentReply);
 
