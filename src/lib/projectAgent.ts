@@ -104,6 +104,7 @@ type ProjectAgentResult = {
 type ConfiguredProjectStatusEntry = {
   name: string;
   aliases: string[];
+  statusParagraph: string | null;
 };
 
 const knowledgeCache = new Map<string, CachedKnowledge>();
@@ -438,7 +439,7 @@ function parseConfiguredProjectStatusEntriesText(text: string) {
     .filter((paragraph): paragraph is string => Boolean(paragraph))
     .map((paragraph): ConfiguredProjectStatusEntry | null => {
       const match = paragraph.match(/^([^:]{2,180})\s*:\s*(.+)$/);
-      if (!match?.[1]) return null;
+      if (!match?.[1] || !match?.[2]) return null;
 
       const rawHeader = sanitizeValue(match[1], 180);
       if (!rawHeader) return null;
@@ -456,7 +457,8 @@ function parseConfiguredProjectStatusEntriesText(text: string) {
 
       return {
         name,
-        aliases: Array.from(new Set([name, ...aliases]))
+        aliases: Array.from(new Set([name, ...aliases])),
+        statusParagraph: sanitizeValue(match[2], 700)
       };
     })
     .filter((item): item is ConfiguredProjectStatusEntry => Boolean(item));
@@ -795,13 +797,57 @@ function findConfiguredProjectMention(message: string, projectKey: string) {
   return null;
 }
 
-function detectConfiguredProjectStatusInquiry(message: string, projectKey: string) {
+function findConfiguredProjectByName(name: string | null | undefined, projectKey: string) {
+  const normalizedTarget = normalizeProjectStatusSearchText(name);
+  if (!normalizedTarget) return null;
+
+  return (
+    loadConfiguredProjectStatusEntries(projectKey).find((entry) =>
+      entry.aliases.some((alias) => normalizeProjectStatusSearchText(alias) === normalizedTarget)
+    ) ?? null
+  );
+}
+
+function findConversationProjectHint(state: ConversationState, projectKey: string) {
+  const byCompany = findConfiguredProjectByName(state.lead.company, projectKey);
+  if (byCompany) return byCompany.name;
+
+  const recentUserMessages = state.history
+    .filter((item) => item.role === "user")
+    .slice(-8)
+    .reverse();
+
+  for (const item of recentUserMessages) {
+    const matched = findConfiguredProjectMention(item.text, projectKey);
+    if (matched) return matched;
+  }
+
+  return null;
+}
+
+function formatConfiguredProjectStatusReply(projectName: string, projectKey: string) {
+  const entry = findConfiguredProjectByName(projectName, projectKey);
+  if (!entry?.statusParagraph) {
+    return `No tengo un estado actualizado cargado para ${projectName}. Si quieres, puedo escalar la consulta con nuestro equipo.`;
+  }
+
+  return `El estado actual de ${entry.name} es el siguiente: ${entry.statusParagraph}`;
+}
+
+function detectConfiguredProjectStatusInquiry(
+  message: string,
+  state: ConversationState,
+  projectKey: string
+) {
   const matchedProject = findConfiguredProjectMention(message, projectKey);
-  if (!matchedProject) return null;
 
   const normalized = normalizeText(message);
   const statusSignal =
     /(?:estado|avance|progreso|seguimiento|situacion|estatus|actualizacion|como va|como sigue|en que va|en que estado)/i.test(
+      normalized
+    );
+  const infoSignal =
+    /(?:informacion|detalle|detalles|quiero\s+saber|necesito\s+informacion|acerca\s+de|sobre)/i.test(
       normalized
     );
   const ongoingSignal =
@@ -812,8 +858,20 @@ function detectConfiguredProjectStatusInquiry(message: string, projectKey: strin
     /(?:necesito\s+(?:al|a la)|hablar\s+con|comunicarme\s+con|pasame\s+con|quiero\s+hablar\s+con)/i.test(
       normalized
     );
+  const genericProjectReference =
+    /(?:la tienda|el proyecto|la web|la app|ese proyecto|ese trabajo|esa tienda|esa web|esa app)/i.test(
+      normalized
+    );
 
-  return statusSignal || ongoingSignal || contactSignal ? matchedProject : null;
+  if (matchedProject && (statusSignal || infoSignal || ongoingSignal || contactSignal)) {
+    return matchedProject;
+  }
+
+  if (!(statusSignal || infoSignal || ongoingSignal || contactSignal || genericProjectReference)) {
+    return null;
+  }
+
+  return findConversationProjectHint(state, projectKey);
 }
 
 function containsKeyword(text: string, keywords: string[]) {
@@ -1295,7 +1353,7 @@ function detectSupportOwnership(message: string): SupportOwnership | null {
   if (!normalized) return null;
 
   if (
-    /(?:no\s+fue\s+con\s+(?:ustedes|luxisoft)|no\s+con\s+(?:ustedes|luxisoft)|con\s+terceros?|otro\s+proveedor|otra\s+empresa|externo|externa|freelancer|agencia\s+externa|tercerizado)/i.test(
+    /(?:no\s+fue\s+con\s+(?:ustedes|nosotros|luxisoft)|no\s+con\s+(?:ustedes|nosotros|luxisoft)|con\s+terceros?|otro\s+proveedor|otra\s+empresa|externo|externa|freelancer|agencia\s+externa|tercerizado)/i.test(
       normalized
     )
   ) {
@@ -1303,7 +1361,7 @@ function detectSupportOwnership(message: string): SupportOwnership | null {
   }
 
   if (
-    /(?:con\s+(?:ustedes|luxisoft)|fue\s+con\s+(?:ustedes|luxisoft)|lo\s+hizo\s+luxisoft|lo\s+hizo\s+su\s+equipo|desarrollado\s+por\s+ustedes|implementado\s+por\s+ustedes)/i.test(
+    /(?:con\s+(?:ustedes|nosotros|luxisoft)|fue\s+con\s+(?:ustedes|nosotros|luxisoft)|lo\s+hizo\s+luxisoft|lo\s+hizo\s+nuestro\s+equipo|lo\s+hizo\s+su\s+equipo|desarrollado\s+por\s+(?:ustedes|nosotros|nuestro\s+equipo)|implementado\s+por\s+(?:ustedes|nosotros|nuestro\s+equipo))/i.test(
       normalized
     )
   ) {
@@ -1317,7 +1375,7 @@ function formatSupportOwnershipQuestion(plan: ReplyPlan, topic: string) {
   if (plan.style === "steps") {
     return [
       `Antes de seguir con ${topic}, confirma esto:`,
-      "1. El servicio fue desarrollado/implementado por LUXISOFT.",
+      "1. El servicio fue desarrollado o implementado por nuestro equipo.",
       "2. O fue desarrollado/implementado por terceros.",
       "Cual de los dos casos aplica?"
     ].join("\n");
@@ -1326,13 +1384,13 @@ function formatSupportOwnershipQuestion(plan: ReplyPlan, topic: string) {
   if (plan.style === "bullets") {
     return [
       `Antes de continuar con ${topic}, necesito confirmar:`,
-      "- Fue un servicio de LUXISOFT",
+      "- Fue un servicio con nosotros",
       "- Fue un servicio de terceros",
       "Cual aplica en tu caso?"
     ].join("\n");
   }
 
-  return `Antes de continuar con ${topic}, confirmame algo: ese servicio fue adquirido con LUXISOFT o con un tercero?`;
+  return `Antes de continuar con ${topic}, confirmame algo: ese servicio fue adquirido con nosotros o con un tercero?`;
 }
 
 function buildMeetingCollectionPrompt(state: ConversationState, firstInteraction: boolean, plan: ReplyPlan) {
@@ -1432,6 +1490,7 @@ function classifyRouting(message: string, state: ConversationState): RoutingDeci
     !support
       ? detectConfiguredProjectStatusInquiry(
           message,
+          state,
           mentionedProject ?? contextProject ?? env.defaultProject
         )
       : null;
@@ -2376,7 +2435,7 @@ async function runSupportTicketQualification(input: {
   }
 
   const rawReply = mail.sent
-    ? "Perfecto, ya registre tu ticket de soporte y lo envie al equipo de LUXISOFT. Te daremos respuesta lo mas pronto posible."
+    ? "Perfecto, ya registre tu ticket de soporte y lo envie a nuestro equipo. Te daremos respuesta lo mas pronto posible."
     : "Registre tu solicitud, pero fallo el envio del ticket en este momento. Intenta nuevamente en unos minutos.";
   const reply = finalizeAssistantReply(input.state, rawReply, input.replyPlan);
   appendHistory(input.state, "assistant", reply);
@@ -2541,10 +2600,28 @@ export async function handleProjectAgentMessage(input: {
   const replyPlan = buildReplyPlan(state, message);
   const configuredProjectStatusInquiry = detectConfiguredProjectStatusInquiry(
     message,
+    state,
     state.projectKey || env.defaultProject
   );
 
   try {
+    if (configuredProjectStatusInquiry) {
+      state.pendingLeadField = null;
+      const reply = finalizeAssistantReply(
+        state,
+        formatConfiguredProjectStatusReply(configuredProjectStatusInquiry, state.projectKey || env.defaultProject),
+        replyPlan
+      );
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
+    }
+
     if (state.supportClosedAt) {
       state.pendingLeadField = null;
       if (shouldReopenAfterSupport(message)) {
@@ -2588,7 +2665,7 @@ export async function handleProjectAgentMessage(input: {
 
       const reply = finalizeAssistantReply(
         state,
-        "Tu ticket ya fue registrado y enviado al equipo de LUXISOFT. Te responderemos lo mas pronto posible. Si deseas abrir otro, escribe: nuevo ticket.",
+        "Tu ticket ya fue registrado y enviado a nuestro equipo. Te responderemos lo mas pronto posible. Si deseas abrir otro, escribe: nuevo ticket.",
         replyPlan
       );
       appendHistory(state, "assistant", reply);
