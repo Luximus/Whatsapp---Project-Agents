@@ -5,7 +5,7 @@ import { WhatsappDailyReportEmail } from "../../emails/templates/WhatsappDailyRe
 import type { LuxisoftEmailSection } from "../../emails/templates/LuxisoftEmailTemplate.js";
 import { sendWhatsappText } from "../../infrastructure/messaging/whatsappApi.js";
 import { createSmtpTransport, isSmtpConfigured } from "../../infrastructure/messaging/mailer.js";
-import { currentDateKey, getDailySnapshot } from "../../domain/reporting/tracker.js";
+import { currentDateKey, getDailySnapshot, flushTodayMetricsToDb } from "../../domain/reporting/tracker.js";
 import type { DailyMetrics } from "../../domain/reporting/types.js";
 import { dateLabelForReport, buildReportPdfBuffer } from "./generatePdf.js";
 
@@ -128,6 +128,7 @@ async function notifyHumanReportStatus(message: string) {
 }
 
 export async function sendDailyReportForDate(dateKey = currentDateKey()) {
+  await flushTodayMetricsToDb();
   const { metrics, meetings } = getDailySnapshot(dateKey);
   const sections = buildEmailSections(dateKey, metrics);
   const notes = buildMeetingNotes(meetings);

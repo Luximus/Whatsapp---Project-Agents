@@ -246,3 +246,82 @@ create index if not exists whatsapp_bridge_events_status_retry_idx
   on whatsapp_bridge_events(delivery_status, next_retry_at);
 create index if not exists whatsapp_bridge_events_project_status_retry_idx
   on whatsapp_bridge_events(project_key, delivery_status, next_retry_at);
+
+-- ─── Agent contacts ───────────────────────────────────────────────────────────
+-- Perfil del contacto identificado por número de teléfono. Se actualiza
+-- incrementalmente a medida que el agente recopila datos durante la conversación.
+
+create table if not exists agent_contacts (
+  id bigserial primary key,
+  project_key text not null references whatsapp_projects(project_key) on delete cascade,
+  phone_e164 varchar(20) not null,
+  first_name text null,
+  last_name text null,
+  company text null,
+  email text null,
+  need text null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (project_key, phone_e164)
+);
+
+do $$
+begin
+  if not exists (select 1 from pg_trigger where tgname = 'agent_contacts_set_updated_at') then
+    create trigger agent_contacts_set_updated_at
+    before update on agent_contacts
+    for each row execute function set_updated_at();
+  end if;
+end $$;
+
+create index if not exists agent_contacts_phone_idx on agent_contacts(phone_e164);
+
+-- ─── Agent messages ───────────────────────────────────────────────────────────
+-- Historial persistente de mensajes de conversación por contacto.
+
+create table if not exists agent_messages (
+  id bigserial primary key,
+  project_key text not null references whatsapp_projects(project_key) on delete cascade,
+  phone_e164 varchar(20) not null,
+  role text not null,
+  body text not null,
+  created_at timestamptz not null default now(),
+  check (role in ('user', 'assistant'))
+);
+
+create index if not exists agent_messages_contact_idx on agent_messages(project_key, phone_e164, created_at desc);
+
+-- ─── Agent daily metrics ──────────────────────────────────────────────────────
+-- Métricas diarias persistidas en DB para sobrevivir reinicios del servidor.
+
+create table if not exists agent_daily_metrics (
+  date_key text not null,
+  project_key text not null references whatsapp_projects(project_key) on delete cascade,
+  unique_contacts jsonb not null default '[]',
+  incoming_total int not null default 0,
+  incoming_text int not null default 0,
+  incoming_audio int not null default 0,
+  otp_messages int not null default 0,
+  agent_replies int not null default 0,
+  outbound_text int not null default 0,
+  outbound_audio int not null default 0,
+  meetings_scheduled int not null default 0,
+  meetings_notified_human int not null default 0,
+  support_tickets_created int not null default 0,
+  openai_failures int not null default 0,
+  errors int not null default 0,
+  openai_by_model jsonb not null default '{}',
+  meetings jsonb not null default '[]',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (date_key, project_key)
+);
+
+do $$
+begin
+  if not exists (select 1 from pg_trigger where tgname = 'agent_daily_metrics_set_updated_at') then
+    create trigger agent_daily_metrics_set_updated_at
+    before update on agent_daily_metrics
+    for each row execute function set_updated_at();
+  end if;
+end $$;

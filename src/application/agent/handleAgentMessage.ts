@@ -1,5 +1,11 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { getPool } from "../../infrastructure/db/pool.js";
+import {
+  findAgentContact,
+  upsertAgentContact
+} from "../../infrastructure/db/queries/agentContacts.js";
+import { insertAgentMessage } from "../../infrastructure/db/queries/agentMessages.js";
 import {
   Agent,
   assistant,
@@ -4660,9 +4666,57 @@ export async function handleProjectAgentMessage(input: {
   const replyPlan = buildReplyPlan(state, message);
   const singleProjectKey = state.projectKey || env.defaultProject || "luxisoft";
 
+  // Load contact from DB when starting a fresh conversation
+  if (!previous) {
+    try {
+      const contact = await findAgentContact(getPool(), singleProjectKey, phone);
+      if (contact) {
+        state.lead = {
+          firstName: contact.first_name,
+          lastName: contact.last_name,
+          company: contact.company,
+          email: contact.email,
+          need: contact.need
+        };
+      }
+    } catch {
+      // DB errors don't block conversation
+    }
+  }
+
+  const saveMsg = (role: "user" | "assistant", text: string) => {
+    void insertAgentMessage(getPool(), {
+      projectKey: singleProjectKey,
+      phoneE164: phone,
+      role,
+      body: text
+    }).catch(() => {});
+  };
+
+  const saveContactIfChanged = (before: LeadProfile, after: LeadProfile) => {
+    if (
+      before.firstName !== after.firstName ||
+      before.lastName !== after.lastName ||
+      before.company !== after.company ||
+      before.email !== after.email ||
+      before.need !== after.need
+    ) {
+      void upsertAgentContact(getPool(), {
+        projectKey: singleProjectKey,
+        phoneE164: phone,
+        firstName: after.firstName,
+        lastName: after.lastName,
+        company: after.company,
+        email: after.email,
+        need: after.need
+      }).catch(() => {});
+    }
+  };
+
   if (state.pendingTopicSwitchMessage) {
     if (isAffirmativeTopicSwitchReply(message)) {
       appendHistory(state, "user", message);
+      saveMsg("user", message);
       const deferredMessage = state.pendingTopicSwitchMessage;
       await startFreshConversationContext(state, singleProjectKey);
       return handleProjectAgentMessage({
@@ -4673,12 +4727,14 @@ export async function handleProjectAgentMessage(input: {
 
     if (isNegativeTopicSwitchReply(message)) {
       appendHistory(state, "user", message);
+      saveMsg("user", message);
       const activeProcess = state.pendingTopicSwitchProcess ?? getActiveProcessKind(state) ?? "support_data";
       state.pendingTopicSwitchMessage = null;
       state.pendingTopicSwitchProcess = null;
       const rawReply = formatTopicSwitchContinueReply(state, activeProcess, replyPlan);
       const reply = finalizeAssistantReply(state, rawReply, replyPlan);
       appendHistory(state, "assistant", reply);
+      saveMsg("assistant", reply);
       return {
         handled: true,
         projectKey: state.projectKey,
@@ -4694,6 +4750,7 @@ export async function handleProjectAgentMessage(input: {
 
     const clarification = finalizeAssistantReply(state, formatTopicSwitchClarification(), replyPlan);
     appendHistory(state, "assistant", clarification);
+    saveMsg("assistant", clarification);
     return {
       handled: true,
       projectKey: state.projectKey,
@@ -4713,6 +4770,7 @@ export async function handleProjectAgentMessage(input: {
     state.pendingTopicSwitchProcess = topicSwitchProcess;
     const confirmation = finalizeAssistantReply(state, formatTopicSwitchConfirmation(state, topicSwitchProcess), replyPlan);
     appendHistory(state, "assistant", confirmation);
+    saveMsg("assistant", confirmation);
     return {
       handled: true,
       projectKey: state.projectKey,
@@ -4723,12 +4781,14 @@ export async function handleProjectAgentMessage(input: {
   }
 
   appendHistory(state, "user", message);
+  saveMsg("user", message);
   const leadBeforeMessage = cloneLeadProfile(state.lead);
   const effectivePendingLeadField = state.pendingLeadField ?? inferPromptedLeadFieldFromRecentAssistant(state);
   state.lead = updateLeadProfileFromMessage(state.lead, message, effectivePendingLeadField);
   if (effectivePendingLeadField && sanitizeValue(state.lead[effectivePendingLeadField], 220)) {
     state.pendingLeadField = null;
   }
+  saveContactIfChanged(leadBeforeMessage, state.lead);
   state.meeting = updateMeetingProfileFromMessage(state.meeting, message, state.lead);
 
   const answeredCommercialField = resolvePromptedCommercialLeadFieldReply({
@@ -4746,6 +4806,7 @@ export async function handleProjectAgentMessage(input: {
         LEAD_PROGRESS_FIELDS.find((field) => !sanitizeValue(state.lead[field], leadFieldMaxLength(field))) ?? null;
       const reply = finalizeAssistantReply(state, rawReply, replyPlan);
       appendHistory(state, "assistant", reply);
+      saveMsg("assistant", reply);
       return {
         handled: true,
         projectKey: state.projectKey,
@@ -4783,6 +4844,8 @@ export async function handleProjectAgentMessage(input: {
     syncConversationAwaitingState(state, resolved.turnAnalysis);
     const agentReply = finalizeAssistantReply(state, resolved.answer, replyPlan);
     appendHistory(state, "assistant", agentReply);
+    saveMsg("assistant", agentReply);
+    saveContactIfChanged(leadBeforeMessage, state.lead);
 
     return {
       handled: true,
@@ -4797,6 +4860,7 @@ export async function handleProjectAgentMessage(input: {
     const rawFallback = formatOperationalFallbackReply(state, replyPlan);
     const fallback = finalizeFallbackReply(state, rawFallback, replyPlan);
     appendHistory(state, "assistant", fallback);
+    saveMsg("assistant", fallback);
     return {
       handled: true,
       projectKey: state.projectKey,

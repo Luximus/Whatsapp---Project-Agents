@@ -1,5 +1,10 @@
 import { env } from "../../config/env.js";
 import type { DailyMetrics, MeetingRecord, ModelUsage, OpenAIUsageInput } from "./types.js";
+import { getPool } from "../../infrastructure/db/pool.js";
+import {
+  loadDailyMetricsFromDb,
+  flushDailyMetricsToDb
+} from "../../infrastructure/db/queries/agentMetrics.js";
 
 const metricsByDate = new Map<string, DailyMetrics>();
 const meetingsByDate = new Map<string, MeetingRecord[]>();
@@ -157,4 +162,59 @@ export function trackSupportTicketCreated() {
 
 export function trackOperationalError() {
   ensureDailyMetrics().errors += 1;
+}
+
+// ─── DB persistence ───────────────────────────────────────────────────────────
+
+export async function loadTodayMetricsFromDb(): Promise<void> {
+  const dateKey = currentDateKey();
+  const projectKey = env.defaultProject || "luxisoft";
+  try {
+    const saved = await loadDailyMetricsFromDb(getPool(), dateKey, projectKey);
+    if (!saved) return;
+
+    const metrics = ensureDailyMetrics(dateKey);
+    for (const phone of saved.metrics.uniqueContacts) metrics.uniqueContacts.add(phone);
+    metrics.incomingTotal = Math.max(metrics.incomingTotal, saved.metrics.incomingTotal);
+    metrics.incomingText = Math.max(metrics.incomingText, saved.metrics.incomingText);
+    metrics.incomingAudio = Math.max(metrics.incomingAudio, saved.metrics.incomingAudio);
+    metrics.otpMessages = Math.max(metrics.otpMessages, saved.metrics.otpMessages);
+    metrics.agentReplies = Math.max(metrics.agentReplies, saved.metrics.agentReplies);
+    metrics.outboundText = Math.max(metrics.outboundText, saved.metrics.outboundText);
+    metrics.outboundAudio = Math.max(metrics.outboundAudio, saved.metrics.outboundAudio);
+    metrics.meetingsScheduled = Math.max(metrics.meetingsScheduled, saved.metrics.meetingsScheduled);
+    metrics.meetingsNotifiedHuman = Math.max(metrics.meetingsNotifiedHuman, saved.metrics.meetingsNotifiedHuman);
+    metrics.supportTicketsCreated = Math.max(metrics.supportTicketsCreated, saved.metrics.supportTicketsCreated);
+    metrics.openaiFailures = Math.max(metrics.openaiFailures, saved.metrics.openaiFailures);
+    metrics.errors = Math.max(metrics.errors, saved.metrics.errors);
+    for (const [model, usage] of Object.entries(saved.metrics.openaiByModel)) {
+      const m = ensureModelUsage(metrics, model);
+      m.requests = Math.max(m.requests, usage.requests);
+      m.inputTokens = Math.max(m.inputTokens, usage.inputTokens);
+      m.outputTokens = Math.max(m.outputTokens, usage.outputTokens);
+      m.cachedInputTokens = Math.max(m.cachedInputTokens, usage.cachedInputTokens);
+      m.cacheWriteTokens = Math.max(m.cacheWriteTokens, usage.cacheWriteTokens);
+      m.totalTokens = Math.max(m.totalTokens, usage.totalTokens);
+    }
+
+    const meetings = meetingsByDate.get(dateKey) ?? [];
+    if (meetings.length === 0 && saved.meetings.length > 0) {
+      meetingsByDate.set(dateKey, saved.meetings);
+    }
+  } catch {
+    // ignore — in-memory metrics still work without DB
+  }
+}
+
+export async function flushTodayMetricsToDb(): Promise<void> {
+  const dateKey = currentDateKey();
+  const projectKey = env.defaultProject || "luxisoft";
+  try {
+    const metrics = metricsByDate.get(dateKey);
+    if (!metrics) return;
+    const meetings = meetingsByDate.get(dateKey) ?? [];
+    await flushDailyMetricsToDb(getPool(), dateKey, projectKey, metrics, meetings);
+  } catch {
+    // ignore — metrics will be flushed on next attempt
+  }
 }
