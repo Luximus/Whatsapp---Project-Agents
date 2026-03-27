@@ -71,6 +71,68 @@ function extractProjectType(text) {
   return null;
 }
 
+function inferLastAskedField(assistantText) {
+  if (!assistantText) return null;
+  const t = String(assistantText).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (/(me compartes tu nombre|indicame tus nombres|nombre por favor|tus nombres)/i.test(t)) return "name";
+  if (/(tus apellidos|indicame tus apellidos)/.test(t)) return "last_name";
+  if (/(empresa|emprendimiento|negocio)/.test(t) && !/(correo|email)/.test(t) && !/(nombre)/.test(t)) return "company";
+  if (/(correo|email)/.test(t)) return "email";
+  if (/(objetivo|quieres lograr|lograr con este proyecto)/.test(t)) return "objective";
+  if (/(tipo de proyecto|que tipo de proyecto|web.*ecommerce.*app|solucion necesitas)/.test(t)) return "project_type";
+  if (/(ya cuentas con|sitio web.*actual|app.*actual|tienda.*actual)/.test(t)) return "has_current_solution";
+  if (/(funcionalidades|funciones clave|primera fase)/.test(t)) return "required_features";
+  if (/(presupuesto|budget|inversion estimada)/.test(t)) return "budget_estimate";
+  if (/(tiempo estimado|primera entrega|plazo)/.test(t)) return "expected_timeline";
+  if (/(disponibilidad|que dia.*reuni|horario.*reuni)/.test(t)) return "meeting_availability";
+  if (/(mismo numero.*contactarte|mejor.*contactarte|numero.*whatsapp)/.test(t)) return "whatsapp_number";
+  return null;
+}
+
+function applyContextAwareFillIn(profile, currentUserMessage, lastAssistantText) {
+  if (!currentUserMessage || !lastAssistantText) return profile;
+  const candidate = compact(currentUserMessage);
+  if (!candidate || candidate.length > 180) return profile;
+  if (candidate.split(" ").length > 14 || candidate.includes("?")) return profile;
+
+  const inferredField = inferLastAskedField(lastAssistantText);
+  if (!inferredField) return profile;
+
+  const result = { ...profile };
+
+  if (inferredField === "name" && !result.name) {
+    result.name = candidate;
+  } else if (inferredField === "last_name") {
+    if (result.name && !result.name.toLowerCase().includes(candidate.toLowerCase())) {
+      result.name = `${result.name} ${candidate}`;
+    } else if (!result.name) {
+      result.name = candidate;
+    }
+  } else if (inferredField === "company" && !result.company && !candidate.includes("@")) {
+    result.company = candidate;
+  } else if (inferredField === "email" && !result.email && candidate.includes("@")) {
+    result.email = candidate.toLowerCase();
+  } else if (inferredField === "objective" && !result.objective) {
+    result.objective = candidate;
+  } else if (inferredField === "project_type" && !result.project_type) {
+    result.project_type = extractProjectType(candidate) ?? candidate;
+  } else if (inferredField === "has_current_solution" && !result.has_current_solution) {
+    result.has_current_solution = candidate;
+  } else if (inferredField === "required_features" && !result.required_features) {
+    result.required_features = candidate;
+  } else if (inferredField === "budget_estimate" && !result.budget_estimate) {
+    result.budget_estimate = candidate;
+  } else if (inferredField === "expected_timeline" && !result.expected_timeline) {
+    result.expected_timeline = candidate;
+  } else if (inferredField === "meeting_availability" && !result.meeting_availability) {
+    result.meeting_availability = candidate;
+  } else if (inferredField === "whatsapp_number" && !result.whatsapp_number) {
+    result.whatsapp_number = candidate;
+  }
+
+  return result;
+}
+
 function extractProfile(text, context) {
   const profile = {
     name: matchField(text, [
@@ -128,7 +190,27 @@ export default {
       return { ok: false, error: "text_required" };
     }
 
-    const profile = extractProfile(corpus, context);
+    let profile = extractProfile(corpus, context);
+
+    // Apply context-aware fill through all assistant→user pairs in history
+    // so fields set in early turns (e.g. name at T1) are not lost when tool is called later.
+    if (Array.isArray(context?.history)) {
+      for (let i = 0; i < context.history.length - 1; i++) {
+        const item = context.history[i];
+        if (item?.role !== "assistant") continue;
+        const nextItem = context.history[i + 1];
+        if (!nextItem || nextItem.role !== "user") continue;
+        profile = applyContextAwareFillIn(profile, nextItem.text, item.text);
+      }
+    }
+
+    // Also apply for current turn
+    const lastAssistant = Array.isArray(context?.history)
+      ? (context.history.filter((h) => h.role === "assistant").slice(-1)[0]?.text ?? "")
+      : "";
+    const currentUserMessage = context?.userMessage ?? "";
+    profile = applyContextAwareFillIn(profile, currentUserMessage, lastAssistant);
+
     const missing_fields = FIELD_ORDER.filter((field) => !compact(profile[field]));
     const collected_fields = FIELD_ORDER.filter((field) => compact(profile[field]));
     const completion_ratio = Number((collected_fields.length / FIELD_ORDER.length).toFixed(2));

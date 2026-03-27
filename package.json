@@ -9,6 +9,10 @@
     "build": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:agent": "tsx scripts/agent-test/run.ts",
+    "test:agent:case": "tsx scripts/agent-test/run.ts --case",
+    "test:agent:nofix": "tsx scripts/agent-test/run.ts --no-fix",
+    "test:agent:llm": "tsx scripts/agent-test/run.ts --llm",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src",
     "db:apply": "tsx scripts/db-apply.ts"

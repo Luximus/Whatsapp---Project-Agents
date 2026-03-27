@@ -269,13 +269,6 @@ export default {
     }
 
     let matches = findProjectStatusMatches(projects, searchTexts);
-    if (
-      !matches.length &&
-      projects.length === 1 &&
-      /(?:mi proyecto|el proyecto|la tienda|la web|la app)/i.test(context?.userMessage ?? "")
-    ) {
-      matches = [{ project: projects[0], score: 60, matched_by: projects[0].name }];
-    }
 
     if (!matches.length) {
       return {

@@ -37,6 +37,7 @@ type AgentReply = {
   reply: string;
   escalated: boolean;
   escalationSent: boolean;
+  toolsUsed?: string[];
 };
 
 type LeadProfile = {
@@ -77,6 +78,7 @@ type ConversationState = {
   projectFollowupProjectName: string | null;
   projectFollowupSummary: string | null;
   awaitingMeetingData: boolean;
+  awaitingSalesDiscovery: boolean;
   meetingClosedAt: number | null;
   lastReplyStyle: ReplyStyle | null;
   openaiProjectPreviousResponseIds: Record<string, string>;
@@ -542,8 +544,6 @@ const PROJECT_FOLLOWUP_NUDGE_TOKENS = new Set([
 
 const LEAD_REQUIRED_FIELDS: Array<keyof LeadProfile> = [
   "firstName",
-  "lastName",
-  "company",
   "email"
 ];
 
@@ -1290,7 +1290,8 @@ function resolvePromptedCommercialLeadFieldReply(input: {
     input.state.awaitingSupportOwnership ||
     input.state.awaitingSupportTicketData ||
     input.state.awaitingMeetingData ||
-    input.state.awaitingProjectStatusName
+    input.state.awaitingProjectStatusName ||
+    input.state.awaitingSalesDiscovery
   ) {
     return null;
   }
@@ -2163,6 +2164,7 @@ function buildConversationStateSummary(state: ConversationState, message: string
     awaiting_support_ownership: state.awaitingSupportOwnership,
     awaiting_support_ticket_data: state.awaitingSupportTicketData,
     awaiting_meeting_data: state.awaitingMeetingData,
+    awaiting_sales_discovery: state.awaitingSalesDiscovery,
     awaiting_project_status_name:
       state.awaitingProjectStatusName || assistantRecentlyAskedProjectName(state),
     assistant_recently_offered_project_followup: assistantRecentlyOfferedProjectFollowup(state),
@@ -2198,7 +2200,13 @@ function buildConversationStateSummary(state: ConversationState, message: string
       reopen_signal: reopenSignal
     },
     recent_user_messages: recentUserMessages(state, 6).map((item) => item.text),
-    recent_assistant_messages: recentAssistantMessages(state, 4).map((item) => item.text)
+    recent_assistant_messages: recentAssistantMessages(state, 4).map((item) => item.text),
+    intake_fields_already_collected: [
+      ...(sanitizeValue(leadProfile.firstName, 140) ? ["name"] : []),
+      ...(sanitizeValue(leadProfile.company, 140) ? ["company"] : []),
+      ...(sanitizeValue(leadProfile.email, 140) ? ["email"] : []),
+      ...(sanitizeValue(leadProfile.need, 220) ? ["objective"] : [])
+    ]
   };
 
   return JSON.stringify(snapshot, null, 2);
@@ -2613,6 +2621,20 @@ function shouldConfirmTopicSwitch(state: ConversationState, message: string, pro
   if (!activeProcess) return null;
   if (messageAdvancesActiveProcess(state, message, projectKey, activeProcess)) return null;
   if (!looksLikeStandaloneNewQuestion(message, projectKey)) return null;
+
+  // During meeting data collection, only trigger topic switch when there is an explicit
+  // unrelated signal (support issue, project status, etc.). Contextual messages about
+  // the meeting topic, reason, or background should not be treated as new questions.
+  if (activeProcess === "meeting_data") {
+    const normalized = normalizeText(message);
+    const hasExplicitNewTopic =
+      hasSupportSignal(message) ||
+      hasConfiguredProjectStatusSignal(normalized) ||
+      hasProjectFollowupSignal(normalized) ||
+      Boolean(findConfiguredProjectMention(message, projectKey));
+    if (!hasExplicitNewTopic) return null;
+  }
+
   return activeProcess;
 }
 
@@ -3281,17 +3303,18 @@ function buildProjectAgentTurnAnalysisInstructions(input: {
     "Si el estado conversacional muestra pending_lead_field y el usuario responde con un dato corto como un nombre, empresa o correo, tratalo como respuesta al dato pedido y no lo reclasifiques como seguimiento de proyecto solo porque coincida con un proyecto conocido.",
     "Prioriza soporte sobre venta nueva cuando el mensaje reporta problema, error o ayuda sobre algo que hicimos nosotros.",
     "Si el mensaje contiene palabras como problema, error, falla, soporte o ayuda sobre una tienda, app, web o servicio existente, no lo clasifiques como venta nueva salvo que el usuario hable claramente de crear algo nuevo.",
-    "Si el usuario pregunta por estado o informacion de un proyecto sin nombre suficiente, usa case_type=project_status_name_required y recommended_action=ask_project_name.",
+    "Si should_ask_project_name es true en el estado conversacional, usa SIEMPRE case_type=project_status_name_required y recommended_action=ask_project_name, aunque configured_project_names solo tenga un proyecto. No asumas que el usuario se refiere a ese proyecto sin que lo haya nombrado explicitamente.",
     "Si el usuario menciona un proyecto conocido o el estado de un proyecto existente, usa case_type=project_status y recommended_action=lookup_project_status.",
     "Si el usuario pide que el equipo responda o haga seguimiento urgente sobre un proyecto existente, usa case_type=project_followup y recommended_action=register_project_followup.",
-    "Si el usuario solicita soporte y aun no esta claro si fue con nosotros o con otro proveedor, usa case_type=support_ownership_required y recommended_action=ask_support_ownership.",
-    "Si el soporte es de algo hecho con nosotros, usa case_type=support_with_us y recommended_action=collect_support_data o register_support_ticket segun los datos faltantes.",
+    "Si el usuario reporta un problema, error, falla o que algo no funciona en un servicio existente, y support_ownership es null, USA case_type=support_ownership_required y recommended_action=ask_support_ownership. Posesivos como 'mi app', 'mi pagina', 'mi aplicacion' NO implican que fue hecha por nosotros. IMPORTANTE: 'ayuda para crear', 'necesito crear', 'quiero hacer' son solicitudes de cotizacion, NO soporte.",
+    "Si el soporte es de algo hecho con nosotros (usuario lo dijo explicitamente), usa case_type=support_with_us y recommended_action=collect_support_data o register_support_ticket segun los datos faltantes.",
     "Si el soporte es de terceros, usa case_type=support_third_party y recommended_action=collect_meeting_data o schedule_meeting_request segun corresponda.",
+    "Si awaiting_meeting_data es true o awaiting_sales_discovery es true, y meeting_missing_fields esta vacio Y meeting_missing_lead_fields esta vacio, usa recommended_action=schedule_meeting_request.",
     "Si ya existe un ticket o reunion cerrada y el usuario no pidio reiniciar, usa closed_case_notice.",
     "Si el usuario pide abrir un caso nuevo despues de un cierre, usa recommended_action=reset_case_state.",
-    "Para soporte_ownership usa 'luxisoft' solo cuando el mensaje o el estado indiquen claramente que fue con nosotros; usa 'third_party' cuando indique otro proveedor; de lo contrario usa 'unknown'.",
+    "Para soporte_ownership usa 'luxisoft' SOLO cuando el usuario dijo explicitamente 'fue con ustedes', 'lo hicieron ustedes', 'lo hizo LUXISOFT' o similar; usa 'third_party' cuando indique otro proveedor; en cualquier otro caso usa 'unknown'.",
     "next_question_goal debe ser una descripcion corta del siguiente dato a pedir solo si aplica. Si no aplica, usa null.",
-    "Ejemplos: 'Tengo un problema con la tienda' -> support_ownership_required / ask_support_ownership.",
+    "Ejemplos: 'Tengo un problema con mi aplicacion' -> support_ownership_required / ask_support_ownership (posesivo 'mi' NO implica ownership).",
     "Ejemplos: 'Tengo un problema con la tienda que hicieron ustedes' -> support_with_us / collect_support_data.",
     "Ejemplos: 'Necesito informacion acerca de la tienda' -> project_status_name_required / ask_project_name.",
     "Ejemplos: 'Necesito informacion del proyecto Pandapan' -> project_status / lookup_project_status.",
@@ -3374,13 +3397,15 @@ function buildProjectAgentInstructions(input: {
     "Prioriza seguimiento de proyecto sobre venta nueva cuando el mensaje suene a trabajo ya existente: por ejemplo 'informacion acerca de la tienda', 'como va el proyecto', 'la tienda que estan realizando', 'Pandapan', 'el ecommerce que hicieron'.",
     "Prioriza soporte sobre venta nueva cuando el mensaje reporta problema, error o ayuda sobre algo que hicimos nosotros.",
     "Si el usuario pregunta por el estado o informacion de un proyecto y no menciona un nombre suficiente, pide primero el nombre del proyecto o negocio antes de consultar.",
-    "Si should_ask_project_name es true en el estado conversacional, pide directamente el nombre del proyecto o negocio en una sola pregunta y no abras discovery comercial en paralelo.",
+    "Si should_ask_project_name es true en el estado conversacional, pide directamente el nombre del proyecto o negocio en una sola pregunta, NO uses lookup_project_status, y no abras discovery comercial en paralelo.",
     "Si pending_lead_field indica que estas recolectando nombre, empresa, correo u otro dato comercial, interpreta respuestas cortas como 'Pandapan' o un correo como respuesta a ese campo y no las conviertas en seguimiento de proyecto.",
     "Si necesitas identificar mejor el servicio o perfilar una oportunidad comercial, usa classify_service_intent, extract_prospect_profile y next_intake_question.",
-    "Si el usuario solicita soporte de un servicio o producto hecho por nuestro equipo y aun no esta claro, pregunta solo si fue con nosotros o con otro proveedor.",
+    "Cuando awaiting_sales_discovery es true y necesitas decidir que campo preguntar a continuacion, SIEMPRE llama next_intake_question pasando lead_profile del estado como profile. No hagas preguntas de discovery sin consultar next_intake_question primero.",
+    "Cuando llames next_intake_question, pasa como profile el lead_profile del estado conversacional actual (campos: firstName, lastName, company, email, etc.). El tool acepta este formato directamente.",
+    "Si el usuario reporta un problema, error, falla o que algo no funciona en un servicio existente, y support_ownership es null, pregunta PRIMERO si ese servicio fue desarrollado por nuestro equipo o por otro proveedor. Posesivos como 'mi app', 'mi pagina', 'mi aplicacion' NO implican que fue hecha por nosotros. 'ayuda para crear', 'necesito crear', 'quiero hacer' son solicitudes de cotizacion, NO soporte.",
     "Cuando hables de propiedad del servicio, prefiere 'con nosotros' y 'nuestro equipo' en vez de repetir el nombre comercial.",
     "Cuando ya exista contexto de un proyecto concreto y el usuario solo pida respuesta o seguimiento urgente, no lo desvies a discovery comercial ni pidas empresa salvo que realmente falte para ejecutar la gestion.",
-    "No pidas datos que ya esten presentes en lead_profile o meeting_profile dentro del estado conversacional actual.",
+    "No pidas datos que ya esten presentes en lead_profile o meeting_profile dentro del estado conversacional actual. El campo intake_fields_already_collected lista exactamente los campos ya recopilados — NUNCA vuelvas a preguntar por ellos.",
     "Si el usuario insiste sobre un caso ya escalado, evita repetir literalmente la misma frase en turnos consecutivos. Reconoce la insistencia con una variacion natural y solo actualiza la gestion si realmente agrego un dato nuevo.",
     "Si estas en mitad de una recoleccion de datos o validacion y el usuario cambia de tema con una pregunta distinta, primero confirma si desea dejar ese proceso actual para atender la nueva consulta.",
     "Si el caso anterior ya quedo cerrado y el usuario hace una pregunta nueva, atiende esa nueva consulta sin obligarlo a reiniciar manualmente.",
@@ -3439,6 +3464,7 @@ async function runProjectAgentTurnAnalysis(input: {
     outputType: TurnAnalysisSchema,
     modelSettings: {
       parallelToolCalls: false,
+      temperature: 0,
       text: { verbosity: "low" }
     },
     tools: []
@@ -3550,6 +3576,9 @@ function getConversation(phoneE164: string, projectKey: string) {
     if (typeof existing.awaitingSupportTicketData !== "boolean") {
       existing.awaitingSupportTicketData = false;
     }
+    if (typeof existing.awaitingSalesDiscovery !== "boolean") {
+      existing.awaitingSalesDiscovery = false;
+    }
     if (!existing.supportTopic) {
       existing.supportTopic = null;
     }
@@ -3586,6 +3615,7 @@ function getConversation(phoneE164: string, projectKey: string) {
     projectFollowupProjectName: null,
     projectFollowupSummary: null,
     awaitingMeetingData: false,
+    awaitingSalesDiscovery: false,
     meetingClosedAt: null,
     lastReplyStyle: null,
     openaiProjectPreviousResponseIds: {}
@@ -3704,6 +3734,7 @@ async function runProjectAgent(input: {
     model,
     modelSettings: {
       parallelToolCalls: false,
+      temperature: 0,
       text: { verbosity: "low" }
     },
     tools: buildProjectAgentTools(project.scripts, runtimeContext, toolsUsed)
@@ -4311,9 +4342,15 @@ function syncConversationAwaitingState(state: ConversationState, turnAnalysis: T
   state.awaitingSupportOwnership = false;
   state.awaitingSupportTicketData = false;
   state.awaitingMeetingData = false;
+  state.awaitingSalesDiscovery = false;
   state.pendingLeadField = null;
 
   if (!turnAnalysis) return;
+
+  if (turnAnalysis.recommended_action === "continue_sales_discovery") {
+    state.awaitingSalesDiscovery = true;
+    return;
+  }
 
   if (turnAnalysis.recommended_action === "ask_project_name") {
     state.awaitingProjectStatusName = true;
@@ -4752,7 +4789,8 @@ export async function handleProjectAgentMessage(input: {
       projectKey: state.projectKey,
       reply: agentReply,
       escalated: false,
-      escalationSent: false
+      escalationSent: false,
+      toolsUsed: resolved.toolsUsed ?? []
     };
   } catch (err: any) {
     state.pendingLeadField = null;

@@ -117,8 +117,8 @@ export default {
         matched_keywords: [],
         brief_solution:
           "LUXISOFT puede evaluar tu necesidad y proponerte una solucion digital a medida.",
-        follow_up_question:
-          "Que tipo de solucion necesitas (web, ecommerce, app, IA/automatizacion u optimizacion)?"
+        next_step:
+          "Pregunta que tipo de solucion necesita (web, ecommerce, app, IA/automatizacion u optimizacion) como primer paso de la recopilacion."
       };
     }
 
@@ -130,8 +130,8 @@ export default {
       confidence,
       matched_keywords: top.matched_keywords,
       brief_solution: top.brief_solution,
-      follow_up_question:
-        "Quieres que avancemos con una breve recopilacion de datos para orientarte y agendar reunion?"
+      next_step:
+        "Explica brevemente la solucion y avanza directamente a pedir el nombre del prospecto como primer dato."
     };
   }
 };
