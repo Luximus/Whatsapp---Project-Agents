@@ -2,14 +2,14 @@
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
-import { env } from "./env.js";
-import { dbPlugin } from "./plugins/db.js";
-import { authPlugin } from "./plugins/auth.js";
-import { healthRoutes } from "./routes/health.js";
-import { webhookRoutes } from "./routes/webhooks.js";
-import { whatsappRoutes } from "./routes/whatsapp.js";
-import { agentRoutes } from "./routes/agents.js";
-import { bridgeRoutes } from "./routes/bridge.js";
+import { env } from "./config/env.js";
+import { dbPlugin } from "./http/plugins/db.js";
+import { authPlugin } from "./http/plugins/auth.js";
+import { healthRoutes } from "./http/routes/health.js";
+import { webhookRoutes } from "./http/routes/webhooks.js";
+import { whatsappRoutes } from "./http/routes/whatsapp.js";
+import { agentRoutes } from "./http/routes/agents.js";
+import { bridgeRoutes } from "./http/routes/bridge.js";
 
 export function buildApp() {
   const app = Fastify({

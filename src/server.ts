@@ -1,6 +1,6 @@
-import { env } from "./env.js";
+import { env } from "./config/env.js";
 import { buildApp } from "./app.js";
-import { startDailyReportScheduler, stopDailyReportScheduler } from "./lib/reporting.js";
+import { startDailyReportScheduler, stopDailyReportScheduler } from "./jobs/dailyReport.js";
 
 const app = buildApp();
 await app.listen({ port: env.PORT, host: env.HOST });

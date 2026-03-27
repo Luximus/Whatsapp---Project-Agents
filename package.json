@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "node dist/src/server.js",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write src",
     "db:apply": "tsx scripts/db-apply.ts"
   },
   "dependencies": {
@@ -30,13 +34,19 @@
     "zod": "^4.2.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.2.0",
     "@types/nodemailer": "^7.0.11",
     "@types/pdfkit": "^0.17.5",
     "@types/pg": "^8.15.5",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "eslint": "^10.1.0",
+    "prettier": "^3.8.1",
+    "tsc-alias": "^1.8.16",
     "tsx": "^4.20.5",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.57.2",
+    "vitest": "^4.1.2"
   }
 }
