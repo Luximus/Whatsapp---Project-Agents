@@ -68,6 +68,8 @@ type ConversationState = {
   awaitingSupportTicketData: boolean;
   supportClosedAt: number | null;
   projectFollowupClosedAt: number | null;
+  projectFollowupProjectName: string | null;
+  projectFollowupSummary: string | null;
   awaitingMeetingData: boolean;
   meetingClosedAt: number | null;
   lastReplyStyle: ReplyStyle | null;
@@ -453,6 +455,85 @@ const POST_MEETING_COURTESY_KEYWORDS = [
   "hasta pronto",
   "bye"
 ];
+
+const PROJECT_FOLLOWUP_NUDGE_TOKENS = new Set([
+  "si",
+  "claro",
+  "ok",
+  "okay",
+  "dale",
+  "por",
+  "favor",
+  "porfa",
+  "hazlo",
+  "hagalo",
+  "hazla",
+  "registralo",
+  "registrala",
+  "registra",
+  "registrar",
+  "quiero",
+  "queria",
+  "necesito",
+  "necesitamos",
+  "respuesta",
+  "respondan",
+  "responder",
+  "responda",
+  "seguimiento",
+  "equipo",
+  "urgente",
+  "urgentemente",
+  "prioridad",
+  "prioritario",
+  "prioritaria",
+  "solucion",
+  "actualizacion",
+  "actualicen",
+  "novedad",
+  "avisen",
+  "avisenme",
+  "avisarme",
+  "contacten",
+  "contactarme",
+  "cuando",
+  "va",
+  "estar",
+  "estara",
+  "estaria",
+  "listo",
+  "lista",
+  "mismo",
+  "hoy",
+  "ya",
+  "apenas",
+  "que",
+  "me",
+  "den",
+  "dar",
+  "con",
+  "el",
+  "la",
+  "lo",
+  "los",
+  "las",
+  "del",
+  "de",
+  "al",
+  "mi",
+  "tu",
+  "su",
+  "eso",
+  "esto",
+  "solo",
+  "solamente",
+  "mas",
+  "ademas",
+  "tambien",
+  "una",
+  "un",
+  "no"
+]);
 
 const LEAD_REQUIRED_FIELDS: Array<keyof LeadProfile> = [
   "firstName",
@@ -947,6 +1028,9 @@ function findConfiguredProjectByName(name: string | null | undefined, projectKey
 }
 
 function findConversationProjectHint(state: ConversationState, projectKey: string) {
+  const byFollowup = findConfiguredProjectByName(state.projectFollowupProjectName, projectKey);
+  if (byFollowup) return byFollowup.name;
+
   const byCompany = findConfiguredProjectByName(state.lead.company, projectKey);
   if (byCompany) return byCompany.name;
 
@@ -1979,6 +2063,8 @@ function buildConversationStateSummary(state: ConversationState, message: string
     assistant_recently_offered_project_followup: assistantRecentlyOfferedProjectFollowup(state),
     support_closed_at: state.supportClosedAt,
     project_followup_closed_at: state.projectFollowupClosedAt,
+    project_followup_project_name: state.projectFollowupProjectName,
+    project_followup_summary: state.projectFollowupSummary,
     meeting_closed_at: state.meetingClosedAt,
     lead_profile: leadProfile,
     meeting_profile: meetingProfile,
@@ -2991,6 +3077,7 @@ function buildProjectAgentInstructions(input: {
     "Cuando hables de propiedad del servicio, prefiere 'con nosotros' y 'nuestro equipo' en vez de repetir el nombre comercial.",
     "Cuando ya exista contexto de un proyecto concreto y el usuario solo pida respuesta o seguimiento urgente, no lo desvies a discovery comercial ni pidas empresa salvo que realmente falte para ejecutar la gestion.",
     "No pidas datos que ya esten presentes en lead_profile o meeting_profile dentro del estado conversacional actual.",
+    "Si el usuario insiste sobre un caso ya escalado, evita repetir literalmente la misma frase en turnos consecutivos. Reconoce la insistencia con una variacion natural y solo actualiza la gestion si realmente agrego un dato nuevo.",
     "Para seguimiento de proyecto, puedes usar el numero de WhatsApp como contacto. El correo y la empresa son opcionales salvo que el usuario ya los haya compartido.",
     "Cuando falten datos para soporte o reunion, pide solo el siguiente dato faltante y evita enumerar toda la lista en cada turno.",
     "Si el usuario pide seguimiento urgente de un proyecto y ya sabes que proyecto es, usa register_project_followup y confirma solo si la tool devolvio exito.",
@@ -3160,6 +3247,12 @@ function getConversation(phoneE164: string, projectKey: string) {
     if (typeof existing.projectFollowupClosedAt !== "number") {
       existing.projectFollowupClosedAt = null;
     }
+    if (!existing.projectFollowupProjectName) {
+      existing.projectFollowupProjectName = null;
+    }
+    if (!existing.projectFollowupSummary) {
+      existing.projectFollowupSummary = null;
+    }
     if (typeof existing.awaitingSupportTicketData !== "boolean") {
       existing.awaitingSupportTicketData = false;
     }
@@ -3193,6 +3286,8 @@ function getConversation(phoneE164: string, projectKey: string) {
     awaitingSupportTicketData: false,
     supportClosedAt: null,
     projectFollowupClosedAt: null,
+    projectFollowupProjectName: null,
+    projectFollowupSummary: null,
     awaitingMeetingData: false,
     meetingClosedAt: null,
     lastReplyStyle: null,
@@ -3525,6 +3620,63 @@ function buildProjectFollowupSummary(state: ConversationState, projectName: stri
   return sanitizeValue(latest, 220) ?? `Seguimiento solicitado para ${projectName}.`;
 }
 
+function pickProjectFollowupReplyVariant(state: ConversationState, candidates: string[]) {
+  const recentAssistantReplyKeys = new Set(
+    recentAssistantMessages(state, 2)
+      .map((item) => normalizeText(item.text))
+      .filter(Boolean)
+  );
+  const sanitized = candidates
+    .map((item) => sanitizeValue(item, MAX_RESPONSE_CHARS))
+    .filter(Boolean) as string[];
+
+  return sanitized.find((item) => !recentAssistantReplyKeys.has(normalizeText(item))) ?? sanitized[0] ?? "";
+}
+
+function buildProjectFollowupDeliveredReply(state: ConversationState, projectName: string) {
+  return pickProjectFollowupReplyVariant(state, [
+    `Perfecto, ya deje el seguimiento de ${projectName} con nuestro equipo para que te respondan apenas haya novedad.`,
+    `Listo, ya escale el seguimiento de ${projectName} con nuestro equipo y te avisaremos por este medio apenas tengamos respuesta.`,
+    `Quedo registrado el seguimiento prioritario de ${projectName} con nuestro equipo. En cuanto haya novedad, te escribimos por aqui.`
+  ]);
+}
+
+function buildProjectFollowupUpdatedReply(state: ConversationState, projectName: string) {
+  return pickProjectFollowupReplyVariant(state, [
+    `Listo, acabo de actualizar el seguimiento de ${projectName} con lo que me acabas de indicar. Apenas haya respuesta, te escribimos por aqui.`,
+    `Ya actualice el seguimiento de ${projectName} con nuestro equipo. En cuanto tengamos una novedad concreta, te la comparto por este medio.`,
+    `Perfecto, ya agregue ese nuevo detalle al seguimiento de ${projectName}. Te avisaremos apenas el equipo responda.`
+  ]);
+}
+
+function buildProjectFollowupAlreadyRegisteredReply(state: ConversationState, projectName: string) {
+  return pickProjectFollowupReplyVariant(state, [
+    `El seguimiento de ${projectName} ya quedo registrado con nuestro equipo. Apenas tengamos respuesta, te escribimos por aqui.`,
+    `Ya lo deje marcado como prioritario para ${projectName}. En cuanto el equipo nos comparta una novedad, te la envio por este medio.`,
+    `Entiendo la urgencia. ${projectName} ya esta en seguimiento con nuestro equipo y te avisaremos apenas haya una respuesta concreta.`
+  ]);
+}
+
+function extractProjectFollowupMeaningfulTokens(value: string | null | undefined) {
+  const compact = sanitizeValue(stripLeadingGreeting(String(value ?? "")), 220);
+  if (!compact || isKnownNonAnswerReply(compact)) return [];
+
+  return tokenizeNormalizedWords(compact).filter((token) => !PROJECT_FOLLOWUP_NUDGE_TOKENS.has(token));
+}
+
+function shouldRefreshProjectFollowup(state: ConversationState, summary: string) {
+  if (!state.projectFollowupClosedAt) return true;
+
+  const nextKey = extractProjectFollowupMeaningfulTokens(summary).join(" ");
+  if (!nextKey) return false;
+
+  const previousKey = extractProjectFollowupMeaningfulTokens(state.projectFollowupSummary).join(" ");
+  if (!previousKey) return true;
+  if (nextKey === previousKey) return false;
+
+  return !nextKey.includes(previousKey) && !previousKey.includes(nextKey);
+}
+
 function resolveProjectFollowupProjectName(
   state: ConversationState,
   projectKey: string,
@@ -3553,19 +3705,22 @@ async function registerProjectFollowupFromAgent(input: {
     };
   }
 
-  if (input.state.projectFollowupClosedAt) {
+  const summary =
+    readToolTextField(input.payload, ["summary", "request_detail", "detail", "reason"], 220) ??
+    buildProjectFollowupSummary(input.state, projectName);
+  const shouldRefreshExisting = shouldRefreshProjectFollowup(input.state, summary);
+  if (input.state.projectFollowupClosedAt && !shouldRefreshExisting) {
     return {
       ok: false,
       error: "project_followup_already_closed",
       closed_at: input.state.projectFollowupClosedAt,
-      reply_hint:
-        "Tu seguimiento ya fue registrado con el equipo. Si quieres agregar un detalle nuevo, dimelo y lo actualizo."
+      reply_hint: buildProjectFollowupAlreadyRegisteredReply(input.state, projectName)
     };
   }
 
-  const summary =
-    readToolTextField(input.payload, ["summary", "request_detail", "detail", "reason"], 220) ??
-    buildProjectFollowupSummary(input.state, projectName);
+  const previousClosedAt = input.state.projectFollowupClosedAt;
+  const previousProjectName = input.state.projectFollowupProjectName;
+  const previousSummary = input.state.projectFollowupSummary;
   const urgency =
     readToolTextField(input.payload, ["urgency", "priority"], 120) ?? detectProjectFollowupUrgency(input.state);
   const contactName = `${input.state.lead.firstName ?? ""} ${input.state.lead.lastName ?? ""}`.trim();
@@ -3593,7 +3748,19 @@ async function registerProjectFollowupFromAgent(input: {
   }
 
   const delivered = transfer.sent || mail.sent;
-  input.state.projectFollowupClosedAt = delivered ? Date.now() : null;
+  if (delivered) {
+    input.state.projectFollowupClosedAt = Date.now();
+    input.state.projectFollowupProjectName = projectName;
+    input.state.projectFollowupSummary = summary;
+  } else if (previousClosedAt) {
+    input.state.projectFollowupClosedAt = previousClosedAt;
+    input.state.projectFollowupProjectName = previousProjectName;
+    input.state.projectFollowupSummary = previousSummary;
+  } else {
+    input.state.projectFollowupClosedAt = null;
+    input.state.projectFollowupProjectName = null;
+    input.state.projectFollowupSummary = null;
+  }
 
   return {
     ok: delivered,
@@ -3604,8 +3771,12 @@ async function registerProjectFollowupFromAgent(input: {
     summary,
     urgency,
     reply_hint: delivered
-      ? `Perfecto, ya deje el seguimiento de ${projectName} con nuestro equipo para que te respondan apenas haya novedad.`
-      : `No pude registrar el seguimiento de ${projectName} en este momento. Intenta nuevamente en unos minutos.`
+      ? previousClosedAt
+        ? buildProjectFollowupUpdatedReply(input.state, projectName)
+        : buildProjectFollowupDeliveredReply(input.state, projectName)
+      : previousClosedAt
+        ? `No pude actualizar el seguimiento de ${projectName} en este momento. Intenta nuevamente en unos minutos.`
+        : `No pude registrar el seguimiento de ${projectName} en este momento. Intenta nuevamente en unos minutos.`
   };
 }
 
@@ -3788,6 +3959,8 @@ async function resetConversationCaseState(input: {
 
   if (target === "project" || target === "all") {
     input.state.projectFollowupClosedAt = null;
+    input.state.projectFollowupProjectName = null;
+    input.state.projectFollowupSummary = null;
   }
 
   if (target === "meeting" || target === "all") {
