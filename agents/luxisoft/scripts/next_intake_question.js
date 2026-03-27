@@ -155,6 +155,23 @@ function parseProfile(inputProfile, context) {
     }
   }
 
+  // Accept need from lead_profile format as fallback for objective
+  if (!profile["objective"]) {
+    const need = compact(base["need"]);
+    if (need) profile["objective"] = need;
+  }
+
+  // For fields still missing, try to recover from conversation history
+  // This ensures previously answered sales fields (project_type, has_current_solution, etc.)
+  // are not re-asked when the explicit lead_profile only contains contact fields
+  const missingFields = FIELD_ORDER.filter((f) => !profile[f]);
+  if (missingFields.length > 0 && context) {
+    const fromHistory = buildProfileFromContext(context);
+    for (const field of missingFields) {
+      if (fromHistory[field]) profile[field] = fromHistory[field];
+    }
+  }
+
   return profile;
 }
 
