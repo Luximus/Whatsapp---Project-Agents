@@ -15,6 +15,11 @@ import {
 } from "@react-email/components";
 import tailwindConfig from "../tailwind.config.js";
 
+const BRAND_LOGO_URL =
+  "https://imagedelivery.net/juOGhpzwqbGB3xBvV9fTTQ/e0ebede4-9c85-419b-57f6-40d8fc898000/product";
+const LEGACY_LOGO_URL = "https://luxisoft.com/logo_white.png";
+const BRAND_DARK = "#151c2c";
+
 export type LuxisoftEmailSection = {
   title: string;
   rows: Array<{ label: string; value: string }>;
@@ -32,6 +37,10 @@ export type LuxisoftEmailTemplateProps = {
 };
 
 export function LuxisoftEmailTemplate(props: LuxisoftEmailTemplateProps) {
+  const requestedLogoUrl = String(props.logoUrl ?? "").trim();
+  const resolvedLogoUrl =
+    !requestedLogoUrl || requestedLogoUrl === LEGACY_LOGO_URL ? BRAND_LOGO_URL : requestedLogoUrl;
+
   return (
     <Html>
       <Head />
@@ -39,10 +48,10 @@ export function LuxisoftEmailTemplate(props: LuxisoftEmailTemplateProps) {
         <Body className="bg-[#f8fafc] font-sans mx-auto my-0">
           <Preview>{props.preview}</Preview>
           <Container className="mx-auto my-0 py-6 px-5 max-w-[680px]">
-            <Section className="bg-[#0f172a] rounded-t-xl px-6 py-6">
+            <Section className="rounded-t-xl px-6 py-6" style={{ backgroundColor: BRAND_DARK }}>
               <Row>
                 <Column>
-                  <Img src={props.logoUrl} width="160" height="42" alt="LuxiSoft" />
+                  <Img src={resolvedLogoUrl} width="160" alt="LuxiSoft" />
                 </Column>
                 <Column align="right">
                   <Text className="text-xs text-[#cbd5e1] m-0">
@@ -53,7 +62,7 @@ export function LuxisoftEmailTemplate(props: LuxisoftEmailTemplateProps) {
             </Section>
 
             <Section className="bg-white rounded-b-xl px-6 py-7 border border-[#e2e8f0] border-t-0">
-              <Heading className="text-[#0f172a] text-[28px] font-bold mt-0 mb-2 leading-[34px]">
+              <Heading className="text-[28px] font-bold mt-0 mb-2 leading-[34px]" style={{ color: BRAND_DARK }}>
                 {props.title}
               </Heading>
               {props.subtitle ? (
@@ -63,7 +72,7 @@ export function LuxisoftEmailTemplate(props: LuxisoftEmailTemplateProps) {
 
               {props.sections.map((section) => (
                 <Section key={section.title} className="mb-6">
-                  <Text className="text-[#0f172a] text-[16px] font-semibold mt-0 mb-2">
+                  <Text className="text-[16px] font-semibold mt-0 mb-2" style={{ color: BRAND_DARK }}>
                     {section.title}
                   </Text>
                   <Section className="rounded-lg border border-[#e2e8f0] p-3">
@@ -73,7 +82,9 @@ export function LuxisoftEmailTemplate(props: LuxisoftEmailTemplateProps) {
                           <Text className="text-[13px] text-[#475569] m-0">{row.label}</Text>
                         </Column>
                         <Column align="right" className="w-[55%]">
-                          <Text className="text-[13px] text-[#0f172a] font-medium m-0">{row.value}</Text>
+                          <Text className="text-[13px] font-medium m-0" style={{ color: BRAND_DARK }}>
+                            {row.value}
+                          </Text>
                         </Column>
                       </Row>
                     ))}
@@ -83,7 +94,9 @@ export function LuxisoftEmailTemplate(props: LuxisoftEmailTemplateProps) {
 
               {props.notes?.length ? (
                 <Section className="bg-[#f1f5f9] border border-[#cbd5e1] rounded-lg p-4 mb-6">
-                  <Text className="text-[#0f172a] text-[14px] font-semibold mt-0 mb-2">Notas</Text>
+                  <Text className="text-[14px] font-semibold mt-0 mb-2" style={{ color: BRAND_DARK }}>
+                    Notas
+                  </Text>
                   {props.notes.map((note, index) => (
                     <Text key={`${index}-${note}`} className="text-[13px] text-[#334155] mt-0 mb-1">
                       - {note}

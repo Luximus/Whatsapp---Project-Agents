@@ -204,7 +204,12 @@ const envSchema = z.object({
   REPORT_EMAIL_TO: z.string().optional().default("reports@luxisoft.com"),
   REPORT_CRON: z.string().optional().default("59 23 * * *"),
   REPORT_TIMEZONE: z.string().optional().default("America/Bogota"),
-  REPORT_LOGO_URL: z.string().optional().default("https://luxisoft.com/logo_white.png")
+  REPORT_LOGO_URL: z
+    .string()
+    .optional()
+    .default(
+      "https://imagedelivery.net/juOGhpzwqbGB3xBvV9fTTQ/e0ebede4-9c85-419b-57f6-40d8fc898000/product"
+    )
 });
 
 const raw = envSchema.parse(process.env);
@@ -243,5 +248,7 @@ export const env = {
   reportEmailTo: raw.REPORT_EMAIL_TO.trim() || "reports@luxisoft.com",
   reportCron: raw.REPORT_CRON.trim() || "59 23 * * *",
   reportTimezone: raw.REPORT_TIMEZONE.trim() || "America/Bogota",
-  reportLogoUrl: raw.REPORT_LOGO_URL.trim() || "https://luxisoft.com/logo_white.png"
+  reportLogoUrl:
+    raw.REPORT_LOGO_URL.trim() ||
+    "https://imagedelivery.net/juOGhpzwqbGB3xBvV9fTTQ/e0ebede4-9c85-419b-57f6-40d8fc898000/product"
 };
