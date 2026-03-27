@@ -51,7 +51,7 @@ export function LuxisoftEmailTemplate(props: LuxisoftEmailTemplateProps) {
             <Section className="rounded-t-xl px-6 py-6" style={{ backgroundColor: BRAND_DARK }}>
               <Row>
                 <Column>
-                  <Img src={resolvedLogoUrl} width="160" alt="LuxiSoft" />
+                  <Img src={resolvedLogoUrl} width="100" height="100" alt="LuxiSoft" />
                 </Column>
                 <Column align="right">
                   <Text className="text-xs text-[#cbd5e1] m-0">
