@@ -48,6 +48,7 @@ type ConversationState = {
   history: Array<{ role: "user" | "assistant"; text: string; at: number }>;
   lead: LeadProfile;
   pendingLeadField: keyof LeadProfile | null;
+  awaitingProjectStatusName: boolean;
   meeting: MeetingProfile;
   supportTopic: string | null;
   supportOwnership: SupportOwnership | null;
@@ -379,6 +380,14 @@ const LEAD_FIELD_QUESTIONS: Record<keyof LeadProfile, string> = {
   company: "Cual es tu empresa?",
   email: "Cual es tu correo de contacto?",
   need: "Que necesitas exactamente o que quieres resolver?"
+};
+
+const SUPPORT_FIELD_LABELS: Record<keyof LeadProfile, string> = {
+  firstName: "nombres",
+  lastName: "apellidos",
+  company: "empresa",
+  email: "correo",
+  need: "detalle de la solicitud"
 };
 
 const MEETING_REQUIRED_FIELDS: Array<keyof MeetingProfile> = [
@@ -825,6 +834,36 @@ function findConversationProjectHint(state: ConversationState, projectKey: strin
   return null;
 }
 
+function hasConfiguredProjectStatusSignal(normalized: string) {
+  return /(?:estado|avance|progreso|seguimiento|situacion|estatus|actualizacion|como va|como sigue|en que va|en que estado)/i.test(
+    normalized
+  );
+}
+
+function hasConfiguredProjectInfoSignal(normalized: string) {
+  return /(?:informacion|detalle|detalles|quiero\s+saber|necesito\s+informacion|acerca\s+de|sobre)/i.test(
+    normalized
+  );
+}
+
+function hasConfiguredProjectOngoingSignal(normalized: string) {
+  return /(?:proyecto\s+que\s+empezamos|proyecto\s+que\s+estan\s+realizando|estan\s+realizando|estan\s+trabajando|negocio\s+llamado|llamado\s+[a-z0-9_-]+)/i.test(
+    normalized
+  );
+}
+
+function hasConfiguredProjectContactSignal(normalized: string) {
+  return /(?:necesito\s+(?:al|a la)|hablar\s+con|comunicarme\s+con|pasame\s+con|quiero\s+hablar\s+con)/i.test(
+    normalized
+  );
+}
+
+function hasGenericConfiguredProjectReference(normalized: string) {
+  return /(?:la tienda|el proyecto|la web|la pagina|la app|el ecommerce|ese proyecto|esa tienda|esa web|esa pagina|esa app|ese ecommerce|mi tienda|mi proyecto|mi web|mi pagina|mi app|mi ecommerce)/i.test(
+    normalized
+  );
+}
+
 function formatConfiguredProjectStatusReply(projectName: string, projectKey: string) {
   const entry = findConfiguredProjectByName(projectName, projectKey);
   if (!entry?.statusParagraph) {
@@ -840,28 +879,16 @@ function detectConfiguredProjectStatusInquiry(
   projectKey: string
 ) {
   const matchedProject = findConfiguredProjectMention(message, projectKey);
+  if (matchedProject && state.awaitingProjectStatusName) {
+    return matchedProject;
+  }
 
   const normalized = normalizeText(message);
-  const statusSignal =
-    /(?:estado|avance|progreso|seguimiento|situacion|estatus|actualizacion|como va|como sigue|en que va|en que estado)/i.test(
-      normalized
-    );
-  const infoSignal =
-    /(?:informacion|detalle|detalles|quiero\s+saber|necesito\s+informacion|acerca\s+de|sobre)/i.test(
-      normalized
-    );
-  const ongoingSignal =
-    /(?:proyecto\s+que\s+empezamos|proyecto\s+que\s+estan\s+realizando|estan\s+realizando|estan\s+trabajando|negocio\s+llamado|llamado\s+[a-z0-9_-]+)/i.test(
-      normalized
-    );
-  const contactSignal =
-    /(?:necesito\s+(?:al|a la)|hablar\s+con|comunicarme\s+con|pasame\s+con|quiero\s+hablar\s+con)/i.test(
-      normalized
-    );
-  const genericProjectReference =
-    /(?:la tienda|el proyecto|la web|la app|ese proyecto|ese trabajo|esa tienda|esa web|esa app)/i.test(
-      normalized
-    );
+  const statusSignal = hasConfiguredProjectStatusSignal(normalized);
+  const infoSignal = hasConfiguredProjectInfoSignal(normalized);
+  const ongoingSignal = hasConfiguredProjectOngoingSignal(normalized);
+  const contactSignal = hasConfiguredProjectContactSignal(normalized);
+  const genericProjectReference = hasGenericConfiguredProjectReference(normalized);
 
   if (matchedProject && (statusSignal || infoSignal || ongoingSignal || contactSignal)) {
     return matchedProject;
@@ -872,6 +899,39 @@ function detectConfiguredProjectStatusInquiry(
   }
 
   return findConversationProjectHint(state, projectKey);
+}
+
+function shouldAskConfiguredProjectStatusName(
+  message: string,
+  state: ConversationState,
+  projectKey: string
+) {
+  const normalized = normalizeText(message);
+  if (!normalized) return false;
+  if (detectConfiguredProjectStatusInquiry(message, state, projectKey)) return false;
+
+  const statusLikeSignal =
+    hasConfiguredProjectStatusSignal(normalized) || hasConfiguredProjectOngoingSignal(normalized);
+  if (statusLikeSignal) {
+    return true;
+  }
+
+  return hasConfiguredProjectInfoSignal(normalized) && hasGenericConfiguredProjectReference(normalized);
+}
+
+function formatConfiguredProjectNameQuestion() {
+  return "Claro. Para revisar el estado, indicame por favor el nombre del proyecto o negocio.";
+}
+
+function formatConfiguredProjectNameRetry() {
+  return "Aun no ubico el proyecto. Indicame por favor el nombre exacto del proyecto o negocio para revisar su estado.";
+}
+
+function formatFieldList(labels: string[]) {
+  if (labels.length === 0) return "";
+  if (labels.length === 1) return labels[0] ?? "";
+  if (labels.length === 2) return `${labels[0]} y ${labels[1]}`;
+  return `${labels.slice(0, -1).join(", ")} y ${labels[labels.length - 1]}`;
 }
 
 function containsKeyword(text: string, keywords: string[]) {
@@ -1450,28 +1510,20 @@ function buildSupportCollectionPrompt(
 
   const shouldSendChecklist = firstInteraction && missing.length >= 3;
   if (shouldSendChecklist) {
-    if (plan.style === "steps") {
-      return [
-        `Perfecto, abrire un ticket de ${topic} para tu solicitud.`,
-        "1. Nombre(s)",
-        "2. Apellido(s)",
-        "3. Empresa",
-        "4. Correo",
-        "5. Detalle de lo que necesitas",
-        nextQuestion
-      ].join("\n");
-    }
+    const remainingLabels = missing
+      .filter((field) => field !== nextField)
+      .map((field) => SUPPORT_FIELD_LABELS[field]);
+    const remainingLine = remainingLabels.length
+      ? `Despues te pedire ${formatFieldList(remainingLabels)}.`
+      : null;
 
     return [
       `Perfecto, abrire un ticket de ${topic}.`,
-      "Para registrarlo necesito estos datos:",
-      "- nombres",
-      "- apellidos",
-      "- empresa",
-      "- correo",
-      "- detalle de la solicitud",
+      remainingLine,
       nextQuestion
-    ].join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
 
   return nextQuestion;
@@ -2133,6 +2185,9 @@ function getConversation(phoneE164: string, projectKey: string) {
     if (typeof existing.pendingLeadField === "undefined") {
       existing.pendingLeadField = null;
     }
+    if (typeof existing.awaitingProjectStatusName !== "boolean") {
+      existing.awaitingProjectStatusName = false;
+    }
     if (!existing.lastReplyStyle) existing.lastReplyStyle = null;
     if (typeof existing.awaitingSupportOwnership !== "boolean") {
       existing.awaitingSupportOwnership = false;
@@ -2168,6 +2223,7 @@ function getConversation(phoneE164: string, projectKey: string) {
     history: [],
     lead: emptyLeadProfile(),
     pendingLeadField: null,
+    awaitingProjectStatusName: false,
     meeting: emptyMeetingProfile(),
     supportTopic: null,
     supportOwnership: null,
@@ -2603,15 +2659,48 @@ export async function handleProjectAgentMessage(input: {
     state,
     state.projectKey || env.defaultProject
   );
+  const shouldAskProjectStatusName = shouldAskConfiguredProjectStatusName(
+    message,
+    state,
+    state.projectKey || env.defaultProject
+  );
 
   try {
     if (configuredProjectStatusInquiry) {
       state.pendingLeadField = null;
+      state.awaitingProjectStatusName = false;
       const reply = finalizeAssistantReply(
         state,
         formatConfiguredProjectStatusReply(configuredProjectStatusInquiry, state.projectKey || env.defaultProject),
         replyPlan
       );
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
+    }
+
+    if (state.awaitingProjectStatusName) {
+      state.pendingLeadField = null;
+      const reply = finalizeAssistantReply(state, formatConfiguredProjectNameRetry(), replyPlan);
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
+    }
+
+    if (shouldAskProjectStatusName) {
+      state.pendingLeadField = null;
+      state.awaitingProjectStatusName = true;
+      const reply = finalizeAssistantReply(state, formatConfiguredProjectNameQuestion(), replyPlan);
       appendHistory(state, "assistant", reply);
       return {
         handled: true,
@@ -2665,7 +2754,7 @@ export async function handleProjectAgentMessage(input: {
 
       const reply = finalizeAssistantReply(
         state,
-        "Tu ticket ya fue registrado y enviado a nuestro equipo. Te responderemos lo mas pronto posible. Si deseas abrir otro, escribe: nuevo ticket.",
+        "Tu ticket ya fue registrado y enviado a nuestro equipo. Te responderemos lo mas pronto posible. Si deseas abrir otro, escribeme pidiendo nuevo ticket.",
         replyPlan
       );
       appendHistory(state, "assistant", reply);
@@ -2722,7 +2811,7 @@ export async function handleProjectAgentMessage(input: {
 
       const reply = finalizeAssistantReply(
         state,
-        "Tu solicitud de reunion ya quedo agendada y cerrada. Un especialista humano te contactara. Si quieres iniciar una nueva solicitud, escribe: nuevo proyecto.",
+        "Tu solicitud de reunion ya quedo agendada y cerrada. Un especialista humano te contactara. Si quieres iniciar una nueva solicitud, escribeme pidiendo nuevo proyecto.",
         replyPlan
       );
       appendHistory(state, "assistant", reply);
