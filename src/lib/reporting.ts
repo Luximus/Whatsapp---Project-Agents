@@ -396,6 +396,45 @@ function buildMeetingQuoteEmailBody(input: MeetingQuoteEmailInput) {
   ].join("\n");
 }
 
+function buildMeetingQuoteSections(input: MeetingQuoteEmailInput, dateLabel: string): LuxisoftEmailSection[] {
+  return [
+    {
+      title: "Agendamiento",
+      rows: [
+        { label: "Fecha", value: dateLabel },
+        { label: "Proyecto", value: input.projectKey || "(sin dato)" },
+        { label: "Canal", value: "WhatsApp" },
+        { label: "Tipo", value: "Reunion con especialista" }
+      ]
+    },
+    {
+      title: "Contacto",
+      rows: [
+        { label: "Nombre", value: input.contactName || "(sin dato)" },
+        { label: "Empresa", value: input.company || "(sin dato)" },
+        { label: "Correo", value: input.contactEmail || "(sin dato)" },
+        { label: "Telefono", value: input.userPhone || "(sin dato)" }
+      ]
+    },
+    {
+      title: "Reunion",
+      rows: [
+        { label: "Dia", value: input.meetingDay || "(sin dato)" },
+        { label: "Fecha", value: input.meetingDate || "(sin dato)" },
+        { label: "Hora", value: input.meetingTime || "(sin dato)" },
+        { label: "Motivo", value: input.reason || "(sin dato)" }
+      ]
+    }
+  ];
+}
+
+function buildMeetingQuoteNotes(input: MeetingQuoteEmailInput) {
+  return [
+    `Generado: ${new Date().toISOString()}`,
+    `Notificado a agente humano por WhatsApp: ${input.notifiedHuman ? "si" : "no"}`
+  ];
+}
+
 function buildSupportTicketSections(input: SupportTicketEmailInput, dateLabel: string): LuxisoftEmailSection[] {
   return [
     {
@@ -459,7 +498,23 @@ export async function sendMeetingQuoteEmail(input: MeetingQuoteEmailInput) {
   });
 
   const dateKey = currentDateKey();
+  const dateLabel = dateLabelForReport(dateKey);
   const subject = `Lead WhatsApp - Reunion agendada - ${dateLabelForReport(dateKey)}`;
+  const sections = buildMeetingQuoteSections(input, dateLabel);
+  const notes = buildMeetingQuoteNotes(input);
+  const html = await render(
+    createElement(LuxisoftEmailTemplate, {
+      preview: `Nueva reunion WhatsApp - ${dateLabel}`,
+      title: `Reunion WhatsApp - ${dateLabel}`,
+      subtitle: "Solicitud de reunion con especialista",
+      intro:
+        "Se registro una nueva solicitud de reunion desde WhatsApp. El equipo comercial debe revisar los datos y continuar la gestion con el contacto registrado.",
+      reportDateLabel: dateLabel,
+      logoUrl: env.reportLogoUrl,
+      sections,
+      notes
+    })
+  );
   const text = buildMeetingQuoteEmailBody(input);
 
   try {
@@ -467,6 +522,7 @@ export async function sendMeetingQuoteEmail(input: MeetingQuoteEmailInput) {
       from: env.smtpFrom || env.smtpUser,
       to: env.meetingQuoteEmailTo,
       subject,
+      html,
       text
     });
     loggerRef.info(
