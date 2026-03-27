@@ -17,6 +17,7 @@ import {
 } from "../agents/repository.js";
 import { env } from "../env.js";
 import {
+  sendProjectFollowupEmail,
   sendSupportTicketEmail,
   sendMeetingQuoteEmail,
   trackMeetingScheduled,
@@ -66,6 +67,7 @@ type ConversationState = {
   awaitingSupportOwnership: boolean;
   awaitingSupportTicketData: boolean;
   supportClosedAt: number | null;
+  projectFollowupClosedAt: number | null;
   awaitingMeetingData: boolean;
   meetingClosedAt: number | null;
   lastReplyStyle: ReplyStyle | null;
@@ -128,6 +130,7 @@ type ConversationCaseAnalysis = {
     | "identity_request"
     | "privacy_request"
     | "project_status"
+    | "project_followup"
     | "project_status_name_required"
     | "support_with_us"
     | "support_third_party"
@@ -141,6 +144,7 @@ type ConversationCaseAnalysis = {
     | "answer_identity"
     | "answer_privacy"
     | "lookup_project_status"
+    | "register_project_followup"
     | "ask_project_name"
     | "ask_support_ownership"
     | "collect_support_data"
@@ -173,6 +177,7 @@ type ConversationCaseAnalysis = {
 const TurnAnalysisSchema = z.object({
   case_type: z.enum([
     "project_status",
+    "project_followup",
     "project_status_name_required",
     "support_with_us",
     "support_third_party",
@@ -185,6 +190,7 @@ const TurnAnalysisSchema = z.object({
   ]),
   recommended_action: z.enum([
     "lookup_project_status",
+    "register_project_followup",
     "ask_project_name",
     "ask_support_ownership",
     "collect_support_data",
@@ -987,6 +993,12 @@ function hasGenericConfiguredProjectReference(normalized: string) {
   );
 }
 
+function hasProjectFollowupSignal(normalized: string) {
+  return /(?:urgente|urgentemente|respuesta|respondan|responder|seguimiento con el equipo|dar seguimiento|escalar|prioritario|prioritaria|prioridad|avisarme|avisenme|avisen|cuando va a estar listo|cuando estara listo|cuando estaria listo)/i.test(
+    normalized
+  );
+}
+
 function formatConfiguredProjectStatusReply(projectName: string, projectKey: string) {
   const entry = findConfiguredProjectByName(projectName, projectKey);
   if (!entry?.statusParagraph) {
@@ -1364,6 +1376,14 @@ function recentAssistantMessages(state: ConversationState, limit = 3) {
 function assistantRecentlyAskedProjectName(state: ConversationState) {
   return recentAssistantMessages(state, 2).some((item) =>
     /(?:nombre\s+exacto\s+del\s+proyecto|nombre\s+del\s+proyecto\s+o\s+negocio)/i.test(item.text)
+  );
+}
+
+function assistantRecentlyOfferedProjectFollowup(state: ConversationState) {
+  return recentAssistantMessages(state, 3).some((item) =>
+    /(?:seguimiento\s+con\s+el\s+equipo|dejar\s+tu\s+seguimiento|dar\s+seguimiento|avisarte\s+apenas|te\s+ayudo\s+a\s+dejar\s+seguimiento)/i.test(
+      item.text
+    )
   );
 }
 
@@ -1956,7 +1976,9 @@ function buildConversationStateSummary(state: ConversationState, message: string
     awaiting_meeting_data: state.awaitingMeetingData,
     awaiting_project_status_name:
       state.awaitingProjectStatusName || assistantRecentlyAskedProjectName(state),
+    assistant_recently_offered_project_followup: assistantRecentlyOfferedProjectFollowup(state),
     support_closed_at: state.supportClosedAt,
+    project_followup_closed_at: state.projectFollowupClosedAt,
     meeting_closed_at: state.meetingClosedAt,
     lead_profile: leadProfile,
     meeting_profile: meetingProfile,
@@ -1975,6 +1997,7 @@ function buildConversationStateSummary(state: ConversationState, message: string
       project_status_signal: hasConfiguredProjectStatusSignal(normalizedMessage),
       project_info_signal: hasConfiguredProjectInfoSignal(normalizedMessage),
       project_ongoing_signal: hasConfiguredProjectOngoingSignal(normalizedMessage),
+      project_followup_signal: hasProjectFollowupSignal(normalizedMessage),
       generic_project_reference: hasGenericConfiguredProjectReference(normalizedMessage),
       support_signal: hasSupportSignal(message),
       meeting_signal: containsKeyword(message, MEETING_KEYWORDS),
@@ -2865,10 +2888,13 @@ function buildProjectAgentTurnAnalysisInstructions(input: {
     "Debes clasificar el caso conversacional actual y devolver solo un objeto estructurado segun el esquema indicado.",
     "La clasificacion debe salir del modelo, no de herramientas externas.",
     "Prioriza seguimiento de proyecto sobre venta nueva cuando el mensaje suene a trabajo ya existente: 'informacion acerca de la tienda', 'como va el proyecto', 'la tienda que estan realizando', 'Pandapan', 'el ecommerce que hicieron'.",
+    "Si el usuario ya esta hablando de un proyecto existente y pide urgencia, respuesta del equipo, prioridad o seguimiento humano, clasificalo como project_followup con recommended_action=register_project_followup.",
+    "Si el ultimo mensaje de la asistente ofrecio dejar seguimiento con el equipo y el usuario responde algo como 'si', 'si por favor' o 'hazlo', clasificalo como project_followup con recommended_action=register_project_followup.",
     "Prioriza soporte sobre venta nueva cuando el mensaje reporta problema, error o ayuda sobre algo que hicimos nosotros.",
     "Si el mensaje contiene palabras como problema, error, falla, soporte o ayuda sobre una tienda, app, web o servicio existente, no lo clasifiques como venta nueva salvo que el usuario hable claramente de crear algo nuevo.",
     "Si el usuario pregunta por estado o informacion de un proyecto sin nombre suficiente, usa case_type=project_status_name_required y recommended_action=ask_project_name.",
     "Si el usuario menciona un proyecto conocido o el estado de un proyecto existente, usa case_type=project_status y recommended_action=lookup_project_status.",
+    "Si el usuario pide que el equipo responda o haga seguimiento urgente sobre un proyecto existente, usa case_type=project_followup y recommended_action=register_project_followup.",
     "Si el usuario solicita soporte y aun no esta claro si fue con nosotros o con otro proveedor, usa case_type=support_ownership_required y recommended_action=ask_support_ownership.",
     "Si el soporte es de algo hecho con nosotros, usa case_type=support_with_us y recommended_action=collect_support_data o register_support_ticket segun los datos faltantes.",
     "Si el soporte es de terceros, usa case_type=support_third_party y recommended_action=collect_meeting_data o schedule_meeting_request segun corresponda.",
@@ -2880,6 +2906,8 @@ function buildProjectAgentTurnAnalysisInstructions(input: {
     "Ejemplos: 'Tengo un problema con la tienda que hicieron ustedes' -> support_with_us / collect_support_data.",
     "Ejemplos: 'Necesito informacion acerca de la tienda' -> project_status_name_required / ask_project_name.",
     "Ejemplos: 'Necesito informacion del proyecto Pandapan' -> project_status / lookup_project_status.",
+    "Ejemplos: 'Que me respondan cuando va a estar listo' despues de hablar de Pandapan -> project_followup / register_project_followup.",
+    "Ejemplos: despues de ofrecer 'te ayudo a dejar seguimiento con el equipo', el usuario responde 'Si por favor' -> project_followup / register_project_followup.",
     "RESUMEN_DEL_ESTADO_CONVERSACIONAL_ACTUAL:",
     input.conversationStateSummary
   ].join("\n\n");
@@ -2891,6 +2919,10 @@ function buildProjectAgentObjectiveFromAnalysis(analysis: TurnAnalysis) {
       return analysis.matched_project_name
         ? `Seguimiento de proyecto detectado para ${analysis.matched_project_name}. Usa lookup_project_status antes de responder.`
         : "Seguimiento de proyecto detectado. Usa lookup_project_status antes de responder.";
+    case "register_project_followup":
+      return analysis.matched_project_name
+        ? `El usuario pide seguimiento urgente o respuesta humana sobre ${analysis.matched_project_name}. Usa register_project_followup y no lo conviertas en discovery comercial ni pidas empresa salvo que sea imprescindible.`
+        : "El usuario pide seguimiento urgente o respuesta humana sobre un proyecto existente. Usa register_project_followup y evita pedir datos comerciales innecesarios.";
     case "ask_project_name":
       return "Consulta de seguimiento de proyecto sin nombre suficiente. Pide solo el nombre del proyecto o negocio.";
     case "ask_support_ownership":
@@ -2941,6 +2973,8 @@ function buildProjectAgentInstructions(input: {
     "No uses conocimiento externo ni inventes datos no confirmados por fuentes oficiales.",
     "Si necesitas confirmar detalles de servicios o funcionalidades, usa la tool scrape_project_knowledge antes de responder.",
     "Si el usuario pregunta por estado, avance o progreso actual de un proyecto, trabajo, aplicacion, pagina, o menciona un proyecto en curso ya realizado por LUXISOFT, usa la tool lookup_project_status antes de responder.",
+    "Si el usuario pide respuesta urgente, prioridad o seguimiento humano sobre un proyecto existente, usa register_project_followup antes de confirmar la gestion.",
+    "Si acabas de ofrecer dejar seguimiento con el equipo y el usuario responde afirmativamente, usa register_project_followup en vez de volver a abrir discovery o pedir empresa.",
     "Si un dato no aparece en fuentes despues de consultar tools, responde con tono comercial seguro: explica lo que si esta publicado y el siguiente paso.",
     "Evita tono de inseguridad o frases ambiguas; habla con claridad.",
     "Si necesitas mas contexto del sitio, usa los tools disponibles antes de responder.",
@@ -2955,8 +2989,11 @@ function buildProjectAgentInstructions(input: {
     "Si necesitas identificar mejor el servicio o perfilar una oportunidad comercial, usa classify_service_intent, extract_prospect_profile y next_intake_question.",
     "Si el usuario solicita soporte de un servicio o producto hecho por nuestro equipo y aun no esta claro, pregunta solo si fue con nosotros o con otro proveedor.",
     "Cuando hables de propiedad del servicio, prefiere 'con nosotros' y 'nuestro equipo' en vez de repetir el nombre comercial.",
+    "Cuando ya exista contexto de un proyecto concreto y el usuario solo pida respuesta o seguimiento urgente, no lo desvies a discovery comercial ni pidas empresa salvo que realmente falte para ejecutar la gestion.",
     "No pidas datos que ya esten presentes en lead_profile o meeting_profile dentro del estado conversacional actual.",
+    "Para seguimiento de proyecto, puedes usar el numero de WhatsApp como contacto. El correo y la empresa son opcionales salvo que el usuario ya los haya compartido.",
     "Cuando falten datos para soporte o reunion, pide solo el siguiente dato faltante y evita enumerar toda la lista en cada turno.",
+    "Si el usuario pide seguimiento urgente de un proyecto y ya sabes que proyecto es, usa register_project_followup y confirma solo si la tool devolvio exito.",
     "Si ya tienes los datos requeridos para soporte, llama register_support_ticket antes de confirmar el registro.",
     "Si register_support_ticket devuelve campos faltantes, pide solo el siguiente dato faltante.",
     "Si ya tienes los datos requeridos para reunion, llama schedule_meeting_request antes de confirmar el agendamiento.",
@@ -3120,6 +3157,9 @@ function getConversation(phoneE164: string, projectKey: string) {
     if (typeof existing.supportClosedAt !== "number") {
       existing.supportClosedAt = null;
     }
+    if (typeof existing.projectFollowupClosedAt !== "number") {
+      existing.projectFollowupClosedAt = null;
+    }
     if (typeof existing.awaitingSupportTicketData !== "boolean") {
       existing.awaitingSupportTicketData = false;
     }
@@ -3152,6 +3192,7 @@ function getConversation(phoneE164: string, projectKey: string) {
     awaitingSupportOwnership: false,
     awaitingSupportTicketData: false,
     supportClosedAt: null,
+    projectFollowupClosedAt: null,
     awaitingMeetingData: false,
     meetingClosedAt: null,
     lastReplyStyle: null,
@@ -3216,6 +3257,13 @@ async function runProjectAgent(input: {
       }),
     registerSupportTicket: async (payload) =>
       registerSupportTicketFromAgent({
+        state: input.state,
+        phoneE164: input.phoneE164,
+        projectKey: project.project_key,
+        payload
+      }),
+    registerProjectFollowup: async (payload) =>
+      registerProjectFollowupFromAgent({
         state: input.state,
         phoneE164: input.phoneE164,
         projectKey: project.project_key,
@@ -3354,6 +3402,44 @@ async function notifyHumanMeeting(input: {
   }
 }
 
+async function notifyHumanProjectFollowup(input: {
+  projectKey: string;
+  projectName: string;
+  phoneE164: string;
+  summary: string;
+  urgency: string | null;
+}) {
+  const transferTarget = env.humanTransferNumber;
+  if (!transferTarget) {
+    return {
+      ok: false,
+      sent: false,
+      error: "human_transfer_number_not_configured"
+    };
+  }
+
+  const payload = [
+    "[Bridge -> humano] Seguimiento urgente de proyecto",
+    `Proyecto tecnico: ${input.projectKey}`,
+    `Proyecto consultado: ${input.projectName}`,
+    `Usuario: ${input.phoneE164}`,
+    `Urgencia: ${input.urgency ?? "(sin dato)"}`,
+    "Resumen:",
+    input.summary || "Sin resumen."
+  ].join("\n");
+
+  try {
+    await sendWhatsappText(transferTarget, payload);
+    return { ok: true, sent: true };
+  } catch (err: any) {
+    return {
+      ok: false,
+      sent: false,
+      error: String(err?.message ?? "human_project_followup_notify_failed")
+    };
+  }
+}
+
 function readToolTextField(
   input: Record<string, unknown> | null | undefined,
   keys: string[],
@@ -3412,6 +3498,115 @@ function mergeMeetingProfileFromToolInput(state: ConversationState, input: Recor
   if (!sanitizeValue(state.meeting.meetingReason, 220)) {
     state.meeting.meetingReason = sanitizeValue(state.lead.need, 220);
   }
+}
+
+function detectProjectFollowupUrgency(state: ConversationState) {
+  const recentMessages = recentUserMessages(state, 6)
+    .map((item) => item.text)
+    .reverse();
+
+  for (const text of recentMessages) {
+    const compact = sanitizeValue(text, 220);
+    if (!compact) continue;
+    if (/(urgente|urgentemente|prioritario|prioritaria|prioridad)/i.test(compact)) {
+      return compact;
+    }
+  }
+
+  return null;
+}
+
+function buildProjectFollowupSummary(state: ConversationState, projectName: string) {
+  const recentMessages = recentUserMessages(state, 5)
+    .map((item) => sanitizeValue(item.text, 220))
+    .filter(Boolean) as string[];
+
+  const latest = recentMessages[recentMessages.length - 1] ?? `Seguimiento solicitado para ${projectName}.`;
+  return sanitizeValue(latest, 220) ?? `Seguimiento solicitado para ${projectName}.`;
+}
+
+function resolveProjectFollowupProjectName(
+  state: ConversationState,
+  projectKey: string,
+  payload?: Record<string, unknown>
+) {
+  return (
+    findConfiguredProjectByName(readToolTextField(payload, ["project_name"], 120), projectKey)?.name ??
+    findConversationProjectHint(state, projectKey)
+  );
+}
+
+async function registerProjectFollowupFromAgent(input: {
+  state: ConversationState;
+  phoneE164: string;
+  projectKey: string;
+  payload?: Record<string, unknown>;
+}) {
+  mergeLeadProfileFromToolInput(input.state, input.payload);
+
+  const projectName = resolveProjectFollowupProjectName(input.state, input.projectKey, input.payload);
+  if (!projectName) {
+    return {
+      ok: false,
+      error: "project_name_required",
+      next_question: "Para dejar el seguimiento con el equipo, indicame por favor el nombre del proyecto o negocio."
+    };
+  }
+
+  if (input.state.projectFollowupClosedAt) {
+    return {
+      ok: false,
+      error: "project_followup_already_closed",
+      closed_at: input.state.projectFollowupClosedAt,
+      reply_hint:
+        "Tu seguimiento ya fue registrado con el equipo. Si quieres agregar un detalle nuevo, dimelo y lo actualizo."
+    };
+  }
+
+  const summary =
+    readToolTextField(input.payload, ["summary", "request_detail", "detail", "reason"], 220) ??
+    buildProjectFollowupSummary(input.state, projectName);
+  const urgency =
+    readToolTextField(input.payload, ["urgency", "priority"], 120) ?? detectProjectFollowupUrgency(input.state);
+  const contactName = `${input.state.lead.firstName ?? ""} ${input.state.lead.lastName ?? ""}`.trim();
+
+  const transfer = await notifyHumanProjectFollowup({
+    projectKey: input.projectKey,
+    projectName,
+    phoneE164: input.phoneE164,
+    summary,
+    urgency
+  });
+
+  const mail = await sendProjectFollowupEmail({
+    projectKey: input.projectKey,
+    projectName,
+    userPhone: input.phoneE164,
+    contactName,
+    contactEmail: input.state.lead.email ?? "",
+    company: input.state.lead.company ?? "",
+    summary,
+    urgency
+  });
+  if (!mail.sent) {
+    trackOperationalError();
+  }
+
+  const delivered = transfer.sent || mail.sent;
+  input.state.projectFollowupClosedAt = delivered ? Date.now() : null;
+
+  return {
+    ok: delivered,
+    sent: delivered,
+    notified_human: transfer.sent,
+    email_sent: mail.sent,
+    project_name: projectName,
+    summary,
+    urgency,
+    reply_hint: delivered
+      ? `Perfecto, ya deje el seguimiento de ${projectName} con nuestro equipo para que te respondan apenas haya novedad.`
+      : `No pude registrar el seguimiento de ${projectName} en este momento. Intenta nuevamente en unos minutos.`
+  };
 }
 
 async function registerSupportTicketFromAgent(input: {
@@ -3591,6 +3786,10 @@ async function resetConversationCaseState(input: {
     input.state.supportTopic = null;
   }
 
+  if (target === "project" || target === "all") {
+    input.state.projectFollowupClosedAt = null;
+  }
+
   if (target === "meeting" || target === "all") {
     input.state.awaitingMeetingData = false;
     input.state.meetingClosedAt = null;
@@ -3613,6 +3812,7 @@ async function resetConversationCaseState(input: {
       lead: cloneLeadProfile(input.state.lead),
       meeting: cloneMeetingProfile(input.state.meeting),
       support_closed_at: input.state.supportClosedAt,
+      project_followup_closed_at: input.state.projectFollowupClosedAt,
       meeting_closed_at: input.state.meetingClosedAt
     }
   };
@@ -3625,6 +3825,25 @@ async function maybeCompleteCriticalAgentAction(input: {
   phoneE164: string;
   projectKey: string;
 }) {
+  if (input.turnAnalysis.recommended_action === "register_project_followup") {
+    if (input.toolsUsed.has("register_project_followup")) return null;
+    input.toolsUsed.add("register_project_followup");
+
+    const followup = await registerProjectFollowupFromAgent({
+      state: input.state,
+      phoneE164: input.phoneE164,
+      projectKey: input.projectKey
+    });
+
+    if ((followup.ok || followup.error === "project_followup_already_closed") && typeof followup.reply_hint === "string") {
+      return followup.reply_hint;
+    }
+    if (followup?.error === "project_name_required" && typeof followup.next_question === "string") {
+      return followup.next_question;
+    }
+    return "No pude registrar el seguimiento del proyecto en este momento. Intenta nuevamente en unos minutos.";
+  }
+
   if (input.turnAnalysis.recommended_action === "register_support_ticket") {
     if (input.toolsUsed.has("register_support_ticket")) return null;
     input.toolsUsed.add("register_support_ticket");

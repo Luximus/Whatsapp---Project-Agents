@@ -85,6 +85,17 @@ type SupportTicketEmailInput = {
   transcript?: string[];
 };
 
+type ProjectFollowupEmailInput = {
+  projectKey: string;
+  projectName: string;
+  userPhone: string;
+  contactName: string;
+  contactEmail: string;
+  company: string;
+  summary: string;
+  urgency: string | null;
+};
+
 const metricsByDate = new Map<string, DailyMetrics>();
 const meetingsByDate = new Map<string, MeetingRecord[]>();
 let reportTask: ScheduledTask | null = null;
@@ -477,6 +488,61 @@ function buildSupportTicketNotes(input: SupportTicketEmailInput) {
   return notes;
 }
 
+function buildProjectFollowupEmailBody(input: ProjectFollowupEmailInput) {
+  const submittedAt = new Date().toISOString();
+  return [
+    "Nuevo seguimiento de proyecto desde WhatsApp",
+    "",
+    `Proyecto tecnico: ${input.projectKey || "(sin dato)"}`,
+    `Proyecto consultado: ${input.projectName || "(sin dato)"}`,
+    `Nombre: ${input.contactName || "(sin dato)"}`,
+    `Empresa: ${input.company || "(sin dato)"}`,
+    `Correo: ${input.contactEmail || "(sin dato)"}`,
+    `Telefono WhatsApp: ${input.userPhone || "(sin dato)"}`,
+    `Urgencia: ${input.urgency || "(sin dato)"}`,
+    `Resumen: ${input.summary || "(sin dato)"}`,
+    "",
+    `Generado: ${submittedAt}`
+  ].join("\n");
+}
+
+function buildProjectFollowupSections(input: ProjectFollowupEmailInput, dateLabel: string): LuxisoftEmailSection[] {
+  return [
+    {
+      title: "Seguimiento",
+      rows: [
+        { label: "Fecha", value: dateLabel },
+        { label: "Proyecto tecnico", value: input.projectKey || "(sin dato)" },
+        { label: "Proyecto consultado", value: input.projectName || "(sin dato)" },
+        { label: "Canal", value: "WhatsApp" }
+      ]
+    },
+    {
+      title: "Contacto",
+      rows: [
+        { label: "Nombre", value: input.contactName || "(sin dato)" },
+        { label: "Empresa", value: input.company || "(sin dato)" },
+        { label: "Correo", value: input.contactEmail || "(sin dato)" },
+        { label: "Telefono", value: input.userPhone || "(sin dato)" }
+      ]
+    },
+    {
+      title: "Solicitud",
+      rows: [
+        { label: "Urgencia", value: input.urgency || "(sin dato)" },
+        { label: "Resumen", value: input.summary || "(sin dato)" }
+      ]
+    }
+  ];
+}
+
+function buildProjectFollowupNotes(input: ProjectFollowupEmailInput) {
+  return [
+    `Generado: ${new Date().toISOString()}`,
+    input.contactEmail ? "El contacto ya compartio correo para respuesta." : "El seguimiento se registro solo con el numero de WhatsApp."
+  ];
+}
+
 export async function sendMeetingQuoteEmail(input: MeetingQuoteEmailInput) {
   if (!smtpConfigured()) {
     loggerRef.warn({ to: env.meetingQuoteEmailTo }, "Meeting quote email skipped: SMTP not configured");
@@ -623,6 +689,75 @@ export async function sendSupportTicketEmail(input: SupportTicketEmailInput) {
       ok: false,
       sent: false,
       error: String(err?.message ?? "support_ticket_email_failed")
+    };
+  }
+}
+
+export async function sendProjectFollowupEmail(input: ProjectFollowupEmailInput) {
+  if (!smtpConfigured()) {
+    loggerRef.warn(
+      { to: env.supportTicketEmailTo },
+      "Project follow-up email skipped: SMTP not configured"
+    );
+    return {
+      ok: false,
+      sent: false,
+      error: "smtp_not_configured"
+    };
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: env.smtpHost,
+    port: env.smtpPort,
+    secure: env.smtpSecure,
+    auth: {
+      user: env.smtpUser,
+      pass: env.smtpPass
+    }
+  });
+
+  const dateKey = currentDateKey();
+  const dateLabel = dateLabelForReport(dateKey);
+  const sections = buildProjectFollowupSections(input, dateLabel);
+  const notes = buildProjectFollowupNotes(input);
+  const html = await render(
+    createElement(LuxisoftEmailTemplate, {
+      preview: `Seguimiento de proyecto WhatsApp - ${dateLabel}`,
+      title: `Seguimiento de proyecto - ${dateLabel}`,
+      subtitle: "Solicitud de seguimiento urgente",
+      intro:
+        "Se registro una nueva solicitud de seguimiento sobre un proyecto existente desde WhatsApp. El equipo debe revisar el caso y responder por el canal correspondiente.",
+      reportDateLabel: dateLabel,
+      logoUrl: env.reportLogoUrl,
+      sections,
+      notes
+    })
+  );
+  const text = buildProjectFollowupEmailBody(input);
+
+  try {
+    await transporter.sendMail({
+      from: env.smtpFrom || env.smtpUser,
+      to: env.supportTicketEmailTo,
+      subject: `Seguimiento de proyecto - ${input.projectName || input.projectKey} - ${dateLabel}`,
+      html,
+      text
+    });
+
+    loggerRef.info(
+      { to: env.supportTicketEmailTo, projectKey: input.projectKey, userPhone: input.userPhone },
+      "Project follow-up email sent"
+    );
+    return { ok: true, sent: true };
+  } catch (err: any) {
+    loggerRef.error(
+      { err, to: env.supportTicketEmailTo, projectKey: input.projectKey, userPhone: input.userPhone },
+      "Project follow-up email failed"
+    );
+    return {
+      ok: false,
+      sent: false,
+      error: String(err?.message ?? "project_followup_email_failed")
     };
   }
 }

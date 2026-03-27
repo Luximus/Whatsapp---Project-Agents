@@ -7,7 +7,7 @@ export default {
     properties: {
       target: {
         type: "string",
-        description: "Caso a reiniciar: support, meeting o all."
+        description: "Caso a reiniciar: support, project, meeting o all."
       },
       keep_contact_data: {
         type: "boolean",

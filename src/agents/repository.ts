@@ -16,6 +16,7 @@ export type AgentScriptRuntimeContext = {
     }
   ) => Promise<string[]>;
   registerSupportTicket?: (input?: Record<string, unknown>) => Promise<unknown>;
+  registerProjectFollowup?: (input?: Record<string, unknown>) => Promise<unknown>;
   scheduleMeetingRequest?: (input?: Record<string, unknown>) => Promise<unknown>;
   resetCaseState?: (input?: Record<string, unknown>) => Promise<unknown>;
 };
