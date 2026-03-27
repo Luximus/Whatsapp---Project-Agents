@@ -374,7 +374,7 @@ const SUPPORT_SIGNAL_REGEX =
 
 const ASSISTANT_NAME = "Valeria";
 const ASSISTANT_COMPANY = "LUXISOFT";
-const REPLY_STYLE_ROTATION: ReplyStyle[] = ["natural", "bullets", "question", "steps"];
+const REPLY_STYLE_ROTATION: ReplyStyle[] = ["natural", "question"];
 
 const LINK_REQUEST_KEYWORDS = [
   "enlace",
@@ -613,6 +613,32 @@ function inferDateFromWeekday(dayName: string, text: string) {
   const inferred = new Date(now);
   inferred.setDate(now.getDate() + delta);
   return toIsoDate(inferred);
+}
+
+function spanishWeekdayName(value: Date) {
+  return ["Domingo", "Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado"][value.getDay()] ?? null;
+}
+
+function inferRelativeMeetingDate(text: string) {
+  const normalizedText = normalizeText(text);
+  let delta: number | null = null;
+
+  if (/\bpasado\s+manana\b/.test(normalizedText)) {
+    delta = 2;
+  } else if (/\bmanana\b/.test(normalizedText)) {
+    delta = 1;
+  } else if (/\bhoy\b/.test(normalizedText)) {
+    delta = 0;
+  }
+
+  if (delta === null) return null;
+
+  const inferred = new Date();
+  inferred.setDate(inferred.getDate() + delta);
+  return {
+    meetingDay: spanishWeekdayName(inferred),
+    meetingDate: toIsoDate(inferred)
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1252,17 +1278,22 @@ function resolveNextMeetingQuestion(nextMeetingField: SupportFieldKey | MeetingF
 function updateMeetingProfileFromMessage(profile: MeetingProfile, message: string, lead: LeadProfile): MeetingProfile {
   const next: MeetingProfile = { ...profile };
   const text = String(message ?? "");
+  const relativeDate = inferRelativeMeetingDate(text);
 
   const dayMatch = text.match(
     /\b(lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)\b/i
   );
   if (dayMatch?.[1]) {
     next.meetingDay = titleCase(dayMatch[1]);
+  } else if (relativeDate?.meetingDay && !next.meetingDay) {
+    next.meetingDay = relativeDate.meetingDay;
   }
 
   const dateMatch = text.match(/\b(\d{4}-\d{2}-\d{2}|\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?)\b/);
   if (dateMatch?.[1]) {
     next.meetingDate = sanitizeValue(dateMatch[1], 40);
+  } else if (relativeDate?.meetingDate) {
+    next.meetingDate = relativeDate.meetingDate;
   } else if (next.meetingDay) {
     const inferredDate = inferDateFromWeekday(next.meetingDay, text);
     if (inferredDate) {
@@ -1972,18 +2003,11 @@ function nextReplyStyle(state: ConversationState): ReplyStyle {
 function buildReplyPlan(state: ConversationState, message: string): ReplyPlan {
   const normalized = normalizeText(message);
   const asksLinks = LINK_REQUEST_KEYWORDS.some((item) => normalized.includes(normalizeText(item)));
-  const asksList = LIST_REQUEST_KEYWORDS.some((item) => normalized.includes(normalizeText(item)));
-  const asksSteps = STEP_REQUEST_KEYWORDS.some((item) => normalized.includes(normalizeText(item)));
-
-  let style = nextReplyStyle(state);
-  if (asksList) style = "bullets";
-  if (asksSteps) style = "steps";
+  const style = nextReplyStyle(state);
 
   const linkPolicy: LinkPolicy = asksLinks
     ? "links_if_requested"
-    : style === "bullets" || style === "steps"
-      ? "one_link_if_helpful"
-      : "avoid_links";
+    : "avoid_links";
 
   return { style, linkPolicy };
 }
@@ -2017,14 +2041,36 @@ function maybeIdentityIntro(state: ConversationState, reply: string) {
   return `Hola, soy ${ASSISTANT_NAME}, asistente de ${ASSISTANT_COMPANY}. Encantada de ayudarte.\n${body}`;
 }
 
+function normalizeAssistantPlainText(reply: string) {
+  const cleaned = String(reply ?? "")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .split(/\r?\n+/)
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^[-*•]+\s*/u, "")
+        .replace(/^\d+\.\s*/, "")
+    )
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+([,.;!?])/g, "$1")
+    .replace(/([¿¡])\s+/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return cleaned;
+}
+
 function finalizeAssistantReply(state: ConversationState, reply: string, plan: ReplyPlan) {
   state.lastReplyStyle = plan.style;
-  return maybeIdentityIntro(state, reply).slice(0, MAX_RESPONSE_CHARS);
+  return normalizeAssistantPlainText(maybeIdentityIntro(state, reply)).slice(0, MAX_RESPONSE_CHARS);
 }
 
 function finalizeFallbackReply(state: ConversationState, reply: string, plan: ReplyPlan) {
   state.lastReplyStyle = plan.style;
-  return reply.trim().slice(0, MAX_RESPONSE_CHARS);
+  return normalizeAssistantPlainText(reply).slice(0, MAX_RESPONSE_CHARS);
 }
 
 function formatHumanScopeCheckReply(plan: ReplyPlan) {
@@ -2881,6 +2927,7 @@ function buildProjectAgentInstructions(input: {
     input.projectPrompt || `Eres el agente del proyecto ${input.projectKey}.`,
     `PROYECTO_ACTUAL: ${input.projectKey}`,
     "Responde en espanol claro, maximo 6 lineas si no requiere mas detalle.",
+    "Escribe como una persona normal por chat: sin Markdown, sin asteriscos, sin bullets, sin listas numeradas y sin simbolos decorativos.",
     `Tu identidad comercial fija es ${ASSISTANT_NAME}, asistente de ${ASSISTANT_COMPANY}.`,
     "Cuando hables de ti, usa voz femenina.",
     `No compartas datos personales tuyos; solo puedes compartir tu nombre (${ASSISTANT_NAME}) y que trabajas en ${ASSISTANT_COMPANY}.`,
@@ -2914,6 +2961,7 @@ function buildProjectAgentInstructions(input: {
     "Si register_support_ticket devuelve campos faltantes, pide solo el siguiente dato faltante.",
     "Si ya tienes los datos requeridos para reunion, llama schedule_meeting_request antes de confirmar el agendamiento.",
     "Si schedule_meeting_request devuelve campos faltantes, pide solo el siguiente dato faltante.",
+    "Nunca confirmes que un ticket o una reunion quedaron registrados si no se ejecuto la tool correspondiente y esta devolvio exito.",
     "Si el caso ya esta cerrado y el usuario no pidio reiniciarlo, evita duplicar tickets o reuniones. Solo usa reset_case_state si el usuario pide abrir un caso nuevo.",
     input.turnAnalysis ? `ANALISIS_IA_PREVIO_DEL_TURNO: ${JSON.stringify(input.turnAnalysis)}` : null,
     "RESUMEN_DEL_ESTADO_CONVERSACIONAL_ACTUAL:",
@@ -3253,8 +3301,17 @@ async function runProjectAgent(input: {
   }
 
   trackProjectAgentRunUsage(result, model);
+  const autoActionReply = await maybeCompleteCriticalAgentAction({
+    turnAnalysis,
+    toolsUsed,
+    state: input.state,
+    phoneE164: input.phoneE164,
+    projectKey: project.project_key
+  });
+  const modelReply = String(result?.finalOutput ?? "").trim();
   const answer =
-    String(result?.finalOutput ?? "").trim() || "Cuentame brevemente que necesitas y te ayudo a orientarlo.";
+    sanitizeValue(autoActionReply, MAX_RESPONSE_CHARS) ??
+    (modelReply || "Cuentame brevemente que necesitas y te ayudo a orientarlo.");
   return {
     projectKey: project.project_key,
     answer: answer.slice(0, MAX_RESPONSE_CHARS),
@@ -3484,32 +3541,36 @@ async function scheduleMeetingRequestFromAgent(input: {
     trackOperationalError();
   }
 
+  const delivered = transfer.sent || quoteEmail.sent;
+
   input.state.awaitingMeetingData = false;
   input.state.awaitingSupportOwnership = false;
   input.state.awaitingSupportTicketData = false;
   input.state.pendingLeadField = null;
-  input.state.meetingClosedAt = transfer.sent ? Date.now() : null;
+  input.state.meetingClosedAt = delivered ? Date.now() : null;
 
-  trackMeetingScheduled({
-    projectKey: input.projectKey,
-    userPhone: input.phoneE164,
-    contactName: `${input.state.lead.firstName ?? ""} ${input.state.lead.lastName ?? ""}`.trim(),
-    contactEmail: input.state.lead.email ?? "",
-    company: input.state.lead.company ?? "",
-    meetingDay: input.state.meeting.meetingDay ?? "",
-    meetingDate: input.state.meeting.meetingDate ?? "",
-    meetingTime: input.state.meeting.meetingTime,
-    reason: input.state.meeting.meetingReason ?? input.state.lead.need ?? "",
-    notifiedHuman: transfer.sent
-  });
+  if (delivered) {
+    trackMeetingScheduled({
+      projectKey: input.projectKey,
+      userPhone: input.phoneE164,
+      contactName: `${input.state.lead.firstName ?? ""} ${input.state.lead.lastName ?? ""}`.trim(),
+      contactEmail: input.state.lead.email ?? "",
+      company: input.state.lead.company ?? "",
+      meetingDay: input.state.meeting.meetingDay ?? "",
+      meetingDate: input.state.meeting.meetingDate ?? "",
+      meetingTime: input.state.meeting.meetingTime,
+      reason: input.state.meeting.meetingReason ?? input.state.lead.need ?? "",
+      notifiedHuman: transfer.sent
+    });
+  }
 
   return {
-    ok: true,
-    sent: transfer.sent,
+    ok: delivered,
+    sent: delivered,
     notified_human: transfer.sent,
     email_sent: quoteEmail.sent,
-    closed: transfer.sent,
-    reply_hint: transfer.sent
+    closed: delivered,
+    reply_hint: delivered
       ? "Perfecto, ya agende tu solicitud de reunion con especialista. Te contactaran con los datos registrados. Con esto dejamos cerrada esta gestion por aqui."
       : "Registre tu solicitud, pero fallo el envio al agente humano en este momento. Intenta de nuevo en unos minutos."
   };
@@ -3555,6 +3616,54 @@ async function resetConversationCaseState(input: {
       meeting_closed_at: input.state.meetingClosedAt
     }
   };
+}
+
+async function maybeCompleteCriticalAgentAction(input: {
+  turnAnalysis: TurnAnalysis;
+  toolsUsed: Set<string>;
+  state: ConversationState;
+  phoneE164: string;
+  projectKey: string;
+}) {
+  if (input.turnAnalysis.recommended_action === "register_support_ticket") {
+    if (input.toolsUsed.has("register_support_ticket")) return null;
+    input.toolsUsed.add("register_support_ticket");
+
+    const ticket = await registerSupportTicketFromAgent({
+      state: input.state,
+      phoneE164: input.phoneE164,
+      projectKey: input.projectKey
+    });
+
+    if (ticket.ok && typeof ticket.reply_hint === "string") {
+      return ticket.reply_hint;
+    }
+    if (ticket?.error === "missing_fields" && typeof ticket.next_question === "string") {
+      return ticket.next_question;
+    }
+    return "No pude completar el registro del ticket en este momento. Intenta nuevamente en unos minutos.";
+  }
+
+  if (input.turnAnalysis.recommended_action === "schedule_meeting_request") {
+    if (input.toolsUsed.has("schedule_meeting_request")) return null;
+    input.toolsUsed.add("schedule_meeting_request");
+
+    const meeting = await scheduleMeetingRequestFromAgent({
+      state: input.state,
+      phoneE164: input.phoneE164,
+      projectKey: input.projectKey
+    });
+
+    if (meeting.ok && typeof meeting.reply_hint === "string") {
+      return meeting.reply_hint;
+    }
+    if (meeting?.error === "missing_fields" && typeof meeting.next_question === "string") {
+      return meeting.next_question;
+    }
+    return "No pude completar el agendamiento en este momento. Intenta nuevamente en unos minutos.";
+  }
+
+  return null;
 }
 
 async function runSupportTicketQualification(input: {
@@ -3694,34 +3803,38 @@ async function runMeetingQualification(input: {
     trackOperationalError();
   }
 
-  input.state.awaitingMeetingData = false;
-  input.state.meetingClosedAt = transfer.sent ? Date.now() : null;
+  const delivered = transfer.sent || quoteEmail.sent;
 
-  const rawReply = transfer.sent
+  input.state.awaitingMeetingData = false;
+  input.state.meetingClosedAt = delivered ? Date.now() : null;
+
+  const rawReply = delivered
     ? "Perfecto, ya agende tu solicitud de reunion con especialista. Te contactaran con los datos registrados. Con esto dejamos cerrada esta gestion por aqui."
     : "Registre tu solicitud, pero fallo el envio al agente humano en este momento. Intenta de nuevo en unos minutos.";
   const reply = finalizeAssistantReply(input.state, rawReply, input.replyPlan);
   appendHistory(input.state, "assistant", reply);
 
-  trackMeetingScheduled({
-    projectKey: input.state.projectKey,
-    userPhone: input.phoneE164,
-    contactName: `${input.state.lead.firstName ?? ""} ${input.state.lead.lastName ?? ""}`.trim(),
-    contactEmail: input.state.lead.email ?? "",
-    company: input.state.lead.company ?? "",
-    meetingDay: input.state.meeting.meetingDay ?? "",
-    meetingDate: input.state.meeting.meetingDate ?? "",
-    meetingTime: input.state.meeting.meetingTime,
-    reason: input.state.meeting.meetingReason ?? input.state.lead.need ?? "",
-    notifiedHuman: transfer.sent
-  });
+  if (delivered) {
+    trackMeetingScheduled({
+      projectKey: input.state.projectKey,
+      userPhone: input.phoneE164,
+      contactName: `${input.state.lead.firstName ?? ""} ${input.state.lead.lastName ?? ""}`.trim(),
+      contactEmail: input.state.lead.email ?? "",
+      company: input.state.lead.company ?? "",
+      meetingDay: input.state.meeting.meetingDay ?? "",
+      meetingDate: input.state.meeting.meetingDate ?? "",
+      meetingTime: input.state.meeting.meetingTime,
+      reason: input.state.meeting.meetingReason ?? input.state.lead.need ?? "",
+      notifiedHuman: transfer.sent
+    });
+  }
 
   return {
     handled: true,
     projectKey: input.state.projectKey,
     reply,
     escalated: true,
-    escalationSent: transfer.sent
+    escalationSent: delivered
   } as AgentReply;
 }
 
