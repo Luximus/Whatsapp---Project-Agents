@@ -9,6 +9,7 @@ import {
   type AgentInputItem
 } from "@openai/agents";
 import { OpenAIProvider } from "@openai/agents";
+import { z } from "zod";
 import {
   loadProjectAgent,
   type AgentScript,
@@ -117,6 +118,91 @@ type ConfiguredProjectStatusEntry = {
   aliases: string[];
   statusParagraph: string | null;
 };
+
+type SupportFieldKey = keyof LeadProfile;
+type MeetingFieldKey = keyof MeetingProfile;
+
+type ConversationCaseAnalysis = {
+  ok: true;
+  case_type:
+    | "identity_request"
+    | "privacy_request"
+    | "project_status"
+    | "project_status_name_required"
+    | "support_with_us"
+    | "support_third_party"
+    | "support_ownership_required"
+    | "closed_support"
+    | "closed_meeting"
+    | "meeting_request"
+    | "sales_or_discovery"
+    | "general";
+  recommended_action:
+    | "answer_identity"
+    | "answer_privacy"
+    | "lookup_project_status"
+    | "ask_project_name"
+    | "ask_support_ownership"
+    | "collect_support_data"
+    | "register_support_ticket"
+    | "collect_meeting_data"
+    | "schedule_meeting_request"
+    | "reset_case_state"
+    | "continue_sales_discovery"
+    | "general_reply"
+    | "closed_case_notice";
+  support_topic: string | null;
+  support_ownership: SupportOwnership | null;
+  matched_project_name: string | null;
+  project_name_required: boolean;
+  support_closed: boolean;
+  meeting_closed: boolean;
+  reopen_signal: "support" | "meeting" | "general" | null;
+  lead_profile: LeadProfile;
+  meeting_profile: MeetingProfile;
+  support_missing_fields: SupportFieldKey[];
+  meeting_missing_lead_fields: SupportFieldKey[];
+  meeting_missing_fields: MeetingFieldKey[];
+  next_support_field: SupportFieldKey | null;
+  next_support_question: string | null;
+  next_meeting_field: SupportFieldKey | MeetingFieldKey | null;
+  next_meeting_question: string | null;
+  notes: string[];
+};
+
+const TurnAnalysisSchema = z.object({
+  case_type: z.enum([
+    "project_status",
+    "project_status_name_required",
+    "support_with_us",
+    "support_third_party",
+    "support_ownership_required",
+    "closed_support",
+    "closed_meeting",
+    "meeting_request",
+    "sales_or_discovery",
+    "general"
+  ]),
+  recommended_action: z.enum([
+    "lookup_project_status",
+    "ask_project_name",
+    "ask_support_ownership",
+    "collect_support_data",
+    "register_support_ticket",
+    "collect_meeting_data",
+    "schedule_meeting_request",
+    "reset_case_state",
+    "continue_sales_discovery",
+    "general_reply",
+    "closed_case_notice"
+  ]),
+  support_ownership: z.enum(["luxisoft", "third_party", "unknown"]),
+  matched_project_name: z.string().trim().min(1).max(120).nullable(),
+  rationale: z.string().trim().min(1).max(320),
+  next_question_goal: z.string().trim().min(1).max(220).nullable()
+});
+
+type TurnAnalysis = z.infer<typeof TurnAnalysisSchema>;
 
 const knowledgeCache = new Map<string, CachedKnowledge>();
 const conversations = new Map<string, ConversationState>();
@@ -1155,6 +1241,14 @@ function getMissingSupportFields(profile: LeadProfile) {
   return SUPPORT_REQUIRED_FIELDS.filter((field) => !sanitizeValue(profile[field], 220));
 }
 
+function resolveNextMeetingQuestion(nextMeetingField: SupportFieldKey | MeetingFieldKey | null) {
+  if (!nextMeetingField) return null;
+  if (nextMeetingField in LEAD_FIELD_QUESTIONS) {
+    return LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey];
+  }
+  return MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey] ?? null;
+}
+
 function updateMeetingProfileFromMessage(profile: MeetingProfile, message: string, lead: LeadProfile): MeetingProfile {
   const next: MeetingProfile = { ...profile };
   const text = String(message ?? "");
@@ -1203,6 +1297,665 @@ function getMissingMeetingFields(state: ConversationState) {
     missingLead,
     missingMeeting
   };
+}
+
+function cloneLeadProfile(profile: LeadProfile): LeadProfile {
+  return {
+    firstName: sanitizeValue(profile.firstName, 140),
+    lastName: sanitizeValue(profile.lastName, 140),
+    company: sanitizeValue(profile.company, 140),
+    email: sanitizeValue(profile.email, 140),
+    need: sanitizeValue(profile.need, 220)
+  };
+}
+
+function cloneMeetingProfile(profile: MeetingProfile): MeetingProfile {
+  return {
+    meetingDay: sanitizeValue(profile.meetingDay, 80),
+    meetingDate: sanitizeValue(profile.meetingDate, 80),
+    meetingTime: sanitizeValue(profile.meetingTime, 80),
+    meetingReason: sanitizeValue(profile.meetingReason, 220)
+  };
+}
+
+function recentUserMessages(state: ConversationState, limit = 6) {
+  return state.history
+    .filter((item) => item.role === "user")
+    .slice(-limit);
+}
+
+function recentAssistantMessages(state: ConversationState, limit = 3) {
+  return state.history
+    .filter((item) => item.role === "assistant")
+    .slice(-limit);
+}
+
+function assistantRecentlyAskedProjectName(state: ConversationState) {
+  return recentAssistantMessages(state, 2).some((item) =>
+    /(?:nombre\s+exacto\s+del\s+proyecto|nombre\s+del\s+proyecto\s+o\s+negocio)/i.test(item.text)
+  );
+}
+
+function findRecentSupportOwnership(state: ConversationState): SupportOwnership | null {
+  if (state.supportOwnership) return state.supportOwnership;
+
+  const recentMessages = recentUserMessages(state, 8).reverse();
+  for (const item of recentMessages) {
+    const detected = detectSupportOwnership(item.text);
+    if (detected) return detected;
+  }
+
+  return null;
+}
+
+function hasRecentSupportContext(state: ConversationState) {
+  if (state.supportOwnership || state.supportClosedAt || state.awaitingSupportOwnership || state.awaitingSupportTicketData) {
+    return true;
+  }
+
+  return recentUserMessages(state, 6).some((item) => hasSupportSignal(item.text));
+}
+
+function hasRecentMeetingContext(state: ConversationState) {
+  if (state.meetingClosedAt || state.awaitingMeetingData) return true;
+  if (sanitizeValue(state.meeting.meetingDate, 80) || sanitizeValue(state.meeting.meetingDay, 80)) {
+    return true;
+  }
+
+  return recentUserMessages(state, 6).some((item) => containsKeyword(item.text, MEETING_KEYWORDS));
+}
+
+function buildConversationCaseAnalysis(
+  state: ConversationState,
+  message: string,
+  projectKey: string
+): ConversationCaseAnalysis {
+  const leadProfile = cloneLeadProfile(state.lead);
+  const meetingProfile = cloneMeetingProfile(state.meeting);
+  const supportMissingFields = getMissingSupportFields(leadProfile);
+  const meetingMissingLeadFields = getMissingLeadFields(leadProfile);
+  const meetingMissingFields = MEETING_REQUIRED_FIELDS.filter(
+    (field) => !sanitizeValue(meetingProfile[field], 220)
+  );
+  const nextSupportField = supportMissingFields[0] ?? null;
+  const nextMeetingField = meetingMissingLeadFields[0] ?? meetingMissingFields[0] ?? null;
+  const normalizedMessage = normalizeText(message);
+  const matchedProjectName =
+    detectConfiguredProjectStatusInquiry(message, state, projectKey) ??
+    (assistantRecentlyAskedProjectName(state) ? findConfiguredProjectMention(message, projectKey) : null);
+  const projectNameRequired =
+    !matchedProjectName &&
+    (shouldAskConfiguredProjectStatusName(message, state, projectKey) ||
+      assistantRecentlyAskedProjectName(state));
+  const supportOwnership = detectSupportOwnership(message) ?? findRecentSupportOwnership(state);
+  const supportTopic = inferSupportTopic(leadProfile.need ?? message);
+  const reopenSignal = shouldReopenAfterSupport(message)
+    ? "support"
+    : shouldReopenAfterMeeting(message)
+      ? "meeting"
+      : /(?:nuevo|reiniciar|empezar\s+de\s+nuevo)/i.test(normalizedMessage)
+        ? "general"
+        : null;
+  const notes: string[] = [];
+
+  if (isAssistantIdentityRequest(message)) {
+    return {
+      ok: true,
+      case_type: "identity_request",
+      recommended_action: "answer_identity",
+      support_topic: supportTopic,
+      support_ownership: supportOwnership,
+      matched_project_name: matchedProjectName,
+      project_name_required: false,
+      support_closed: Boolean(state.supportClosedAt),
+      meeting_closed: Boolean(state.meetingClosedAt),
+      reopen_signal: reopenSignal,
+      lead_profile: leadProfile,
+      meeting_profile: meetingProfile,
+      support_missing_fields: supportMissingFields,
+      meeting_missing_lead_fields: meetingMissingLeadFields,
+      meeting_missing_fields: meetingMissingFields,
+      next_support_field: nextSupportField,
+      next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+      next_meeting_field: nextMeetingField,
+      next_meeting_question:
+        nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+          ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+          : nextMeetingField
+            ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+            : null,
+      notes
+    };
+  }
+
+  if (isAssistantPersonalInfoRequest(message)) {
+    return {
+      ok: true,
+      case_type: "privacy_request",
+      recommended_action: "answer_privacy",
+      support_topic: supportTopic,
+      support_ownership: supportOwnership,
+      matched_project_name: matchedProjectName,
+      project_name_required: false,
+      support_closed: Boolean(state.supportClosedAt),
+      meeting_closed: Boolean(state.meetingClosedAt),
+      reopen_signal: reopenSignal,
+      lead_profile: leadProfile,
+      meeting_profile: meetingProfile,
+      support_missing_fields: supportMissingFields,
+      meeting_missing_lead_fields: meetingMissingLeadFields,
+      meeting_missing_fields: meetingMissingFields,
+      next_support_field: nextSupportField,
+      next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+      next_meeting_field: nextMeetingField,
+      next_meeting_question:
+        nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+          ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+          : nextMeetingField
+            ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+            : null,
+      notes
+    };
+  }
+
+  if (matchedProjectName) {
+    notes.push(`Proyecto detectado: ${matchedProjectName}.`);
+    return {
+      ok: true,
+      case_type: "project_status",
+      recommended_action: "lookup_project_status",
+      support_topic: supportTopic,
+      support_ownership: supportOwnership,
+      matched_project_name: matchedProjectName,
+      project_name_required: false,
+      support_closed: Boolean(state.supportClosedAt),
+      meeting_closed: Boolean(state.meetingClosedAt),
+      reopen_signal: reopenSignal,
+      lead_profile: leadProfile,
+      meeting_profile: meetingProfile,
+      support_missing_fields: supportMissingFields,
+      meeting_missing_lead_fields: meetingMissingLeadFields,
+      meeting_missing_fields: meetingMissingFields,
+      next_support_field: nextSupportField,
+      next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+      next_meeting_field: nextMeetingField,
+      next_meeting_question:
+        nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+          ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+          : nextMeetingField
+            ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+            : null,
+      notes
+    };
+  }
+
+  if (projectNameRequired) {
+    notes.push("El usuario pide estado o informacion de proyecto sin nombre suficiente.");
+    return {
+      ok: true,
+      case_type: "project_status_name_required",
+      recommended_action: "ask_project_name",
+      support_topic: supportTopic,
+      support_ownership: supportOwnership,
+      matched_project_name: null,
+      project_name_required: true,
+      support_closed: Boolean(state.supportClosedAt),
+      meeting_closed: Boolean(state.meetingClosedAt),
+      reopen_signal: reopenSignal,
+      lead_profile: leadProfile,
+      meeting_profile: meetingProfile,
+      support_missing_fields: supportMissingFields,
+      meeting_missing_lead_fields: meetingMissingLeadFields,
+      meeting_missing_fields: meetingMissingFields,
+      next_support_field: nextSupportField,
+      next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+      next_meeting_field: nextMeetingField,
+      next_meeting_question:
+        nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+          ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+          : nextMeetingField
+            ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+            : null,
+      notes
+    };
+  }
+
+  const supportContext = hasSupportSignal(message) || hasRecentSupportContext(state) || Boolean(supportOwnership);
+  if (supportContext) {
+    if (reopenSignal && (state.supportClosedAt || state.meetingClosedAt)) {
+      notes.push("El usuario pidio iniciar un nuevo caso.");
+      return {
+        ok: true,
+        case_type: "general",
+        recommended_action: "reset_case_state",
+        support_topic: supportTopic,
+        support_ownership: supportOwnership,
+        matched_project_name: null,
+        project_name_required: false,
+        support_closed: Boolean(state.supportClosedAt),
+        meeting_closed: Boolean(state.meetingClosedAt),
+        reopen_signal: reopenSignal,
+        lead_profile: leadProfile,
+        meeting_profile: meetingProfile,
+        support_missing_fields: supportMissingFields,
+        meeting_missing_lead_fields: meetingMissingLeadFields,
+        meeting_missing_fields: meetingMissingFields,
+        next_support_field: nextSupportField,
+        next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+        next_meeting_field: nextMeetingField,
+        next_meeting_question:
+          nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+            ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+            : nextMeetingField
+              ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+              : null,
+        notes
+      };
+    }
+
+    if (state.supportClosedAt) {
+      return {
+        ok: true,
+        case_type: "closed_support",
+        recommended_action: "closed_case_notice",
+        support_topic: supportTopic,
+        support_ownership: supportOwnership,
+        matched_project_name: null,
+        project_name_required: false,
+        support_closed: true,
+        meeting_closed: Boolean(state.meetingClosedAt),
+        reopen_signal: reopenSignal,
+        lead_profile: leadProfile,
+        meeting_profile: meetingProfile,
+        support_missing_fields: supportMissingFields,
+        meeting_missing_lead_fields: meetingMissingLeadFields,
+        meeting_missing_fields: meetingMissingFields,
+        next_support_field: nextSupportField,
+        next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+        next_meeting_field: nextMeetingField,
+        next_meeting_question:
+          nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+            ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+            : nextMeetingField
+              ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+              : null,
+        notes
+      };
+    }
+
+    if (!supportOwnership) {
+      notes.push("Falta confirmar si el servicio fue con nosotros o con terceros.");
+      return {
+        ok: true,
+        case_type: "support_ownership_required",
+        recommended_action: "ask_support_ownership",
+        support_topic: supportTopic,
+        support_ownership: null,
+        matched_project_name: null,
+        project_name_required: false,
+        support_closed: false,
+        meeting_closed: Boolean(state.meetingClosedAt),
+        reopen_signal: reopenSignal,
+        lead_profile: leadProfile,
+        meeting_profile: meetingProfile,
+        support_missing_fields: supportMissingFields,
+        meeting_missing_lead_fields: meetingMissingLeadFields,
+        meeting_missing_fields: meetingMissingFields,
+        next_support_field: nextSupportField,
+        next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+        next_meeting_field: nextMeetingField,
+        next_meeting_question:
+          nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+            ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+            : nextMeetingField
+              ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+              : null,
+        notes
+      };
+    }
+
+    if (supportOwnership === "luxisoft") {
+      return {
+        ok: true,
+        case_type: "support_with_us",
+        recommended_action: supportMissingFields.length > 0 ? "collect_support_data" : "register_support_ticket",
+        support_topic: supportTopic,
+        support_ownership: supportOwnership,
+        matched_project_name: null,
+        project_name_required: false,
+        support_closed: false,
+        meeting_closed: Boolean(state.meetingClosedAt),
+        reopen_signal: reopenSignal,
+        lead_profile: leadProfile,
+        meeting_profile: meetingProfile,
+        support_missing_fields: supportMissingFields,
+        meeting_missing_lead_fields: meetingMissingLeadFields,
+        meeting_missing_fields: meetingMissingFields,
+        next_support_field: nextSupportField,
+        next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+        next_meeting_field: nextMeetingField,
+        next_meeting_question:
+          nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+            ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+            : nextMeetingField
+              ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+              : null,
+        notes
+      };
+    }
+
+    return {
+      ok: true,
+      case_type: "support_third_party",
+      recommended_action:
+        meetingMissingLeadFields.length > 0 || meetingMissingFields.length > 0
+          ? "collect_meeting_data"
+          : "schedule_meeting_request",
+      support_topic: supportTopic,
+      support_ownership: supportOwnership,
+      matched_project_name: null,
+      project_name_required: false,
+      support_closed: false,
+      meeting_closed: Boolean(state.meetingClosedAt),
+      reopen_signal: reopenSignal,
+      lead_profile: leadProfile,
+      meeting_profile: meetingProfile,
+      support_missing_fields: supportMissingFields,
+      meeting_missing_lead_fields: meetingMissingLeadFields,
+      meeting_missing_fields: meetingMissingFields,
+      next_support_field: nextSupportField,
+      next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+      next_meeting_field: nextMeetingField,
+      next_meeting_question:
+        nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+          ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+          : nextMeetingField
+            ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+            : null,
+      notes
+    };
+  }
+
+  const meetingContext = containsKeyword(message, MEETING_KEYWORDS) || hasRecentMeetingContext(state);
+  if (meetingContext) {
+    if (reopenSignal && state.meetingClosedAt) {
+      notes.push("El usuario pidio reiniciar una reunion o nueva gestion.");
+      return {
+        ok: true,
+        case_type: "meeting_request",
+        recommended_action: "reset_case_state",
+        support_topic: supportTopic,
+        support_ownership: supportOwnership,
+        matched_project_name: null,
+        project_name_required: false,
+        support_closed: Boolean(state.supportClosedAt),
+        meeting_closed: true,
+        reopen_signal: reopenSignal,
+        lead_profile: leadProfile,
+        meeting_profile: meetingProfile,
+        support_missing_fields: supportMissingFields,
+        meeting_missing_lead_fields: meetingMissingLeadFields,
+        meeting_missing_fields: meetingMissingFields,
+        next_support_field: nextSupportField,
+        next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+        next_meeting_field: nextMeetingField,
+        next_meeting_question:
+          nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+            ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+            : nextMeetingField
+              ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+              : null,
+        notes
+      };
+    }
+
+    if (state.meetingClosedAt) {
+      return {
+        ok: true,
+        case_type: "closed_meeting",
+        recommended_action: "closed_case_notice",
+        support_topic: supportTopic,
+        support_ownership: supportOwnership,
+        matched_project_name: null,
+        project_name_required: false,
+        support_closed: Boolean(state.supportClosedAt),
+        meeting_closed: true,
+        reopen_signal: reopenSignal,
+        lead_profile: leadProfile,
+        meeting_profile: meetingProfile,
+        support_missing_fields: supportMissingFields,
+        meeting_missing_lead_fields: meetingMissingLeadFields,
+        meeting_missing_fields: meetingMissingFields,
+        next_support_field: nextSupportField,
+        next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+        next_meeting_field: nextMeetingField,
+        next_meeting_question:
+          nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+            ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+            : nextMeetingField
+              ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+              : null,
+        notes
+      };
+    }
+
+    return {
+      ok: true,
+      case_type: "meeting_request",
+      recommended_action:
+        meetingMissingLeadFields.length > 0 || meetingMissingFields.length > 0
+          ? "collect_meeting_data"
+          : "schedule_meeting_request",
+      support_topic: supportTopic,
+      support_ownership: supportOwnership,
+      matched_project_name: null,
+      project_name_required: false,
+      support_closed: Boolean(state.supportClosedAt),
+      meeting_closed: false,
+      reopen_signal: reopenSignal,
+      lead_profile: leadProfile,
+      meeting_profile: meetingProfile,
+      support_missing_fields: supportMissingFields,
+      meeting_missing_lead_fields: meetingMissingLeadFields,
+      meeting_missing_fields: meetingMissingFields,
+      next_support_field: nextSupportField,
+      next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+      next_meeting_field: nextMeetingField,
+      next_meeting_question:
+        nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+          ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+          : nextMeetingField
+            ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+            : null,
+      notes
+    };
+  }
+
+  if (state.supportClosedAt && !reopenSignal) {
+    notes.push("Existe un ticket cerrado y el mensaje no pide reiniciarlo.");
+    return {
+      ok: true,
+      case_type: "closed_support",
+      recommended_action: "closed_case_notice",
+      support_topic: supportTopic,
+      support_ownership: supportOwnership,
+      matched_project_name: null,
+      project_name_required: false,
+      support_closed: true,
+      meeting_closed: Boolean(state.meetingClosedAt),
+      reopen_signal: reopenSignal,
+      lead_profile: leadProfile,
+      meeting_profile: meetingProfile,
+      support_missing_fields: supportMissingFields,
+      meeting_missing_lead_fields: meetingMissingLeadFields,
+      meeting_missing_fields: meetingMissingFields,
+      next_support_field: nextSupportField,
+      next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+      next_meeting_field: nextMeetingField,
+      next_meeting_question:
+        nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+          ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+          : nextMeetingField
+            ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+            : null,
+      notes
+    };
+  }
+
+  if (state.meetingClosedAt && !reopenSignal) {
+    notes.push("Existe una reunion cerrada y el mensaje no pide reiniciarla.");
+    return {
+      ok: true,
+      case_type: "closed_meeting",
+      recommended_action: "closed_case_notice",
+      support_topic: supportTopic,
+      support_ownership: supportOwnership,
+      matched_project_name: null,
+      project_name_required: false,
+      support_closed: Boolean(state.supportClosedAt),
+      meeting_closed: true,
+      reopen_signal: reopenSignal,
+      lead_profile: leadProfile,
+      meeting_profile: meetingProfile,
+      support_missing_fields: supportMissingFields,
+      meeting_missing_lead_fields: meetingMissingLeadFields,
+      meeting_missing_fields: meetingMissingFields,
+      next_support_field: nextSupportField,
+      next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+      next_meeting_field: nextMeetingField,
+      next_meeting_question:
+        nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+          ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+          : nextMeetingField
+            ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+            : null,
+      notes
+    };
+  }
+
+  if (hasNeedSignalInMessage(message) || assistantMessageCount(state) === 0 || sanitizeValue(leadProfile.need, 220)) {
+    return {
+      ok: true,
+      case_type: "sales_or_discovery",
+      recommended_action: "continue_sales_discovery",
+      support_topic: supportTopic,
+      support_ownership: supportOwnership,
+      matched_project_name: null,
+      project_name_required: false,
+      support_closed: Boolean(state.supportClosedAt),
+      meeting_closed: Boolean(state.meetingClosedAt),
+      reopen_signal: reopenSignal,
+      lead_profile: leadProfile,
+      meeting_profile: meetingProfile,
+      support_missing_fields: supportMissingFields,
+      meeting_missing_lead_fields: meetingMissingLeadFields,
+      meeting_missing_fields: meetingMissingFields,
+      next_support_field: nextSupportField,
+      next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+      next_meeting_field: nextMeetingField,
+      next_meeting_question:
+        nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+          ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+          : nextMeetingField
+            ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+            : null,
+      notes
+    };
+  }
+
+  return {
+    ok: true,
+    case_type: "general",
+    recommended_action: "general_reply",
+    support_topic: supportTopic,
+    support_ownership: supportOwnership,
+    matched_project_name: null,
+    project_name_required: false,
+    support_closed: Boolean(state.supportClosedAt),
+    meeting_closed: Boolean(state.meetingClosedAt),
+    reopen_signal: reopenSignal,
+    lead_profile: leadProfile,
+    meeting_profile: meetingProfile,
+    support_missing_fields: supportMissingFields,
+    meeting_missing_lead_fields: meetingMissingLeadFields,
+    meeting_missing_fields: meetingMissingFields,
+    next_support_field: nextSupportField,
+    next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+    next_meeting_field: nextMeetingField,
+    next_meeting_question:
+      nextMeetingField && nextMeetingField in LEAD_FIELD_QUESTIONS
+        ? LEAD_FIELD_QUESTIONS[nextMeetingField as SupportFieldKey]
+        : nextMeetingField
+          ? MEETING_FIELD_QUESTIONS[nextMeetingField as MeetingFieldKey]
+          : null,
+    notes
+  };
+}
+
+function buildConversationStateSummary(state: ConversationState, message: string, projectKey: string) {
+  const leadProfile = cloneLeadProfile(state.lead);
+  const meetingProfile = cloneMeetingProfile(state.meeting);
+  const supportMissingFields = getMissingSupportFields(leadProfile);
+  const meetingMissingLeadFields = getMissingLeadFields(leadProfile);
+  const meetingMissingFields = MEETING_REQUIRED_FIELDS.filter(
+    (field) => !sanitizeValue(meetingProfile[field], 220)
+  );
+  const nextSupportField = supportMissingFields[0] ?? null;
+  const nextMeetingField = meetingMissingLeadFields[0] ?? meetingMissingFields[0] ?? null;
+  const normalizedMessage = normalizeText(message);
+  const matchedProjectName = detectConfiguredProjectStatusInquiry(message, state, projectKey);
+  const configuredProjectNames = loadConfiguredProjectStatusEntries(projectKey).map((entry) => entry.name);
+  const supportOwnershipHint = detectSupportOwnership(message) ?? findRecentSupportOwnership(state);
+  const reopenSignal = shouldReopenAfterSupport(message)
+    ? "support"
+    : shouldReopenAfterMeeting(message)
+      ? "meeting"
+      : /(?:nuevo|reiniciar|empezar\s+de\s+nuevo)/i.test(normalizedMessage)
+        ? "general"
+        : null;
+  const snapshot = {
+    project_key: state.projectKey,
+    project_confirmed: state.projectConfirmed,
+    current_user_message: sanitizeValue(message, 320),
+    configured_project_names: configuredProjectNames,
+    support_topic: state.supportTopic,
+    support_ownership: state.supportOwnership,
+    awaiting_support_ownership: state.awaitingSupportOwnership,
+    awaiting_support_ticket_data: state.awaitingSupportTicketData,
+    awaiting_meeting_data: state.awaitingMeetingData,
+    awaiting_project_status_name:
+      state.awaitingProjectStatusName || assistantRecentlyAskedProjectName(state),
+    support_closed_at: state.supportClosedAt,
+    meeting_closed_at: state.meetingClosedAt,
+    lead_profile: leadProfile,
+    meeting_profile: meetingProfile,
+    support_missing_fields: supportMissingFields,
+    next_support_field: nextSupportField,
+    next_support_question: nextSupportField ? LEAD_FIELD_QUESTIONS[nextSupportField] : null,
+    meeting_missing_lead_fields: meetingMissingLeadFields,
+    meeting_missing_fields: meetingMissingFields,
+    next_meeting_field: nextMeetingField,
+    next_meeting_question: resolveNextMeetingQuestion(nextMeetingField),
+    conversation_project_hint: findConversationProjectHint(state, projectKey),
+    matched_project_name_in_message: matchedProjectName,
+    should_ask_project_name:
+      !matchedProjectName && shouldAskConfiguredProjectStatusName(message, state, projectKey),
+    message_signals: {
+      project_status_signal: hasConfiguredProjectStatusSignal(normalizedMessage),
+      project_info_signal: hasConfiguredProjectInfoSignal(normalizedMessage),
+      project_ongoing_signal: hasConfiguredProjectOngoingSignal(normalizedMessage),
+      generic_project_reference: hasGenericConfiguredProjectReference(normalizedMessage),
+      support_signal: hasSupportSignal(message),
+      meeting_signal: containsKeyword(message, MEETING_KEYWORDS),
+      need_signal: hasNeedSignalInMessage(message),
+      support_ownership_hint: supportOwnershipHint,
+      reopen_signal: reopenSignal
+    },
+    recent_user_messages: recentUserMessages(state, 6).map((item) => item.text),
+    recent_assistant_messages: recentAssistantMessages(state, 4).map((item) => item.text)
+  };
+
+  return JSON.stringify(snapshot, null, 2);
 }
 
 function assistantMessageCount(state: ConversationState) {
@@ -2057,12 +2810,72 @@ function buildProjectAgentHistoryItems(history: ConversationState["history"]): A
     .map((item) => (item.role === "assistant" ? assistant(item.text) : user(item.text)));
 }
 
+function buildProjectAgentTurnAnalysisInstructions(input: {
+  projectKey: string;
+  conversationStateSummary: string;
+}) {
+  return [
+    `Analiza el turno actual del proyecto ${input.projectKey}.`,
+    "Debes clasificar el caso conversacional actual y devolver solo un objeto estructurado segun el esquema indicado.",
+    "La clasificacion debe salir del modelo, no de herramientas externas.",
+    "Prioriza seguimiento de proyecto sobre venta nueva cuando el mensaje suene a trabajo ya existente: 'informacion acerca de la tienda', 'como va el proyecto', 'la tienda que estan realizando', 'Pandapan', 'el ecommerce que hicieron'.",
+    "Prioriza soporte sobre venta nueva cuando el mensaje reporta problema, error o ayuda sobre algo que hicimos nosotros.",
+    "Si el mensaje contiene palabras como problema, error, falla, soporte o ayuda sobre una tienda, app, web o servicio existente, no lo clasifiques como venta nueva salvo que el usuario hable claramente de crear algo nuevo.",
+    "Si el usuario pregunta por estado o informacion de un proyecto sin nombre suficiente, usa case_type=project_status_name_required y recommended_action=ask_project_name.",
+    "Si el usuario menciona un proyecto conocido o el estado de un proyecto existente, usa case_type=project_status y recommended_action=lookup_project_status.",
+    "Si el usuario solicita soporte y aun no esta claro si fue con nosotros o con otro proveedor, usa case_type=support_ownership_required y recommended_action=ask_support_ownership.",
+    "Si el soporte es de algo hecho con nosotros, usa case_type=support_with_us y recommended_action=collect_support_data o register_support_ticket segun los datos faltantes.",
+    "Si el soporte es de terceros, usa case_type=support_third_party y recommended_action=collect_meeting_data o schedule_meeting_request segun corresponda.",
+    "Si ya existe un ticket o reunion cerrada y el usuario no pidio reiniciar, usa closed_case_notice.",
+    "Si el usuario pide abrir un caso nuevo despues de un cierre, usa recommended_action=reset_case_state.",
+    "Para soporte_ownership usa 'luxisoft' solo cuando el mensaje o el estado indiquen claramente que fue con nosotros; usa 'third_party' cuando indique otro proveedor; de lo contrario usa 'unknown'.",
+    "next_question_goal debe ser una descripcion corta del siguiente dato a pedir solo si aplica. Si no aplica, usa null.",
+    "Ejemplos: 'Tengo un problema con la tienda' -> support_ownership_required / ask_support_ownership.",
+    "Ejemplos: 'Tengo un problema con la tienda que hicieron ustedes' -> support_with_us / collect_support_data.",
+    "Ejemplos: 'Necesito informacion acerca de la tienda' -> project_status_name_required / ask_project_name.",
+    "Ejemplos: 'Necesito informacion del proyecto Pandapan' -> project_status / lookup_project_status.",
+    "RESUMEN_DEL_ESTADO_CONVERSACIONAL_ACTUAL:",
+    input.conversationStateSummary
+  ].join("\n\n");
+}
+
+function buildProjectAgentObjectiveFromAnalysis(analysis: TurnAnalysis) {
+  switch (analysis.recommended_action) {
+    case "lookup_project_status":
+      return analysis.matched_project_name
+        ? `Seguimiento de proyecto detectado para ${analysis.matched_project_name}. Usa lookup_project_status antes de responder.`
+        : "Seguimiento de proyecto detectado. Usa lookup_project_status antes de responder.";
+    case "ask_project_name":
+      return "Consulta de seguimiento de proyecto sin nombre suficiente. Pide solo el nombre del proyecto o negocio.";
+    case "ask_support_ownership":
+      return "Caso de soporte detectado. Pregunta solo si fue con nosotros o con otro proveedor.";
+    case "collect_support_data":
+      return "Caso de soporte de algo hecho por nuestro equipo. Pide solo el siguiente dato faltante y no enumeres toda la lista.";
+    case "register_support_ticket":
+      return "Ya hay datos suficientes para soporte. Usa register_support_ticket antes de confirmar el registro.";
+    case "collect_meeting_data":
+      return "Caso orientado a reunion. Pide solo el siguiente dato faltante para agendar.";
+    case "schedule_meeting_request":
+      return "Ya hay datos suficientes para reunion. Usa schedule_meeting_request antes de confirmar el agendamiento.";
+    case "reset_case_state":
+      return "El usuario pidio iniciar un caso nuevo. Usa reset_case_state y luego continua con el nuevo caso.";
+    case "closed_case_notice":
+      return "Hay un caso ya cerrado y no se pidio reinicio claro. No dupliques gestiones; informa el cierre y ofrece abrir uno nuevo solo si el usuario lo pide.";
+    case "continue_sales_discovery":
+      return "Es una oportunidad comercial nueva. Responde segun el servicio y avanza con una sola pregunta puntual.";
+    default:
+      return "Analiza el caso actual y responde segun el escenario real de la conversacion usando las tools disponibles antes de confirmar acciones.";
+  }
+}
+
 function buildProjectAgentInstructions(input: {
   projectPrompt: string;
   projectKey: string;
   objective?: string;
   replyPlan: ReplyPlan;
   sources: string[];
+  conversationStateSummary: string;
+  turnAnalysis?: TurnAnalysis | null;
 }) {
   return [
     input.projectPrompt || `Eres el agente del proyecto ${input.projectKey}.`,
@@ -2086,6 +2899,25 @@ function buildProjectAgentInstructions(input: {
     "Si necesitas mas contexto del sitio, usa los tools disponibles antes de responder.",
     "Si compartes enlaces, usa URL completa oficial.",
     "Si el usuario pide contacto humano, ofrece agendar reunion con especialista.",
+    "El analisis del caso debe ocurrir dentro del agente. Decide tu misma si corresponde soporte, seguimiento de proyecto, reunion, venta, reinicio de caso o respuesta general usando el mensaje actual, el historial y RESUMEN_DEL_ESTADO_CONVERSACIONAL_ACTUAL.",
+    "No dependas de una tool central de clasificacion para decidir el caso. Usa las tools para consultar informacion, extraer datos y ejecutar acciones cuando haga falta.",
+    "Prioriza seguimiento de proyecto sobre venta nueva cuando el mensaje suene a trabajo ya existente: por ejemplo 'informacion acerca de la tienda', 'como va el proyecto', 'la tienda que estan realizando', 'Pandapan', 'el ecommerce que hicieron'.",
+    "Prioriza soporte sobre venta nueva cuando el mensaje reporta problema, error o ayuda sobre algo que hicimos nosotros.",
+    "Si el usuario pregunta por el estado o informacion de un proyecto y no menciona un nombre suficiente, pide primero el nombre del proyecto o negocio antes de consultar.",
+    "Si should_ask_project_name es true en el estado conversacional, pide directamente el nombre del proyecto o negocio en una sola pregunta y no abras discovery comercial en paralelo.",
+    "Si necesitas identificar mejor el servicio o perfilar una oportunidad comercial, usa classify_service_intent, extract_prospect_profile y next_intake_question.",
+    "Si el usuario solicita soporte de un servicio o producto hecho por nuestro equipo y aun no esta claro, pregunta solo si fue con nosotros o con otro proveedor.",
+    "Cuando hables de propiedad del servicio, prefiere 'con nosotros' y 'nuestro equipo' en vez de repetir el nombre comercial.",
+    "No pidas datos que ya esten presentes en lead_profile o meeting_profile dentro del estado conversacional actual.",
+    "Cuando falten datos para soporte o reunion, pide solo el siguiente dato faltante y evita enumerar toda la lista en cada turno.",
+    "Si ya tienes los datos requeridos para soporte, llama register_support_ticket antes de confirmar el registro.",
+    "Si register_support_ticket devuelve campos faltantes, pide solo el siguiente dato faltante.",
+    "Si ya tienes los datos requeridos para reunion, llama schedule_meeting_request antes de confirmar el agendamiento.",
+    "Si schedule_meeting_request devuelve campos faltantes, pide solo el siguiente dato faltante.",
+    "Si el caso ya esta cerrado y el usuario no pidio reiniciarlo, evita duplicar tickets o reuniones. Solo usa reset_case_state si el usuario pide abrir un caso nuevo.",
+    input.turnAnalysis ? `ANALISIS_IA_PREVIO_DEL_TURNO: ${JSON.stringify(input.turnAnalysis)}` : null,
+    "RESUMEN_DEL_ESTADO_CONVERSACIONAL_ACTUAL:",
+    input.conversationStateSummary,
     "FUENTES_OFICIALES_DISPONIBLES:",
     input.sources.length ? input.sources.map((item) => `- ${item}`).join("\n") : "- Sin fuentes configuradas."
   ]
@@ -2127,6 +2959,40 @@ function trackProjectAgentRunUsage(result: any, fallbackModel: string) {
       usage: rawResponse?.usage ?? null
     });
   }
+}
+
+async function runProjectAgentTurnAnalysis(input: {
+  projectKey: string;
+  model: string;
+  history: ConversationState["history"];
+  conversationStateSummary: string;
+}) {
+  const runner = getProjectAgentRunner();
+  if (!runner) {
+    throw new Error("openai_not_configured");
+  }
+
+  const analysisAgent = new Agent({
+    name: `${input.projectKey}_turn_analysis`,
+    instructions: buildProjectAgentTurnAnalysisInstructions({
+      projectKey: input.projectKey,
+      conversationStateSummary: input.conversationStateSummary
+    }),
+    model: input.model,
+    outputType: TurnAnalysisSchema,
+    modelSettings: {
+      parallelToolCalls: false,
+      text: { verbosity: "low" }
+    },
+    tools: []
+  });
+
+  const result = await runner.run(analysisAgent, buildProjectAgentHistoryItems(input.history), {
+    maxTurns: 1
+  });
+
+  trackProjectAgentRunUsage(result, input.model);
+  return TurnAnalysisSchema.parse(result.finalOutput);
 }
 
 function detectProjectByText(text: string) {
@@ -2258,6 +3124,7 @@ async function runProjectAgent(input: {
   projectKey: string;
   phoneE164: string;
   userMessage: string;
+  state: ConversationState;
   history: ConversationState["history"];
   objective?: string;
   replyPlan: ReplyPlan;
@@ -2279,6 +3146,11 @@ async function runProjectAgent(input: {
   }
 
   const projectSources = resolveWebSources(project.project_key, project.prompt);
+  const conversationStateSummary = buildConversationStateSummary(
+    input.state,
+    input.userMessage,
+    project.project_key
+  );
 
   const runtimeContext: AgentScriptRuntimeContext = {
     projectKey: project.project_key,
@@ -2286,16 +3158,44 @@ async function runProjectAgent(input: {
     userMessage: input.userMessage,
     history: input.history.map((item) => ({ role: item.role, text: item.text })),
     sources: projectSources,
+    conversationState: JSON.parse(conversationStateSummary),
     searchKnowledge: (query, options) =>
       searchKnowledge({
         projectKey: project.project_key,
         query,
         sources: projectSources,
         sourceUrl: options?.sourceUrl
+      }),
+    registerSupportTicket: async (payload) =>
+      registerSupportTicketFromAgent({
+        state: input.state,
+        phoneE164: input.phoneE164,
+        projectKey: project.project_key,
+        payload
+      }),
+    scheduleMeetingRequest: async (payload) =>
+      scheduleMeetingRequestFromAgent({
+        state: input.state,
+        phoneE164: input.phoneE164,
+        projectKey: project.project_key,
+        payload
+      }),
+    resetCaseState: async (payload) =>
+      resetConversationCaseState({
+        state: input.state,
+        payload
       })
   };
 
   const model = env.openaiProjectModel;
+  const turnAnalysis = await runProjectAgentTurnAnalysis({
+    projectKey: project.project_key,
+    model,
+    history: input.history,
+    conversationStateSummary
+  });
+  const analysisObjective = buildProjectAgentObjectiveFromAnalysis(turnAnalysis);
+  const effectiveObjective = [analysisObjective, input.objective].filter(Boolean).join(" ");
   const toolsUsed = new Set<string>();
   const runner = getProjectAgentRunner();
   if (!runner) {
@@ -2306,9 +3206,11 @@ async function runProjectAgent(input: {
     instructions: buildProjectAgentInstructions({
       projectPrompt: project.prompt,
       projectKey: project.project_key,
-      objective: input.objective,
+      objective: effectiveObjective,
       replyPlan: input.replyPlan,
-      sources: projectSources
+      sources: projectSources,
+      conversationStateSummary,
+      turnAnalysis
     }),
     model,
     modelSettings: {
@@ -2393,6 +3295,266 @@ async function notifyHumanMeeting(input: {
       error: String(err?.message ?? "human_meeting_notify_failed")
     };
   }
+}
+
+function readToolTextField(
+  input: Record<string, unknown> | null | undefined,
+  keys: string[],
+  maxLength = 220
+) {
+  for (const key of keys) {
+    const rawValue = input?.[key];
+    const value = sanitizeValue(typeof rawValue === "string" ? rawValue : null, maxLength);
+    if (value) return value;
+  }
+  return null;
+}
+
+function mergeLeadProfileFromToolInput(state: ConversationState, input: Record<string, unknown> | null | undefined) {
+  const fullName = readToolTextField(input, ["full_name", "contact_name", "name"], 180);
+  if (fullName && looksLikePersonName(fullName)) {
+    const updated = applyPersonNameToLead(state.lead, fullName);
+    state.lead.firstName = updated.firstName;
+    state.lead.lastName = updated.lastName;
+  }
+
+  const firstName = readToolTextField(input, ["first_name", "firstName"], 120);
+  const lastName = readToolTextField(input, ["last_name", "lastName"], 120);
+  const company = readToolTextField(input, ["company", "business_name"], 140);
+  const email = extractEmail(readToolTextField(input, ["email", "contact_email"], 180) ?? "");
+  const summary = readToolTextField(input, ["summary", "need", "request_detail", "reason"], 220);
+
+  if (firstName && looksLikePromptedNamePart(firstName)) {
+    state.lead.firstName = titleCase(firstName);
+  }
+  if (lastName && looksLikePromptedNamePart(lastName)) {
+    state.lead.lastName = titleCase(lastName);
+  }
+  if (company) {
+    state.lead.company = company;
+  }
+  if (email) {
+    state.lead.email = email;
+  }
+  if (summary) {
+    state.lead.need = summary;
+  }
+}
+
+function mergeMeetingProfileFromToolInput(state: ConversationState, input: Record<string, unknown> | null | undefined) {
+  const meetingDay = readToolTextField(input, ["meeting_day", "day"], 80);
+  const meetingDate = readToolTextField(input, ["meeting_date", "date"], 80);
+  const meetingTime = readToolTextField(input, ["meeting_time", "time"], 80);
+  const meetingReason = readToolTextField(input, ["meeting_reason", "reason"], 220);
+
+  if (meetingDay) state.meeting.meetingDay = meetingDay;
+  if (meetingDate) state.meeting.meetingDate = meetingDate;
+  if (meetingTime) state.meeting.meetingTime = meetingTime;
+  if (meetingReason) state.meeting.meetingReason = meetingReason;
+
+  if (!sanitizeValue(state.meeting.meetingReason, 220)) {
+    state.meeting.meetingReason = sanitizeValue(state.lead.need, 220);
+  }
+}
+
+async function registerSupportTicketFromAgent(input: {
+  state: ConversationState;
+  phoneE164: string;
+  projectKey: string;
+  payload?: Record<string, unknown>;
+}) {
+  if (input.state.supportClosedAt) {
+    return {
+      ok: false,
+      error: "support_ticket_already_closed",
+      closed_at: input.state.supportClosedAt
+    };
+  }
+
+  mergeLeadProfileFromToolInput(input.state, input.payload);
+  const topic = readToolTextField(input.payload, ["topic"], 80) ?? input.state.supportTopic ?? inferSupportTopic(input.state.lead.need ?? "");
+  input.state.supportTopic = topic;
+
+  const missing = getMissingSupportFields(input.state.lead);
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      error: "missing_fields",
+      missing_fields: missing,
+      next_field: missing[0] ?? null,
+      next_question: missing[0] ? LEAD_FIELD_QUESTIONS[missing[0]] : null
+    };
+  }
+
+  const ticket = buildSupportTicketSummary(input.state, input.phoneE164);
+  const mail = await sendSupportTicketEmail({
+    projectKey: input.projectKey,
+    userPhone: ticket.userPhone,
+    contactName: ticket.contactName,
+    contactEmail: ticket.contactEmail,
+    company: ticket.company,
+    topic: ticket.topic,
+    summary: ticket.summary,
+    transcript: ticket.transcript
+  });
+  if (!mail.sent) {
+    trackOperationalError();
+  }
+
+  input.state.awaitingSupportOwnership = false;
+  input.state.awaitingSupportTicketData = false;
+  input.state.awaitingMeetingData = false;
+  input.state.pendingLeadField = null;
+  input.state.supportOwnership = "luxisoft";
+  input.state.supportClosedAt = mail.sent ? Date.now() : null;
+
+  if (mail.sent) {
+    trackSupportTicketCreated();
+  }
+
+  return {
+    ok: true,
+    sent: mail.sent,
+    closed: mail.sent,
+    support_topic: ticket.topic,
+    contact_name: ticket.contactName,
+    company: ticket.company,
+    email: ticket.contactEmail,
+    summary: ticket.summary,
+    reply_hint: mail.sent
+      ? "Perfecto, ya registre tu ticket de soporte y lo envie a nuestro equipo. Te daremos respuesta lo mas pronto posible."
+      : "Registre tu solicitud, pero fallo el envio del ticket en este momento. Intenta nuevamente en unos minutos."
+  };
+}
+
+async function scheduleMeetingRequestFromAgent(input: {
+  state: ConversationState;
+  phoneE164: string;
+  projectKey: string;
+  payload?: Record<string, unknown>;
+}) {
+  if (input.state.meetingClosedAt) {
+    return {
+      ok: false,
+      error: "meeting_request_already_closed",
+      closed_at: input.state.meetingClosedAt
+    };
+  }
+
+  mergeLeadProfileFromToolInput(input.state, input.payload);
+  mergeMeetingProfileFromToolInput(input.state, input.payload);
+
+  const missing = getMissingMeetingFields(input.state);
+  if (missing.missingLead.length > 0 || missing.missingMeeting.length > 0) {
+    const nextLead = missing.missingLead[0] ?? null;
+    const nextMeeting = missing.missingMeeting[0] ?? null;
+    return {
+      ok: false,
+      error: "missing_fields",
+      missing_lead_fields: missing.missingLead,
+      missing_meeting_fields: missing.missingMeeting,
+      next_field: nextLead ?? nextMeeting,
+      next_question: nextLead
+        ? LEAD_FIELD_QUESTIONS[nextLead]
+        : nextMeeting
+          ? MEETING_FIELD_QUESTIONS[nextMeeting]
+          : null
+    };
+  }
+
+  const transfer = await notifyHumanMeeting({
+    projectKey: input.projectKey,
+    phoneE164: input.phoneE164,
+    summary: buildMeetingSummary(input.state, input.phoneE164)
+  });
+
+  const quoteEmail = await sendMeetingQuoteEmail({
+    projectKey: input.projectKey,
+    userPhone: input.phoneE164,
+    contactName: `${input.state.lead.firstName ?? ""} ${input.state.lead.lastName ?? ""}`.trim(),
+    contactEmail: input.state.lead.email ?? "",
+    company: input.state.lead.company ?? "",
+    meetingDay: input.state.meeting.meetingDay ?? "",
+    meetingDate: input.state.meeting.meetingDate ?? "",
+    meetingTime: input.state.meeting.meetingTime,
+    reason: input.state.meeting.meetingReason ?? input.state.lead.need ?? "",
+    notifiedHuman: transfer.sent
+  });
+  if (!quoteEmail.sent) {
+    trackOperationalError();
+  }
+
+  input.state.awaitingMeetingData = false;
+  input.state.awaitingSupportOwnership = false;
+  input.state.awaitingSupportTicketData = false;
+  input.state.pendingLeadField = null;
+  input.state.meetingClosedAt = transfer.sent ? Date.now() : null;
+
+  trackMeetingScheduled({
+    projectKey: input.projectKey,
+    userPhone: input.phoneE164,
+    contactName: `${input.state.lead.firstName ?? ""} ${input.state.lead.lastName ?? ""}`.trim(),
+    contactEmail: input.state.lead.email ?? "",
+    company: input.state.lead.company ?? "",
+    meetingDay: input.state.meeting.meetingDay ?? "",
+    meetingDate: input.state.meeting.meetingDate ?? "",
+    meetingTime: input.state.meeting.meetingTime,
+    reason: input.state.meeting.meetingReason ?? input.state.lead.need ?? "",
+    notifiedHuman: transfer.sent
+  });
+
+  return {
+    ok: true,
+    sent: transfer.sent,
+    notified_human: transfer.sent,
+    email_sent: quoteEmail.sent,
+    closed: transfer.sent,
+    reply_hint: transfer.sent
+      ? "Perfecto, ya agende tu solicitud de reunion con especialista. Te contactaran con los datos registrados. Con esto dejamos cerrada esta gestion por aqui."
+      : "Registre tu solicitud, pero fallo el envio al agente humano en este momento. Intenta de nuevo en unos minutos."
+  };
+}
+
+async function resetConversationCaseState(input: {
+  state: ConversationState;
+  payload?: Record<string, unknown>;
+}) {
+  const target = readToolTextField(input.payload, ["target"], 40) ?? "all";
+  const keepContactData = String(input.payload?.keep_contact_data ?? "true").toLowerCase() !== "false";
+
+  if (target === "support" || target === "all") {
+    input.state.awaitingSupportOwnership = false;
+    input.state.awaitingSupportTicketData = false;
+    input.state.supportOwnership = null;
+    input.state.supportClosedAt = null;
+    input.state.supportTopic = null;
+  }
+
+  if (target === "meeting" || target === "all") {
+    input.state.awaitingMeetingData = false;
+    input.state.meetingClosedAt = null;
+    input.state.meeting = emptyMeetingProfile();
+  }
+
+  input.state.awaitingProjectStatusName = false;
+  input.state.pendingLeadField = null;
+  input.state.lead.need = null;
+
+  if (!keepContactData) {
+    input.state.lead = emptyLeadProfile();
+  }
+
+  return {
+    ok: true,
+    target,
+    keep_contact_data: keepContactData,
+    state: {
+      lead: cloneLeadProfile(input.state.lead),
+      meeting: cloneMeetingProfile(input.state.meeting),
+      support_closed_at: input.state.supportClosedAt,
+      meeting_closed_at: input.state.meetingClosedAt
+    }
+  };
 }
 
 async function runSupportTicketQualification(input: {
@@ -2605,350 +3767,22 @@ export async function handleProjectAgentMessage(input: {
   }
   state.meeting = updateMeetingProfileFromMessage(state.meeting, message, state.lead);
   const replyPlan = buildReplyPlan(state, message);
-  const configuredProjectStatusInquiry = detectConfiguredProjectStatusInquiry(
-    message,
-    state,
-    state.projectKey || env.defaultProject
-  );
-  const shouldAskProjectStatusName = shouldAskConfiguredProjectStatusName(
-    message,
-    state,
-    state.projectKey || env.defaultProject
-  );
 
   try {
-    if (configuredProjectStatusInquiry) {
-      state.pendingLeadField = null;
-      state.awaitingProjectStatusName = false;
-      const reply = finalizeAssistantReply(
-        state,
-        formatConfiguredProjectStatusReply(configuredProjectStatusInquiry, state.projectKey || env.defaultProject),
-        replyPlan
-      );
-      appendHistory(state, "assistant", reply);
-      return {
-        handled: true,
-        projectKey: state.projectKey,
-        reply,
-        escalated: false,
-        escalationSent: false
-      };
-    }
-
-    if (state.awaitingProjectStatusName) {
-      state.pendingLeadField = null;
-      const reply = finalizeAssistantReply(state, formatConfiguredProjectNameRetry(), replyPlan);
-      appendHistory(state, "assistant", reply);
-      return {
-        handled: true,
-        projectKey: state.projectKey,
-        reply,
-        escalated: false,
-        escalationSent: false
-      };
-    }
-
-    if (shouldAskProjectStatusName) {
-      state.pendingLeadField = null;
-      state.awaitingProjectStatusName = true;
-      const reply = finalizeAssistantReply(state, formatConfiguredProjectNameQuestion(), replyPlan);
-      appendHistory(state, "assistant", reply);
-      return {
-        handled: true,
-        projectKey: state.projectKey,
-        reply,
-        escalated: false,
-        escalationSent: false
-      };
-    }
-
-    if (state.supportClosedAt) {
-      state.pendingLeadField = null;
-      if (shouldReopenAfterSupport(message)) {
-        state.supportClosedAt = null;
-        state.awaitingSupportOwnership = false;
-        state.supportOwnership = null;
-        state.awaitingSupportTicketData = false;
-        state.supportTopic = null;
-        state.lead.need = null;
-        state.pendingLeadField = null;
-        const reply = finalizeAssistantReply(
-          state,
-          "Perfecto, abrimos un nuevo ticket. Cuentame brevemente que necesitas y lo registro.",
-          replyPlan
-        );
-        appendHistory(state, "assistant", reply);
-        return {
-          handled: true,
-          projectKey: state.projectKey,
-          reply,
-          escalated: false,
-          escalationSent: false
-        };
-      }
-
-      if (isPostMeetingCourtesyMessage(message)) {
-        const reply = finalizeAssistantReply(
-          state,
-          "Con gusto, gracias por escribirnos. Quedo atenta si deseas registrar otro ticket.",
-          replyPlan
-        );
-        appendHistory(state, "assistant", reply);
-        return {
-          handled: true,
-          projectKey: state.projectKey,
-          reply,
-          escalated: false,
-          escalationSent: false
-        };
-      }
-
-      const reply = finalizeAssistantReply(
-        state,
-        "Tu ticket ya fue registrado y enviado a nuestro equipo. Te responderemos lo mas pronto posible. Si deseas abrir otro, escribeme pidiendo nuevo ticket.",
-        replyPlan
-      );
-      appendHistory(state, "assistant", reply);
-      return {
-        handled: true,
-        projectKey: state.projectKey,
-        reply,
-        escalated: false,
-        escalationSent: false
-      };
-    }
-
-    if (state.meetingClosedAt) {
-      state.pendingLeadField = null;
-      if (shouldReopenAfterMeeting(message)) {
-        state.meetingClosedAt = null;
-        state.awaitingMeetingData = false;
-        state.meeting = emptyMeetingProfile();
-        state.awaitingSupportOwnership = false;
-        state.awaitingSupportTicketData = false;
-        state.supportOwnership = null;
-        state.supportTopic = null;
-        state.pendingLeadField = null;
-        const reply = finalizeAssistantReply(
-          state,
-          "Perfecto, abrimos una nueva gestion. Cuentame que servicio necesitas ahora y avanzamos paso a paso.",
-          replyPlan
-        );
-        appendHistory(state, "assistant", reply);
-        return {
-          handled: true,
-          projectKey: state.projectKey,
-          reply,
-          escalated: false,
-          escalationSent: false
-        };
-      }
-
-      if (isPostMeetingCourtesyMessage(message)) {
-        const reply = finalizeAssistantReply(
-          state,
-          "Con gusto, gracias a ti por escribirnos. Quedo atenta y te deseo un excelente dia.",
-          replyPlan
-        );
-        appendHistory(state, "assistant", reply);
-        return {
-          handled: true,
-          projectKey: state.projectKey,
-          reply,
-          escalated: false,
-          escalationSent: false
-        };
-      }
-
-      const reply = finalizeAssistantReply(
-        state,
-        "Tu solicitud de reunion ya quedo agendada y cerrada. Un especialista humano te contactara. Si quieres iniciar una nueva solicitud, escribeme pidiendo nuevo proyecto.",
-        replyPlan
-      );
-      appendHistory(state, "assistant", reply);
-      return {
-        handled: true,
-        projectKey: state.projectKey,
-        reply,
-        escalated: false,
-        escalationSent: false
-      };
-    }
-
-    if (state.awaitingSupportOwnership) {
-      state.pendingLeadField = null;
-      const ownership = detectSupportOwnership(message);
-      if (!ownership) {
-        const topic = state.supportTopic ?? inferSupportTopic(state.lead.need ?? message);
-        const reply = finalizeAssistantReply(
-          state,
-          formatSupportOwnershipQuestion(replyPlan, topic),
-          replyPlan
-        );
-        appendHistory(state, "assistant", reply);
-        return {
-          handled: true,
-          projectKey: state.projectKey,
-          reply,
-          escalated: false,
-          escalationSent: false
-        };
-      }
-
-      state.supportOwnership = ownership;
-      state.awaitingSupportOwnership = false;
-      return await continueSupportFlowByOwnership({
-        state,
-        phoneE164: phone,
-        firstInteraction: true,
-        replyPlan
-      });
-    }
-
-    if (state.awaitingSupportTicketData) {
-      return await runSupportTicketQualification({
-        state,
-        phoneE164: phone,
-        firstInteraction: false,
-        replyPlan
-      });
-    }
-
-    if (state.awaitingMeetingData) {
-      return await runMeetingQualification({
-        state,
-        phoneE164: phone,
-        firstInteraction: false,
-        replyPlan
-      });
-    }
-
-    if (isAssistantPersonalInfoRequest(message)) {
-      state.pendingLeadField = null;
-      const reply = finalizeAssistantReply(state, formatAssistantPrivacyReply(), replyPlan);
-      appendHistory(state, "assistant", reply);
-      return {
-        handled: true,
-        projectKey: state.projectKey,
-        reply,
-        escalated: false,
-        escalationSent: false
-      };
-    }
-
-    if (isAssistantIdentityRequest(message)) {
-      state.pendingLeadField = null;
-      const reply = finalizeAssistantReply(state, formatAssistantIdentityReply(replyPlan), replyPlan);
-      appendHistory(state, "assistant", reply);
-      return {
-        handled: true,
-        projectKey: state.projectKey,
-        reply,
-        escalated: false,
-        escalationSent: false
-      };
-    }
-
-    const decision = classifyRouting(message, state);
-    const isFirstAssistantTurn = assistantMessageCount(state) === 0;
-
-    const hasClearNeed = Boolean(sanitizeValue(state.lead.need, 220));
-    const hasNeedSignal = hasClearNeed || hasNeedSignalInMessage(message);
-    const shouldUseInitialDiscovery =
-      isFirstAssistantTurn &&
-      decision.kind === "general" &&
-      !hasNeedSignal &&
-      isGreetingOnlyMessage(message);
-
-    if (shouldUseInitialDiscovery) {
-      state.pendingLeadField = null;
-      const reply = finalizeAssistantReply(state, formatInitialDiscoveryReply(replyPlan), replyPlan);
-      appendHistory(state, "assistant", reply);
-      return {
-        handled: true,
-        projectKey: state.projectKey,
-        reply,
-        escalated: false,
-        escalationSent: false
-      };
-    }
-
-    if (decision.kind === "support_project" || decision.kind === "sales_project") {
-      state.projectKey = env.defaultProject;
-      state.projectConfirmed = true;
-    }
-
-    if (decision.kind === "human_scope_check") {
-      state.pendingLeadField = null;
-      const reply = finalizeAssistantReply(state, formatHumanScopeCheckReply(replyPlan), replyPlan);
-      appendHistory(state, "assistant", reply);
-      return {
-        handled: true,
-        projectKey: state.projectKey,
-        reply,
-        escalated: false,
-        escalationSent: false
-      };
-    }
-
-    if (decision.kind === "meeting_interest") {
-      state.awaitingMeetingData = true;
-      return await runMeetingQualification({
-        state,
-        phoneE164: phone,
-        firstInteraction: true,
-        replyPlan
-      });
-    }
-
-    if (isSupportTicketDecision(decision)) {
-      state.projectKey = env.defaultProject || state.projectKey;
-      state.projectConfirmed = true;
-      state.supportTopic = inferSupportTopic(state.lead.need ?? message);
-
-      const ownership = detectSupportOwnership(message);
-      if (!ownership) {
-        state.awaitingSupportOwnership = true;
-        state.supportOwnership = null;
-        state.awaitingSupportTicketData = false;
-        state.pendingLeadField = null;
-        const reply = finalizeAssistantReply(
-          state,
-          formatSupportOwnershipQuestion(replyPlan, state.supportTopic),
-          replyPlan
-        );
-        appendHistory(state, "assistant", reply);
-        return {
-          handled: true,
-          projectKey: state.projectKey,
-          reply,
-          escalated: false,
-          escalationSent: false
-        };
-      }
-
-      state.awaitingSupportOwnership = false;
-      state.supportOwnership = ownership;
-      return await continueSupportFlowByOwnership({
-        state,
-        phoneE164: phone,
-        firstInteraction: true,
-        replyPlan
-      });
-    }
-
-    const singleProjectKey = env.defaultProject || "luxisoft";
+    const singleProjectKey = state.projectKey || env.defaultProject || "luxisoft";
     state.projectKey = singleProjectKey;
     state.projectConfirmed = true;
+    state.pendingLeadField = null;
+    state.awaitingProjectStatusName = false;
 
-    const objective = configuredProjectStatusInquiry
-      ? `El usuario esta consultando o mencionando el proyecto ${configuredProjectStatusInquiry}. Revisa su estado actual con lookup_project_status y responde con el avance vigente antes de sugerir el siguiente paso.`
-      : "Entender la necesidad del usuario, explicar una solucion breve y guiar al siguiente paso comercial.";
+    const objective =
+      "Analiza el caso actual y responde segun el escenario real de la conversacion. Decide si corresponde soporte, seguimiento de proyecto, venta, ticket, reunion, reinicio de caso o una respuesta general, usando las tools disponibles antes de confirmar acciones.";
 
     const resolved = await runProjectAgent({
       projectKey: singleProjectKey,
       phoneE164: phone,
       userMessage: message,
+      state,
       history: state.history,
       objective,
       replyPlan,

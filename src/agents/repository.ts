@@ -8,12 +8,16 @@ export type AgentScriptRuntimeContext = {
   userMessage: string;
   history: Array<{ role: "user" | "assistant"; text: string }>;
   sources: string[];
+  conversationState?: Record<string, unknown>;
   searchKnowledge: (
     query: string,
     options?: {
       sourceUrl?: string;
     }
   ) => Promise<string[]>;
+  registerSupportTicket?: (input?: Record<string, unknown>) => Promise<unknown>;
+  scheduleMeetingRequest?: (input?: Record<string, unknown>) => Promise<unknown>;
+  resetCaseState?: (input?: Record<string, unknown>) => Promise<unknown>;
 };
 
 export type AgentScript = {
