@@ -1244,6 +1244,89 @@ function resolvePendingLeadField(profile: LeadProfile, pendingLeadField: keyof L
   return null;
 }
 
+function inferPromptedLeadFieldFromRecentAssistant(state: ConversationState): keyof LeadProfile | null {
+  const lastAssistantMessage = recentAssistantMessages(state, 1)[0]?.text ?? "";
+  const normalized = normalizeText(lastAssistantMessage);
+  if (!normalized) return null;
+
+  if (/(correo|email)/i.test(normalized)) return "email";
+  if (/(apellidos?)/i.test(normalized)) return "lastName";
+  if (/(empresa|emprendimiento|negocio|marca)/i.test(normalized)) return "company";
+  if (/(tu nombre|tus nombres|me compartes tu nombre|indicame tus nombres|nombre por favor)/i.test(normalized)) {
+    return "firstName";
+  }
+  if (/(objetivo|quieres lograr|que necesitas exactamente|que quieres resolver)/i.test(normalized)) {
+    return "need";
+  }
+
+  return null;
+}
+
+function isExplicitProjectOrSupportQuery(message: string, _projectKey: string) {
+  const normalized = normalizeText(message);
+  if (!normalized) return false;
+
+  return (
+    hasSupportSignal(message) ||
+    containsKeyword(message, MEETING_KEYWORDS) ||
+    hasProjectFollowupSignal(normalized) ||
+    hasConfiguredProjectStatusSignal(normalized) ||
+    hasConfiguredProjectInfoSignal(normalized) ||
+    hasConfiguredProjectOngoingSignal(normalized) ||
+    hasGenericConfiguredProjectReference(normalized)
+  );
+}
+
+function resolvePromptedCommercialLeadFieldReply(input: {
+  previousLead: LeadProfile;
+  nextLead: LeadProfile;
+  state: ConversationState;
+  message: string;
+  projectKey: string;
+  promptedField: keyof LeadProfile | null;
+}) {
+  if (!input.promptedField) return null;
+  if (
+    input.state.awaitingSupportOwnership ||
+    input.state.awaitingSupportTicketData ||
+    input.state.awaitingMeetingData ||
+    input.state.awaitingProjectStatusName
+  ) {
+    return null;
+  }
+  if (isExplicitProjectOrSupportQuery(input.message, input.projectKey)) return null;
+
+  const previousValue = sanitizeValue(input.previousLead[input.promptedField], leadFieldMaxLength(input.promptedField));
+  const nextValue = sanitizeValue(input.nextLead[input.promptedField], leadFieldMaxLength(input.promptedField));
+  if (!nextValue || nextValue === previousValue) return null;
+
+  return input.promptedField;
+}
+
+function buildCommercialLeadFieldReply(state: ConversationState, answeredField: keyof LeadProfile) {
+  const nextField = resolvePendingLeadField(state.lead, answeredField);
+  const fallbackMissingField =
+    LEAD_PROGRESS_FIELDS.find((field) => !sanitizeValue(state.lead[field], leadFieldMaxLength(field))) ?? null;
+  const targetField = nextField ?? fallbackMissingField;
+  if (!targetField) {
+    return "Perfecto, ya tengo los datos principales para continuar con tu solicitud.";
+  }
+
+  if (answeredField === "firstName" && targetField === "lastName" && state.lead.firstName) {
+    return `Gracias, ${state.lead.firstName}. ${LEAD_FIELD_QUESTIONS.lastName}`;
+  }
+
+  if (answeredField === "company" && targetField === "email") {
+    return `Perfecto. ${LEAD_FIELD_QUESTIONS.email}`;
+  }
+
+  if (answeredField === "email" && targetField === "need") {
+    return `Gracias, ya tengo tu correo. ${LEAD_FIELD_QUESTIONS.need}`;
+  }
+
+  return LEAD_FIELD_QUESTIONS[targetField];
+}
+
 function updateLeadProfileFromSegment(
   profile: LeadProfile,
   message: string,
@@ -1524,6 +1607,7 @@ function buildConversationCaseAnalysis(
   );
   const nextSupportField = supportMissingFields[0] ?? null;
   const nextMeetingField = meetingMissingLeadFields[0] ?? meetingMissingFields[0] ?? null;
+  const pendingLeadField = state.pendingLeadField ?? inferPromptedLeadFieldFromRecentAssistant(state);
   const normalizedMessage = normalizeText(message);
   const matchedProjectName =
     detectConfiguredProjectStatusInquiry(message, state, projectKey) ??
@@ -2047,6 +2131,7 @@ function buildConversationStateSummary(state: ConversationState, message: string
   );
   const nextSupportField = supportMissingFields[0] ?? null;
   const nextMeetingField = meetingMissingLeadFields[0] ?? meetingMissingFields[0] ?? null;
+  const pendingLeadField = state.pendingLeadField ?? inferPromptedLeadFieldFromRecentAssistant(state);
   const normalizedMessage = normalizeText(message);
   const matchedProjectName = detectConfiguredProjectStatusInquiry(message, state, projectKey);
   const configuredProjectNames = loadConfiguredProjectStatusEntries(projectKey).map((entry) => entry.name);
@@ -2076,6 +2161,7 @@ function buildConversationStateSummary(state: ConversationState, message: string
     project_followup_project_name: state.projectFollowupProjectName,
     project_followup_summary: state.projectFollowupSummary,
     meeting_closed_at: state.meetingClosedAt,
+    pending_lead_field: pendingLeadField,
     lead_profile: leadProfile,
     meeting_profile: meetingProfile,
     support_missing_fields: supportMissingFields,
@@ -3191,6 +3277,7 @@ function buildProjectAgentTurnAnalysisInstructions(input: {
     "Prioriza seguimiento de proyecto sobre venta nueva cuando el mensaje suene a trabajo ya existente: 'informacion acerca de la tienda', 'como va el proyecto', 'la tienda que estan realizando', 'Pandapan', 'el ecommerce que hicieron'.",
     "Si el usuario ya esta hablando de un proyecto existente y pide urgencia, respuesta del equipo, prioridad o seguimiento humano, clasificalo como project_followup con recommended_action=register_project_followup.",
     "Si el ultimo mensaje de la asistente ofrecio dejar seguimiento con el equipo y el usuario responde algo como 'si', 'si por favor' o 'hazlo', clasificalo como project_followup con recommended_action=register_project_followup.",
+    "Si el estado conversacional muestra pending_lead_field y el usuario responde con un dato corto como un nombre, empresa o correo, tratalo como respuesta al dato pedido y no lo reclasifiques como seguimiento de proyecto solo porque coincida con un proyecto conocido.",
     "Prioriza soporte sobre venta nueva cuando el mensaje reporta problema, error o ayuda sobre algo que hicimos nosotros.",
     "Si el mensaje contiene palabras como problema, error, falla, soporte o ayuda sobre una tienda, app, web o servicio existente, no lo clasifiques como venta nueva salvo que el usuario hable claramente de crear algo nuevo.",
     "Si el usuario pregunta por estado o informacion de un proyecto sin nombre suficiente, usa case_type=project_status_name_required y recommended_action=ask_project_name.",
@@ -3287,6 +3374,7 @@ function buildProjectAgentInstructions(input: {
     "Prioriza soporte sobre venta nueva cuando el mensaje reporta problema, error o ayuda sobre algo que hicimos nosotros.",
     "Si el usuario pregunta por el estado o informacion de un proyecto y no menciona un nombre suficiente, pide primero el nombre del proyecto o negocio antes de consultar.",
     "Si should_ask_project_name es true en el estado conversacional, pide directamente el nombre del proyecto o negocio en una sola pregunta y no abras discovery comercial en paralelo.",
+    "Si pending_lead_field indica que estas recolectando nombre, empresa, correo u otro dato comercial, interpreta respuestas cortas como 'Pandapan' o un correo como respuesta a ese campo y no las conviertas en seguimiento de proyecto.",
     "Si necesitas identificar mejor el servicio o perfilar una oportunidad comercial, usa classify_service_intent, extract_prospect_profile y next_intake_question.",
     "Si el usuario solicita soporte de un servicio o producto hecho por nuestro equipo y aun no esta claro, pregunta solo si fue con nosotros o con otro proveedor.",
     "Cuando hables de propiedad del servicio, prefiere 'con nosotros' y 'nuestro equipo' en vez de repetir el nombre comercial.",
@@ -4618,11 +4706,38 @@ export async function handleProjectAgentMessage(input: {
   }
 
   appendHistory(state, "user", message);
-  state.lead = updateLeadProfileFromMessage(state.lead, message, state.pendingLeadField);
-  if (state.pendingLeadField && sanitizeValue(state.lead[state.pendingLeadField], 220)) {
+  const leadBeforeMessage = cloneLeadProfile(state.lead);
+  const effectivePendingLeadField = state.pendingLeadField ?? inferPromptedLeadFieldFromRecentAssistant(state);
+  state.lead = updateLeadProfileFromMessage(state.lead, message, effectivePendingLeadField);
+  if (effectivePendingLeadField && sanitizeValue(state.lead[effectivePendingLeadField], 220)) {
     state.pendingLeadField = null;
   }
   state.meeting = updateMeetingProfileFromMessage(state.meeting, message, state.lead);
+
+  const answeredCommercialField = resolvePromptedCommercialLeadFieldReply({
+    previousLead: leadBeforeMessage,
+    nextLead: state.lead,
+    state,
+    message,
+    projectKey: singleProjectKey,
+    promptedField: effectivePendingLeadField
+  });
+  if (answeredCommercialField) {
+    const rawReply = buildCommercialLeadFieldReply(state, answeredCommercialField);
+    if (rawReply) {
+      state.pendingLeadField =
+        LEAD_PROGRESS_FIELDS.find((field) => !sanitizeValue(state.lead[field], leadFieldMaxLength(field))) ?? null;
+      const reply = finalizeAssistantReply(state, rawReply, replyPlan);
+      appendHistory(state, "assistant", reply);
+      return {
+        handled: true,
+        projectKey: state.projectKey,
+        reply,
+        escalated: false,
+        escalationSent: false
+      };
+    }
+  }
 
   try {
     state.projectKey = singleProjectKey;
