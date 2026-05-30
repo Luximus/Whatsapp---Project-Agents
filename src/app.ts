@@ -8,7 +8,6 @@ import { authPlugin } from "./plugins/auth.js";
 import { healthRoutes } from "./routes/health.js";
 import { webhookRoutes } from "./routes/webhooks.js";
 import { whatsappRoutes } from "./routes/whatsapp.js";
-import { agentRoutes } from "./routes/agents.js";
 import { bridgeRoutes } from "./routes/bridge.js";
 
 export function buildApp() {
@@ -72,6 +71,5 @@ export function buildApp() {
     .register(healthRoutes)
     .register(webhookRoutes)
     .register(whatsappRoutes)
-    .register(bridgeRoutes)
-    .register(agentRoutes);
+    .register(bridgeRoutes);
 }

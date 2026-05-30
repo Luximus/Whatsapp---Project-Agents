@@ -1,45 +1,22 @@
-# WhatsApp Bridge Service (LuxiSoft)
+# WhatsApp Verification Service
 
-Backend para WhatsApp Cloud API con dos flujos principales:
+Backend para WhatsApp Cloud API enfocado en verificacion por codigo.
+
+## Flujos principales
+
 - Bridge OTP para proyectos externos.
-- Asistente comercial de IA (Valeria) para `luxisoft`.
+- Verificacion de numero por WhatsApp.
+- Login por WhatsApp.
+- Registro por WhatsApp.
+- Recuperacion por WhatsApp.
 
 ## Arquitectura actual
 
-- Agente unico: `agents/luxisoft/services.txt`.
-- Tools dinamicas por proyecto: `agents/luxisoft/scripts/*.js|*.ts`.
-- Carga automatica de tools desde `src/agents/repository.ts`.
-- Scraping web como tool (`scrape_project_knowledge`) para grounding de respuestas.
-- Buffer de entrada configurable para agrupar mensajes de usuario:
-  - `WHATSAPP_INBOUND_DEBOUNCE_MS` (reinicia contador en cada mensaje nuevo).
-
-## Flujo del asistente IA
-
-1. Llega mensaje por webhook.
-2. Se agrupa por numero durante el debounce configurado.
-3. Se procesa con `handleProjectAgentMessage`.
-4. Si la respuesta supera 250 chars y audio esta habilitado, responde con ElevenLabs.
-5. Si el usuario quiere agendar reunion, se recopilan datos y se notifica al agente humano.
-
-## Reporte diario
-
-- Cron configurable por `REPORT_CRON` (default `59 23 * * *`).
-- Genera metricas operativas + consumo OpenAI por modelo.
-- Envia email con HTML + PDF adjunto (sin guardar PDF en disco).
-- Notifica por WhatsApp al agente humano si el envio fue exitoso o fallo.
-
-## Estructura de agentes
-
-```text
-agents/
-  luxisoft/
-    services.txt
-    scripts/
-      classify_service_intent.js
-      extract_prospect_profile.js
-      next_intake_question.js
-      scrape_project_knowledge.js
-```
+- El webhook de WhatsApp recibe texto o audio.
+- Si llega audio, se transcribe con OpenAI antes de extraer el codigo.
+- Los codigos se validan contra sesiones `bridge` o contra solicitudes almacenadas en PostgreSQL.
+- Cuando una sesion `bridge` queda verificada, se disparan callbacks pendientes.
+- Se genera un reporte diario operativo por email.
 
 ## Variables de entorno
 
@@ -50,21 +27,22 @@ cp .env.example .env
 ```
 
 Claves minimas para produccion:
+
+- `DATABASE_URL`
+- `WHATSAPP_VERIFY_NUMBER_E164`
 - `WHATSAPP_ACCESS_TOKEN`
 - `WHATSAPP_PHONE_NUMBER_ID`
 - `WHATSAPP_WEBHOOK_VERIFY_TOKEN`
-- `OPENAI_API_KEY`
-- `AGENTS_DIR`
-- `AGENT_PROJECT_SOURCES_JSON`
-- `WHATSAPP_DEFAULT_PROJECT` (recomendado `luxisoft`)
+- `OPENAI_API_KEY` si quieres transcripcion de audios
 
 Opcionales importantes:
-- `WHATSAPP_INBOUND_DEBOUNCE_MS`
-- `WHATSAPP_AUDIO_REPLY_ENABLED`
-- `WHATSAPP_AUDIO_REPLY_INCLUDE_TEXT`
-- `ELEVENLABS_API_KEY`
-- `ELEVENLABS_VOICE_ID`
-- `AGENT_HUMAN_TRANSFER_NUMBER_E164`
+
+- `WHATSAPP_DEFAULT_PROJECT`
+- `WHATSAPP_REPLY_CONTEXT_PROBABILITY`
+- `WHATSAPP_MARK_AS_READ_PROBABILITY`
+- `WHATSAPP_TYPING_INDICATOR_PROBABILITY`
+- `BRIDGE_PROJECTS_JSON`
+- `BRIDGE_DISPATCH_TOKEN`
 - `SMTP_*`
 - `REPORT_EMAIL_TO`
 - `REPORT_CRON`
@@ -87,25 +65,35 @@ npm start
 PM2:
 
 ```bash
-pm2 start npm --name whatsapp-bridge -- start
+pm2 start npm --name whatsapp-verification -- start
 pm2 save
-pm2 restart whatsapp-bridge --update-env
+pm2 restart whatsapp-verification --update-env
 ```
 
 ## Endpoints
 
 Bridge:
+
 - `POST /api/bridge/webhooks/request`
 - `POST /api/bridge/webhooks/verify`
 - `POST /api/bridge/sessions/start`
 - `GET /api/bridge/sessions/:session_id`
 - `POST /api/bridge/events/dispatch`
 
+WhatsApp verification:
+
+- `POST /api/whatsapp/verification/start`
+- `GET /api/whatsapp/verification/status`
+- `POST /api/whatsapp/login/start`
+- `GET /api/whatsapp/login/status`
+- `POST /api/whatsapp/register/start`
+- `GET /api/whatsapp/register/status`
+- `POST /api/whatsapp/register/complete`
+- `POST /api/whatsapp/recovery/start`
+- `GET /api/whatsapp/recovery/status`
+- `POST /api/whatsapp/recovery/complete`
+
 WhatsApp webhook:
+
 - `GET /api/webhooks/whatsapp`
 - `POST /api/webhooks/whatsapp`
-
-Agentes:
-- `GET /api/agents`
-- `GET /api/agents/:project_key`
-- `GET /api/agents/:project_key/context`

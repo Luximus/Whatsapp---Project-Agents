@@ -8,7 +8,6 @@ import { WhatsappDailyReportEmail } from "../emails/templates/WhatsappDailyRepor
 import LuxisoftEmailTemplate, {
   type LuxisoftEmailSection
 } from "../emails/templates/LuxisoftEmailTemplate.js";
-import { sendWhatsappText } from "./whatsapp.js";
 
 type LoggerLike = {
   info: (obj: unknown, msg?: string) => void;
@@ -45,7 +44,6 @@ type DailyMetrics = {
   incomingText: number;
   incomingAudio: number;
   otpMessages: number;
-  agentReplies: number;
   outboundText: number;
   outboundAudio: number;
   meetingsScheduled: number;
@@ -147,7 +145,6 @@ function ensureDailyMetrics(dateKey = currentDateKey()) {
     incomingText: 0,
     incomingAudio: 0,
     otpMessages: 0,
-    agentReplies: 0,
     outboundText: 0,
     outboundAudio: 0,
     meetingsScheduled: 0,
@@ -197,10 +194,6 @@ export function trackInboundMessage(input: {
 
 export function trackOtpMessage() {
   ensureDailyMetrics().otpMessages += 1;
-}
-
-export function trackAgentReplyGenerated() {
-  ensureDailyMetrics().agentReplies += 1;
 }
 
 export function trackOutboundMessage(input: { messageType: "text" | "audio" }) {
@@ -284,7 +277,6 @@ function buildEmailSections(dateKey: string, metrics: DailyMetrics): LuxisoftEma
         { label: "Entrantes de texto", value: String(metrics.incomingText) },
         { label: "Entrantes de audio", value: String(metrics.incomingAudio) },
         { label: "Mensajes OTP detectados", value: String(metrics.otpMessages) },
-        { label: "Respuestas generadas por Valeria", value: String(metrics.agentReplies) },
         { label: "Mensajes salientes texto", value: String(metrics.outboundText) },
         { label: "Mensajes salientes audio", value: String(metrics.outboundAudio) }
       ]
@@ -344,7 +336,6 @@ function buildReportPdfBuffer(input: {
       `Personas contactadas (unicas): ${input.metrics.uniqueContacts.size}`,
       `Mensajes entrantes: ${input.metrics.incomingTotal} (texto ${input.metrics.incomingText} | audio ${input.metrics.incomingAudio})`,
       `Mensajes OTP detectados: ${input.metrics.otpMessages}`,
-      `Respuestas de Valeria: ${input.metrics.agentReplies}`,
       `Salientes texto/audio: ${input.metrics.outboundText}/${input.metrics.outboundAudio}`,
       `Reuniones agendadas: ${input.metrics.meetingsScheduled}`,
       `Notificadas a humano: ${input.metrics.meetingsNotifiedHuman}`,
@@ -807,11 +798,6 @@ async function sendDailyReportEmail(input: {
   });
 }
 
-async function notifyHumanReportStatus(message: string) {
-  if (!env.humanTransferNumber) return;
-  await sendWhatsappText(env.humanTransferNumber, message);
-}
-
 export async function sendDailyReportForDate(dateKey = currentDateKey()) {
   const metrics = ensureDailyMetrics(dateKey);
   const sections = buildEmailSections(dateKey, metrics);
@@ -828,19 +814,9 @@ export async function runScheduledDailyReport() {
 
   try {
     await sendDailyReportForDate(dateKey);
-    await notifyHumanReportStatus(
-      `Reporte diario de WhatsApp enviado a ${env.reportEmailTo} (corte ${dateLabelForReport(dateKey)}).`
-    );
     loggerRef.info({ dateKey }, "Daily report email sent");
   } catch (err: any) {
     loggerRef.error({ err, dateKey }, "Daily report email failed");
-    try {
-      await notifyHumanReportStatus(
-        `Fallo el envio del reporte diario de WhatsApp (corte ${dateLabelForReport(dateKey)}).`
-      );
-    } catch (notifyErr: any) {
-      loggerRef.warn({ notifyErr, dateKey }, "Daily report failure notification failed");
-    }
   }
 }
 
