@@ -44,7 +44,8 @@ export async function handleAgentMessage(input: {
     context: {
       projectKey: agent.projectKey,
       from: input.context?.from ?? null,
-      logger: input.context?.logger
+      logger: input.context?.logger,
+      actions: input.context?.actions
     }
   });
 }

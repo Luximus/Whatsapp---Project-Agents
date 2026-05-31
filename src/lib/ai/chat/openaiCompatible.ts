@@ -91,6 +91,17 @@ function toOpenAiMessage(message: ChatMessage) {
       content: message.content
     };
   }
+  if (message.role === "assistant" && message.toolCalls?.length) {
+    return {
+      role: "assistant" as const,
+      content: message.content || null,
+      tool_calls: message.toolCalls.map((call) => ({
+        id: call.id,
+        type: "function" as const,
+        function: { name: call.name, arguments: call.arguments || "{}" }
+      }))
+    };
+  }
   return { role: message.role, content: message.content };
 }
 

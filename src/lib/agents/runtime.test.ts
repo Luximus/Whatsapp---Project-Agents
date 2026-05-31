@@ -41,6 +41,25 @@ describe("runAgent", () => {
     expect(firstReq.messages.at(-1)).toEqual({ role: "user", content: "hola" });
   });
 
+  it("sustituye el token {{ASSISTANT_NAME}} por el nombre del proveedor activo", async () => {
+    completeMock.mockResolvedValueOnce({
+      text: "hola",
+      toolCalls: [],
+      model: "m",
+      provider: "openai"
+    });
+
+    await runAgent({
+      agent: { projectKey: "test", systemPrompt: "Eres {{ASSISTANT_NAME}}.", tools: [] },
+      userMessage: "hola",
+      context: { projectKey: "test" }
+    });
+
+    const firstReq = completeMock.mock.calls[0][0];
+    // provider mockeado = "openai" -> nombre por defecto "Luisa".
+    expect(firstReq.messages[0]).toEqual({ role: "system", content: "Eres Luisa." });
+  });
+
   it("ejecuta una tool y devuelve la respuesta final del segundo turno", async () => {
     const execute = vi.fn().mockResolvedValue("resultado-de-tool");
     const tool: AgentTool = {

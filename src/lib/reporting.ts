@@ -6,6 +6,7 @@ import { createElement } from "react";
 import { env } from "../env.js";
 import { WhatsappDailyReportEmail } from "../emails/templates/WhatsappDailyReportEmail.js";
 import LuxisoftEmailTemplate, {
+  type LuxisoftEmailHighlight,
   type LuxisoftEmailSection
 } from "../emails/templates/LuxisoftEmailTemplate.js";
 
@@ -134,6 +135,38 @@ function toNumber(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+// Separadores de miles para que las cifras grandes (tokens, mensajes) se lean
+// bien tanto en el correo como en el PDF.
+function formatInt(value: number) {
+  return Math.round(toNumber(value)).toLocaleString("es-CO");
+}
+
+function percent(part: number, total: number) {
+  if (total <= 0) return 0;
+  return Math.round((part / total) * 100);
+}
+
+function aggregateOpenAI(metrics: DailyMetrics): ModelUsage {
+  return Object.values(metrics.openaiByModel).reduce<ModelUsage>(
+    (acc, usage) => ({
+      requests: acc.requests + usage.requests,
+      inputTokens: acc.inputTokens + usage.inputTokens,
+      outputTokens: acc.outputTokens + usage.outputTokens,
+      cachedInputTokens: acc.cachedInputTokens + usage.cachedInputTokens,
+      cacheWriteTokens: acc.cacheWriteTokens + usage.cacheWriteTokens,
+      totalTokens: acc.totalTokens + usage.totalTokens
+    }),
+    {
+      requests: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0
+    }
+  );
+}
+
 function ensureDailyMetrics(dateKey = currentDateKey()) {
   const existing = metricsByDate.get(dateKey);
   if (existing) return existing;
@@ -255,44 +288,90 @@ export function trackOperationalError() {
   ensureDailyMetrics().errors += 1;
 }
 
-function summarizeOpenAIByModel(metrics: DailyMetrics) {
-  const rows = Object.entries(metrics.openaiByModel).sort((a, b) => a[0].localeCompare(b[0]));
-  if (!rows.length) {
+function buildOpenAISectionRows(metrics: DailyMetrics) {
+  const models = Object.entries(metrics.openaiByModel).sort((a, b) => a[0].localeCompare(b[0]));
+  if (!models.length) {
     return [{ label: "Sin consumo registrado", value: "0 tokens" }];
   }
 
-  return rows.map(([model, usage]) => ({
-    label: model,
-    value: `req:${usage.requests} | in:${usage.inputTokens} | out:${usage.outputTokens} | cache:${usage.cachedInputTokens} | total:${usage.totalTokens}`
-  }));
+  const totals = aggregateOpenAI(metrics);
+  const rows = [
+    { label: "Solicitudes totales", value: formatInt(totals.requests) },
+    {
+      label: "Tokens entrada / salida",
+      value: `${formatInt(totals.inputTokens)} / ${formatInt(totals.outputTokens)}`
+    },
+    { label: "Tokens en caché", value: formatInt(totals.cachedInputTokens) },
+    { label: "Tokens totales", value: formatInt(totals.totalTokens) }
+  ];
+
+  for (const [model, usage] of models) {
+    rows.push({
+      label: model,
+      value: `${formatInt(usage.totalTokens)} tokens · ${formatInt(usage.requests)} req`
+    });
+  }
+
+  return rows;
+}
+
+function buildDailyHighlights(metrics: DailyMetrics): LuxisoftEmailHighlight[] {
+  const totals = aggregateOpenAI(metrics);
+  const audioShare = percent(metrics.incomingAudio, metrics.incomingTotal);
+  return [
+    {
+      label: "Contactos únicos",
+      value: formatInt(metrics.uniqueContacts.size)
+    },
+    {
+      label: "Mensajes entrantes",
+      value: formatInt(metrics.incomingTotal),
+      hint: `${formatInt(metrics.incomingAudio)} de audio (${audioShare}%)`
+    },
+    {
+      label: "Reuniones agendadas",
+      value: formatInt(metrics.meetingsScheduled),
+      hint: metrics.supportTicketsCreated
+        ? `${formatInt(metrics.supportTicketsCreated)} tickets de soporte`
+        : undefined
+    },
+    {
+      label: "Tokens de IA",
+      value: formatInt(totals.totalTokens),
+      hint: `${formatInt(totals.requests)} solicitudes`
+    }
+  ];
 }
 
 function buildEmailSections(dateKey: string, metrics: DailyMetrics): LuxisoftEmailSection[] {
   return [
     {
-      title: "Operacion WhatsApp",
+      title: "Operación WhatsApp",
       rows: [
-        { label: "Personas contactadas (unicas)", value: String(metrics.uniqueContacts.size) },
-        { label: "Mensajes entrantes", value: String(metrics.incomingTotal) },
-        { label: "Entrantes de texto", value: String(metrics.incomingText) },
-        { label: "Entrantes de audio", value: String(metrics.incomingAudio) },
-        { label: "Mensajes OTP detectados", value: String(metrics.otpMessages) },
-        { label: "Mensajes salientes texto", value: String(metrics.outboundText) },
-        { label: "Mensajes salientes audio", value: String(metrics.outboundAudio) }
+        { label: "Personas contactadas (únicas)", value: formatInt(metrics.uniqueContacts.size) },
+        { label: "Mensajes entrantes", value: formatInt(metrics.incomingTotal) },
+        { label: "Entrantes de texto", value: formatInt(metrics.incomingText) },
+        { label: "Entrantes de audio", value: formatInt(metrics.incomingAudio) },
+        { label: "Mensajes OTP detectados", value: formatInt(metrics.otpMessages) },
+        { label: "Mensajes salientes texto", value: formatInt(metrics.outboundText) },
+        { label: "Mensajes salientes audio", value: formatInt(metrics.outboundAudio) }
       ]
     },
     {
-      title: "OpenAI - consumo por modelo",
-      rows: summarizeOpenAIByModel(metrics)
+      title: "Consumo de IA",
+      rows: buildOpenAISectionRows(metrics)
     },
     {
-      title: "Gestion comercial",
+      title: "Gestión comercial",
       rows: [
-        { label: "Reuniones agendadas", value: String(metrics.meetingsScheduled) },
-        { label: "Reuniones notificadas a agente humano", value: String(metrics.meetingsNotifiedHuman) },
-        { label: "Tickets de soporte creados", value: String(metrics.supportTicketsCreated) },
-        { label: "Errores operativos", value: String(metrics.errors) },
-        { label: "Errores OpenAI", value: String(metrics.openaiFailures) },
+        { label: "Reuniones agendadas", value: formatInt(metrics.meetingsScheduled) },
+        {
+          label: "Reuniones notificadas a agente humano",
+          value: formatInt(metrics.meetingsNotifiedHuman)
+        },
+        { label: "Tickets de soporte creados", value: formatInt(metrics.supportTicketsCreated) },
+        { label: "Errores operativos", value: formatInt(metrics.errors) },
+        { label: "Errores de IA", value: formatInt(metrics.openaiFailures) },
         { label: "Fecha de corte", value: dateLabelForReport(dateKey) }
       ]
     }
@@ -311,11 +390,7 @@ function meetingNotes(dateKey: string) {
   });
 }
 
-function buildReportPdfBuffer(input: {
-  dateKey: string;
-  metrics: DailyMetrics;
-  notes: string[];
-}) {
+function buildReportPdfBuffer(input: { dateKey: string; metrics: DailyMetrics; notes: string[] }) {
   return new Promise<Buffer>((resolve, reject) => {
     const doc = new PDFDocument({ size: "A4", margin: 42 });
     const chunks: Buffer[] = [];
@@ -332,16 +407,17 @@ function buildReportPdfBuffer(input: {
     });
     doc.moveDown(0.7);
 
+    const m = input.metrics;
     const lines = [
-      `Personas contactadas (unicas): ${input.metrics.uniqueContacts.size}`,
-      `Mensajes entrantes: ${input.metrics.incomingTotal} (texto ${input.metrics.incomingText} | audio ${input.metrics.incomingAudio})`,
-      `Mensajes OTP detectados: ${input.metrics.otpMessages}`,
-      `Salientes texto/audio: ${input.metrics.outboundText}/${input.metrics.outboundAudio}`,
-      `Reuniones agendadas: ${input.metrics.meetingsScheduled}`,
-      `Notificadas a humano: ${input.metrics.meetingsNotifiedHuman}`,
-      `Tickets de soporte creados: ${input.metrics.supportTicketsCreated}`,
-      `Errores operativos: ${input.metrics.errors}`,
-      `Errores OpenAI: ${input.metrics.openaiFailures}`
+      `Personas contactadas (únicas): ${formatInt(m.uniqueContacts.size)}`,
+      `Mensajes entrantes: ${formatInt(m.incomingTotal)} (texto ${formatInt(m.incomingText)} | audio ${formatInt(m.incomingAudio)})`,
+      `Mensajes OTP detectados: ${formatInt(m.otpMessages)}`,
+      `Salientes texto/audio: ${formatInt(m.outboundText)}/${formatInt(m.outboundAudio)}`,
+      `Reuniones agendadas: ${formatInt(m.meetingsScheduled)}`,
+      `Notificadas a humano: ${formatInt(m.meetingsNotifiedHuman)}`,
+      `Tickets de soporte creados: ${formatInt(m.supportTicketsCreated)}`,
+      `Errores operativos: ${formatInt(m.errors)}`,
+      `Errores de IA: ${formatInt(m.openaiFailures)}`
     ];
 
     for (const line of lines) {
@@ -349,17 +425,24 @@ function buildReportPdfBuffer(input: {
     }
 
     doc.moveDown(0.8);
-    doc.fontSize(13).fillColor("#0f172a").text("OpenAI por modelo");
+    doc.fontSize(13).fillColor("#0f172a").text("Consumo de IA por modelo");
     const modelRows = Object.entries(input.metrics.openaiByModel);
     if (!modelRows.length) {
       doc.fontSize(11).fillColor("#475569").text("- Sin consumo registrado");
     } else {
+      const totals = aggregateOpenAI(input.metrics);
+      doc
+        .fontSize(11)
+        .fillColor("#0f172a")
+        .text(
+          `- Totales: req ${formatInt(totals.requests)} | input ${formatInt(totals.inputTokens)} | output ${formatInt(totals.outputTokens)} | cache ${formatInt(totals.cachedInputTokens)} | total ${formatInt(totals.totalTokens)}`
+        );
       for (const [model, usage] of modelRows) {
         doc
           .fontSize(11)
           .fillColor("#0f172a")
           .text(
-            `- ${model}: req ${usage.requests} | input ${usage.inputTokens} | output ${usage.outputTokens} | cache ${usage.cachedInputTokens} | total ${usage.totalTokens}`
+            `- ${model}: ${formatInt(usage.totalTokens)} tokens | ${formatInt(usage.requests)} req`
           );
       }
     }
@@ -398,7 +481,10 @@ function buildMeetingQuoteEmailBody(input: MeetingQuoteEmailInput) {
   ].join("\n");
 }
 
-function buildMeetingQuoteSections(input: MeetingQuoteEmailInput, dateLabel: string): LuxisoftEmailSection[] {
+function buildMeetingQuoteSections(
+  input: MeetingQuoteEmailInput,
+  dateLabel: string
+): LuxisoftEmailSection[] {
   return [
     {
       title: "Agendamiento",
@@ -437,7 +523,10 @@ function buildMeetingQuoteNotes(input: MeetingQuoteEmailInput) {
   ];
 }
 
-function buildSupportTicketSections(input: SupportTicketEmailInput, dateLabel: string): LuxisoftEmailSection[] {
+function buildSupportTicketSections(
+  input: SupportTicketEmailInput,
+  dateLabel: string
+): LuxisoftEmailSection[] {
   return [
     {
       title: "Ticket",
@@ -497,7 +586,10 @@ function buildProjectFollowupEmailBody(input: ProjectFollowupEmailInput) {
   ].join("\n");
 }
 
-function buildProjectFollowupSections(input: ProjectFollowupEmailInput, dateLabel: string): LuxisoftEmailSection[] {
+function buildProjectFollowupSections(
+  input: ProjectFollowupEmailInput,
+  dateLabel: string
+): LuxisoftEmailSection[] {
   return [
     {
       title: "Seguimiento",
@@ -530,13 +622,18 @@ function buildProjectFollowupSections(input: ProjectFollowupEmailInput, dateLabe
 function buildProjectFollowupNotes(input: ProjectFollowupEmailInput) {
   return [
     `Generado: ${new Date().toISOString()}`,
-    input.contactEmail ? "El contacto ya compartio correo para respuesta." : "El seguimiento se registro solo con el numero de WhatsApp."
+    input.contactEmail
+      ? "El contacto ya compartio correo para respuesta."
+      : "El seguimiento se registro solo con el numero de WhatsApp."
   ];
 }
 
 export async function sendMeetingQuoteEmail(input: MeetingQuoteEmailInput) {
   if (!smtpConfigured()) {
-    loggerRef.warn({ to: env.meetingQuoteEmailTo }, "Meeting quote email skipped: SMTP not configured");
+    loggerRef.warn(
+      { to: env.meetingQuoteEmailTo },
+      "Meeting quote email skipped: SMTP not configured"
+    );
     return {
       ok: false,
       sent: false,
@@ -589,7 +686,12 @@ export async function sendMeetingQuoteEmail(input: MeetingQuoteEmailInput) {
     return { ok: true, sent: true };
   } catch (err: any) {
     loggerRef.error(
-      { err, to: env.meetingQuoteEmailTo, projectKey: input.projectKey, userPhone: input.userPhone },
+      {
+        err,
+        to: env.meetingQuoteEmailTo,
+        projectKey: input.projectKey,
+        userPhone: input.userPhone
+      },
       "Meeting quote email failed"
     );
     return {
@@ -673,7 +775,12 @@ export async function sendSupportTicketEmail(input: SupportTicketEmailInput) {
     return { ok: true, sent: true };
   } catch (err: any) {
     loggerRef.error(
-      { err, to: env.supportTicketEmailTo, projectKey: input.projectKey, userPhone: input.userPhone },
+      {
+        err,
+        to: env.supportTicketEmailTo,
+        projectKey: input.projectKey,
+        userPhone: input.userPhone
+      },
       "Support ticket email failed"
     );
     return {
@@ -742,7 +849,12 @@ export async function sendProjectFollowupEmail(input: ProjectFollowupEmailInput)
     return { ok: true, sent: true };
   } catch (err: any) {
     loggerRef.error(
-      { err, to: env.supportTicketEmailTo, projectKey: input.projectKey, userPhone: input.userPhone },
+      {
+        err,
+        to: env.supportTicketEmailTo,
+        projectKey: input.projectKey,
+        userPhone: input.userPhone
+      },
       "Project follow-up email failed"
     );
     return {
@@ -756,6 +868,7 @@ export async function sendProjectFollowupEmail(input: ProjectFollowupEmailInput)
 async function sendDailyReportEmail(input: {
   dateKey: string;
   sections: LuxisoftEmailSection[];
+  highlights: LuxisoftEmailHighlight[];
   notes: string[];
   pdfBuffer: Buffer;
 }) {
@@ -778,6 +891,7 @@ async function sendDailyReportEmail(input: {
     createElement(WhatsappDailyReportEmail, {
       reportDate,
       logoUrl: env.reportLogoUrl,
+      highlights: input.highlights,
       sections: input.sections,
       notes: input.notes
     })
@@ -801,9 +915,10 @@ async function sendDailyReportEmail(input: {
 export async function sendDailyReportForDate(dateKey = currentDateKey()) {
   const metrics = ensureDailyMetrics(dateKey);
   const sections = buildEmailSections(dateKey, metrics);
+  const highlights = buildDailyHighlights(metrics);
   const notes = meetingNotes(dateKey);
   const pdfBuffer = await buildReportPdfBuffer({ dateKey, metrics, notes });
-  await sendDailyReportEmail({ dateKey, sections, notes, pdfBuffer });
+  await sendDailyReportEmail({ dateKey, sections, highlights, notes, pdfBuffer });
 
   metricsByDate.delete(dateKey);
   meetingsByDate.delete(dateKey);
@@ -846,7 +961,11 @@ export function startDailyReportScheduler(logger?: LoggerLike) {
   );
 
   loggerRef.info(
-    { reportCron: env.reportCron, reportTimezone: env.reportTimezone, reportEmailTo: env.reportEmailTo },
+    {
+      reportCron: env.reportCron,
+      reportTimezone: env.reportTimezone,
+      reportEmailTo: env.reportEmailTo
+    },
     "Daily report scheduler started"
   );
 }

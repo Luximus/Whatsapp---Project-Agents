@@ -90,6 +90,16 @@ export class GeminiChatProvider implements ChatProvider {
   }
 }
 
+function safeParseArgs(raw: string): Record<string, unknown> {
+  if (!raw || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 function toGeminiContent(message: ChatMessage) {
   if (message.role === "tool") {
     return {
@@ -103,6 +113,14 @@ function toGeminiContent(message: ChatMessage) {
         }
       ]
     };
+  }
+  if (message.role === "assistant" && message.toolCalls?.length) {
+    const parts: Array<Record<string, unknown>> = [];
+    if (message.content) parts.push({ text: message.content });
+    for (const call of message.toolCalls) {
+      parts.push({ functionCall: { name: call.name, args: safeParseArgs(call.arguments) } });
+    }
+    return { role: "model" as const, parts };
   }
   return {
     role: message.role === "assistant" ? ("model" as const) : ("user" as const),

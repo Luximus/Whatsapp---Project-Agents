@@ -11,3 +11,9 @@ export {
   getDefaultTranscriptionProvider,
   transcribeAudio
 } from "./transcription/index.js";
+export {
+  createSpeechProvider,
+  getDefaultSpeechProvider,
+  isSpeechConfigured,
+  synthesizeSpeech
+} from "./speech/index.js";

@@ -30,6 +30,13 @@ export interface ChatMessage {
   toolCallId?: string;
   /** Nombre de la tool, útil para algunos proveedores. */
   name?: string;
+  /**
+   * Tool calls emitidas por el asistente en este turno. Deben reenviarse al
+   * proveedor junto al mensaje "assistant" para que los mensajes "tool"
+   * posteriores tengan a qué llamada responder (OpenAI, Anthropic y Gemini lo
+   * exigen).
+   */
+  toolCalls?: ChatToolCall[];
 }
 
 export interface ChatToolDefinition {
@@ -79,6 +86,35 @@ export interface TranscriptionRequest {
 export interface TranscriptionProvider {
   readonly name: AiProviderName;
   transcribe(request: TranscriptionRequest): Promise<string>;
+}
+
+export interface SpeechSynthesisRequest {
+  /** Texto a sintetizar en voz. */
+  text: string;
+  /** Voz/locutor del proveedor (p.ej. "alloy" en OpenAI, "Kore" en Gemini). */
+  voice?: string;
+  /** Modelo TTS; si se omite, el adaptador usa el de su env. */
+  model?: string;
+  /**
+   * Formato de salida deseado. "opus" => audio/ogg, el único contenedor que
+   * WhatsApp acepta como NOTA DE VOZ real (`voice: true`). El resto se envía
+   * como audio normal reproducible.
+   */
+  format?: string;
+}
+
+export interface SpeechSynthesisResult {
+  /** Bytes del audio sintetizado. */
+  data: Buffer;
+  /** MIME del audio (p.ej. "audio/ogg", "audio/mpeg", "audio/wav"). */
+  mimeType: string;
+  /** Extensión sugerida para el archivo, sin punto (p.ej. "ogg", "mp3"). */
+  extension: string;
+}
+
+export interface SpeechProvider {
+  readonly name: AiProviderName;
+  synthesize(request: SpeechSynthesisRequest): Promise<SpeechSynthesisResult>;
 }
 
 /** Error normalizado de cualquier proveedor de IA. */

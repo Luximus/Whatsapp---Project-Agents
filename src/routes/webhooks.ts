@@ -2,22 +2,51 @@ import type { FastifyPluginAsync } from "fastify";
 import { consumeBridgeOtp, dispatchDueBridgeEvents } from "../lib/bridge.js";
 import { env } from "../env.js";
 import { verifyWhatsappSignature } from "../lib/whatsappSignature.js";
-import { transcribeAudio } from "../lib/ai/index.js";
+import { transcribeAudio, synthesizeSpeech, isSpeechConfigured } from "../lib/ai/index.js";
 import { handleAgentMessage } from "../lib/agents/index.js";
+import type { AgentActions } from "../lib/agents/index.js";
+import {
+  loadConversationHistory,
+  recordConversationTurn
+} from "../lib/agents/conversation/index.js";
 import { t, detectLocale } from "../i18n/index.js";
+import type { Locale } from "../i18n/index.js";
 import { consumeWhatsappVerificationCode } from "../lib/whatsappVerification.js";
 import {
+  startLink,
+  confirmLink,
+  listLinkedAccounts,
+  getAccountInfo,
+  callServiceApi,
+  connectServer,
+  assistantSend,
+  assistantPoll,
+  switchConnection,
+  listServers,
+  setSshEnabled,
+  disconnectServer,
+  awaitCompletion,
+  unlinkAccount,
+  confirmPendingLink,
+  authenticate
+} from "../lib/services/index.js";
+import {
+  sendMeetingQuoteEmail,
+  sendSupportTicketEmail,
   trackInboundMessage,
+  trackMeetingScheduled,
   trackOpenAIFailure,
   trackOperationalError,
   trackOtpMessage,
-  trackOutboundMessage
+  trackOutboundMessage,
+  trackSupportTicketCreated
 } from "../lib/reporting.js";
 import {
   downloadWhatsappMedia,
   extractOtp,
   markWhatsappMessageAsRead,
   normalizeE164,
+  sendWhatsappAudio,
   sendWhatsappText,
   sendWhatsappTypingIndicator
 } from "../lib/whatsapp.js";
@@ -59,6 +88,26 @@ function shouldApplyProbability(probabilityPercent: number) {
   return Math.random() * 100 < probability;
 }
 
+type AgentReplyMode = "text" | "audio" | "quoted";
+
+// Elige el modo de respuesta del asistente IA por probabilidad ponderada
+// (texto / nota de voz / texto citado). El peso de audio solo se anula si el
+// proveedor TTS no está configurado (no se puede generar voz); su peso se
+// reparte entonces entre texto y citado.
+function pickAgentReplyMode(): AgentReplyMode {
+  const canAudio = isSpeechConfigured();
+  const audioWeight = canAudio ? Math.max(0, env.whatsappReplyAudioProbability) : 0;
+  const quotedWeight = Math.max(0, env.whatsappReplyQuotedProbability);
+  const textWeight = Math.max(0, env.whatsappReplyTextProbability);
+  const total = audioWeight + quotedWeight + textWeight;
+  if (total <= 0) return "text";
+
+  let roll = Math.random() * total;
+  if ((roll -= audioWeight) < 0) return "audio";
+  if ((roll -= quotedWeight) < 0) return "quoted";
+  return "text";
+}
+
 function flattenWebhookMessages(body: any) {
   const messages: WebhookMessage[] = [];
   const statuses: WebhookStatus[] = [];
@@ -82,28 +131,31 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
   // Conservamos el cuerpo crudo SOLO en este contexto encapsulado (las rutas
   // del webhook) para poder verificar la firma HMAC de Meta sobre los bytes
   // exactos. El resto de rutas de la app siguen usando el parser JSON normal.
-  fastify.addContentTypeParser(
-    "application/json",
-    { parseAs: "buffer" },
-    (request, body, done) => {
-      (request as any).rawBody = body as Buffer;
-      try {
-        const parsed = (body as Buffer).length
-          ? JSON.parse((body as Buffer).toString("utf8"))
-          : {};
-        done(null, parsed);
-      } catch (err) {
-        done(err as Error, undefined);
-      }
-    }
-  );
-
-  const safeReply = async (to: string, message: string, replyToMessageId?: string | null) => {
+  fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {
+    (request as any).rawBody = body as Buffer;
     try {
-      const contextualReplyId =
-        replyToMessageId && shouldApplyProbability(env.whatsappReplyContextProbability)
-          ? replyToMessageId
-          : null;
+      const parsed = (body as Buffer).length ? JSON.parse((body as Buffer).toString("utf8")) : {};
+      done(null, parsed);
+    } catch (err) {
+      done(err as Error, undefined);
+    }
+  });
+
+  const safeReply = async (
+    to: string,
+    message: string,
+    replyToMessageId?: string | null,
+    options?: { quote?: boolean }
+  ) => {
+    try {
+      // Si el llamador fija `quote` (respuestas del agente, modo determinista),
+      // se respeta; si no, se mantiene el comportamiento probabilístico clásico
+      // para OTP/verificación.
+      const useQuote =
+        typeof options?.quote === "boolean"
+          ? options.quote
+          : Boolean(replyToMessageId) && shouldApplyProbability(env.whatsappReplyContextProbability);
+      const contextualReplyId = useQuote ? (replyToMessageId ?? null) : null;
       await sendWhatsappText(to, message, {
         replyToMessageId: contextualReplyId
       });
@@ -111,7 +163,33 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       return true;
     } catch (err) {
       trackOperationalError();
-      fastify.log.warn({ err, to, replyToMessageId: replyToMessageId ?? null }, "WhatsApp reply failed");
+      fastify.log.warn(
+        { err, to, replyToMessageId: replyToMessageId ?? null },
+        "WhatsApp reply failed"
+      );
+      return false;
+    }
+  };
+
+  // Intenta responder con NOTA DE VOZ sintetizando el texto. Devuelve true si se
+  // envió; ante cualquier fallo devuelve false para que el llamador caiga a
+  // texto (nunca dejamos al usuario sin respuesta por un fallo de TTS).
+  const tryReplyWithVoice = async (to: string, message: string): Promise<boolean> => {
+    try {
+      const audio = await synthesizeSpeech({ text: message });
+      // WhatsApp solo trata OGG/Opus como nota de voz real; el resto va como
+      // audio normal reproducible.
+      const asVoiceMessage = audio.mimeType === "audio/ogg";
+      await sendWhatsappAudio(
+        to,
+        { data: audio.data, mimeType: audio.mimeType, filename: `reply.${audio.extension}` },
+        { asVoiceMessage }
+      );
+      trackOutboundMessage({ messageType: "audio" });
+      return true;
+    } catch (err) {
+      trackOperationalError();
+      fastify.log.warn({ err, to }, "WhatsApp voice reply failed; falling back to text");
       return false;
     }
   };
@@ -206,12 +284,13 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     for (const msg of messages) {
       const incomingMessageId = String(msg.id ?? "").trim();
       const from = msg.from ? normalizeE164(msg.from) : null;
-      const messageType = String(msg.type ?? "").trim().toLowerCase();
+      const messageType = String(msg.type ?? "")
+        .trim()
+        .toLowerCase();
       if (!from) continue;
 
       const isReaction =
-        messageType === "reaction" ||
-        Boolean(String(msg.reaction?.emoji ?? "").trim());
+        messageType === "reaction" || Boolean(String(msg.reaction?.emoji ?? "").trim());
       if (isReaction) {
         fastify.log.info(
           {
@@ -282,10 +361,18 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           continue;
         }
 
-        const verificationResult = await consumeWhatsappVerificationCode(fastify, {
-          phoneE164: from,
-          code: otp
-        });
+        // Verificación de cuenta (login/registro/recuperación). Si la tabla
+        // falla (p.ej. permisos), NO debe tumbar el webhook: degradamos a
+        // "no manejado" para seguir con el vínculo o el agente.
+        let verificationResult: { handled: boolean; status?: string } = { handled: false };
+        try {
+          verificationResult = await consumeWhatsappVerificationCode(fastify, {
+            phoneE164: from,
+            code: otp
+          });
+        } catch (err) {
+          fastify.log.warn({ err, from }, "whatsapp verification consume failed; degrading");
+        }
         if (verificationResult.handled) {
           await safeReply(
             from,
@@ -297,6 +384,48 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           continue;
         }
 
+        // Vínculo de servicio: si hay un OTP de vínculo pendiente para este
+        // número, confirmarlo de forma determinista (sin depender del agente).
+        if (env.whatsappServicesEnabled) {
+          const linkResult = await confirmPendingLink(fastify, { phoneE164: from, code: otp });
+          if (linkResult.status === "linked") {
+            await safeReply(
+              from,
+              t("link_confirmed", locale).replace("{service}", linkResult.serviceName),
+              incomingMessageId
+            );
+            // Retoma la última solicitud (p.ej. "conéctate a mi servidor") sin
+            // que el usuario tenga que repetirla: el agente tiene el historial.
+            await tryAgentReply(from, t("auth_retry_seed", locale), incomingMessageId || null, locale);
+            continue;
+          }
+          if (linkResult.status === "invalid" || linkResult.status === "expired") {
+            await safeReply(from, t("link_code_invalid", locale), incomingMessageId);
+            continue;
+          }
+          // No había vínculo pendiente: quizá es una RE-AUTENTICACIÓN 2FA de una
+          // cuenta ya vinculada (sesión expirada). Intentar autenticar.
+          const authRes = await authenticate(fastify, { phoneE164: from, code: otp });
+          if (authRes.status === "authenticated") {
+            await safeReply(from, t("auth_ok", locale), incomingMessageId);
+            // Retoma automáticamente lo que el usuario pidió antes del 2FA.
+            await tryAgentReply(from, t("auth_retry_seed", locale), incomingMessageId || null, locale);
+            continue;
+          }
+          if (authRes.status === "invalid") {
+            await safeReply(from, t("link_code_invalid", locale), incomingMessageId);
+            continue;
+          }
+          // "not_linked"/"error": no aplica → sigue el curso normal.
+        }
+
+        // Ni verificación ni vínculo: que el agente intente interpretarlo
+        // (puede ser un número que el usuario escribió por otro motivo).
+        if (env.whatsappAgentEnabled) {
+          const replied = await tryAgentReply(from, text, incomingMessageId || null, locale);
+          if (replied) continue;
+        }
+
         await safeReply(from, t("code_invalid_or_expired", locale), incomingMessageId);
         continue;
       }
@@ -305,7 +434,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       // al runtime multi-agente; si falla o está desactivado, caemos al
       // mensaje de ayuda de verificación (comportamiento histórico).
       if (env.whatsappAgentEnabled) {
-        const replied = await tryAgentReply(from, text, incomingMessageId || null);
+        const replied = await tryAgentReply(from, text, incomingMessageId || null, locale);
         if (replied) continue;
       }
 
@@ -318,21 +447,175 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
   async function tryAgentReply(
     to: string,
     userMessage: string,
-    replyToMessageId: string | null
+    replyToMessageId: string | null,
+    locale: Locale
   ): Promise<boolean> {
     try {
+      const history = await loadConversationHistory(fastify, {
+        projectKey: env.defaultProject,
+        phoneE164: to
+      });
       const result = await handleAgentMessage({
         projectKey: env.defaultProject,
         userMessage,
-        context: { from: to, logger: fastify.log }
+        history,
+        context: { from: to, logger: fastify.log, actions: buildAgentActions(to, locale) }
       });
       const reply = result.text?.trim();
       if (!reply) return false;
-      return safeReply(to, reply, replyToMessageId);
+      // El asistente IA elige modo por probabilidad: nota de voz / texto plano /
+      // texto citando al usuario. Si la voz falla o no aplica, cae a texto plano.
+      const mode = pickAgentReplyMode();
+      let sent = false;
+      if (mode === "audio") {
+        sent = await tryReplyWithVoice(to, reply);
+      }
+      if (!sent) {
+        sent = await safeReply(to, reply, replyToMessageId, { quote: mode === "quoted" });
+      }
+      if (sent) {
+        // Persistimos el turno para que el siguiente mensaje tenga contexto.
+        await recordConversationTurn(fastify, {
+          projectKey: env.defaultProject,
+          phoneE164: to,
+          userMessage,
+          assistantMessage: reply
+        });
+      }
+      return sent;
     } catch (err) {
       trackOperationalError();
       fastify.log.warn({ err, to }, "Agent reply failed; falling back to verification help");
       return false;
     }
+  }
+
+  // Acciones de negocio que se inyectan en el contexto de las tools del agente.
+  // La lógica vive aquí (capa de rutas), no en el runtime ni en el script.
+  function buildAgentActions(phoneE164: string, locale: Locale): AgentActions {
+    const actions: AgentActions = {
+      async scheduleMeeting(input: {
+        contactName: string;
+        company?: string;
+        contactEmail?: string;
+        meetingDay?: string;
+        meetingDate?: string;
+        meetingTime?: string | null;
+        service?: string;
+        reason?: string;
+      }) {
+        const record = {
+          projectKey: env.defaultProject,
+          userPhone: phoneE164,
+          contactName: input.contactName || "",
+          contactEmail: input.contactEmail || "",
+          company: input.company || "",
+          meetingDay: input.meetingDay || "",
+          meetingDate: input.meetingDate || "",
+          meetingTime: input.meetingTime ?? null,
+          reason: input.reason || input.service || "",
+          notifiedHuman: false
+        };
+        const res = await sendMeetingQuoteEmail(record);
+        if (res.sent) {
+          trackMeetingScheduled(record);
+        } else {
+          fastify.log.warn(
+            { to: phoneE164, error: res.error },
+            "scheduleMeeting: meeting quote email not sent"
+          );
+        }
+        return { ok: res.sent, message: res.error };
+      },
+
+      async escalateToHuman(input: {
+        contactName?: string;
+        company?: string;
+        contactEmail?: string;
+        topic?: string;
+        summary: string;
+      }) {
+        // La transferencia a un humano se notifica por CORREO, nunca por WhatsApp
+        // (la Cloud API no permite escribir a quien no inició la conversación).
+        const res = await sendSupportTicketEmail({
+          projectKey: env.defaultProject,
+          userPhone: phoneE164,
+          contactName: input.contactName || "",
+          contactEmail: input.contactEmail || "",
+          company: input.company || "",
+          topic: input.topic || "transferencia a humano",
+          summary: input.summary || ""
+        });
+        if (res.sent) {
+          trackSupportTicketCreated();
+        } else {
+          fastify.log.warn(
+            { to: phoneE164, error: res.error },
+            "escalateToHuman: support ticket email not sent"
+          );
+        }
+        return { ok: res.sent, message: res.error };
+      }
+    };
+
+    // Capa de servicios (opt-in). Si está apagada, las tools de vínculo/cuenta
+    // no reciben implementación y degradan con gracia ("no disponible").
+    if (env.whatsappServicesEnabled) {
+      // 2FA obligatorio: startLink ya NO envía código; el usuario confirma con
+      // el código de su app autenticadora (TOTP). Solo devolvemos el estado.
+      actions.startLink = async (input) => startLink(fastify, { phoneE164, serviceId: input.service });
+
+      actions.confirmLink = async (input) =>
+        confirmLink(fastify, { phoneE164, serviceId: input.service, code: input.code });
+
+      actions.authenticate = async (input) =>
+        authenticate(fastify, { phoneE164, service: input.service, code: input.code });
+
+      actions.listLinks = async () => ({
+        accounts: await listLinkedAccounts(fastify, phoneE164)
+      });
+
+      actions.getAccountInfo = async (input) =>
+        getAccountInfo(fastify, { phoneE164, serviceId: input.service });
+
+      actions.unlinkAccount = async (input) =>
+        unlinkAccount(fastify, { phoneE164, serviceId: input.service });
+
+      actions.callServiceApi = async (input) =>
+        callServiceApi(fastify, {
+          phoneE164,
+          serviceId: input.service,
+          action: input.action,
+          params: input.params
+        });
+
+      // Operar un servidor por el asistente de LUXIPANEL (Fase 2).
+      actions.listServers = async () => listServers(fastify, { phoneE164 });
+      actions.setSshEnabled = async (input) =>
+        setSshEnabled(fastify, { phoneE164, targetId: input.targetId, enabled: input.enabled });
+      actions.connectServer = async (input) =>
+        connectServer(fastify, { phoneE164, targetId: input.targetId });
+      actions.assistantSend = async (input) => {
+        const r = await assistantSend(fastify, { phoneE164, text: input.text });
+        // Si el run sigue en curso tras la espera inline, vigílalo en segundo
+        // plano y empuja el resultado por WhatsApp cuando termine (efecto en la
+        // capa de rutas, no en el servicio). El usuario inició la conversación,
+        // así que podemos escribirle (ventana de 24h de la Cloud API).
+        if (r.status === "working") {
+          void awaitCompletion(fastify, { phoneE164 })
+            .then((text) => {
+              if (text) void safeReply(phoneE164, text, null);
+            })
+            .catch(() => {});
+        }
+        return r;
+      };
+      actions.assistantPoll = async () => assistantPoll(fastify, { phoneE164 });
+      actions.switchConnection = async (input) =>
+        switchConnection(fastify, { phoneE164, targetId: input.targetId });
+      actions.disconnectServer = async () => disconnectServer(fastify, { phoneE164 });
+    }
+
+    return actions;
   }
 };

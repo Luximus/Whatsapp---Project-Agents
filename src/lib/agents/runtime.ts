@@ -1,6 +1,12 @@
 import { createChatProvider, getDefaultChatProvider } from "../ai/chat/index.js";
 import { isAiProviderName, type ChatMessage, type ChatProvider } from "../ai/types.js";
-import { toChatToolDefinition, type AgentTool, type AgentToolContext, type LoadedAgent } from "./types.js";
+import { env } from "../../env.js";
+import {
+  toChatToolDefinition,
+  type AgentTool,
+  type AgentToolContext,
+  type LoadedAgent
+} from "./types.js";
 
 const DEFAULT_MAX_TURNS = 6;
 
@@ -26,6 +32,11 @@ function resolveProvider(agent: LoadedAgent): ChatProvider {
     return createChatProvider(agent.chatProvider);
   }
   return getDefaultChatProvider();
+}
+
+/** Nombre (femenino) del asistente según el proveedor de chat activo. */
+function resolveAssistantName(providerName: string): string {
+  return env.assistantNames[providerName] || env.assistantNames.openai || "Luisa";
 }
 
 async function executeTool(
@@ -62,8 +73,13 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   const toolDefs = agent.tools.map(toChatToolDefinition);
   const toolsByName = new Map(agent.tools.map((tool) => [tool.name, tool]));
 
+  // La identidad (nombre femenino) del asistente depende del proveedor de chat:
+  // se sustituye el token {{ASSISTANT_NAME}} del prompt antes de invocar.
+  const assistantName = resolveAssistantName(provider.name);
+  const systemPrompt = agent.systemPrompt.replace(/\{\{\s*ASSISTANT_NAME\s*\}\}/g, assistantName);
+
   const baseMessages: ChatMessage[] = [
-    { role: "system", content: agent.systemPrompt },
+    { role: "system", content: systemPrompt },
     ...(options.history ?? []),
     { role: "user", content: userMessage }
   ];
@@ -79,12 +95,15 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       tools: toolDefs.length ? toolDefs : undefined
     });
 
-    // El asistente respondió (puede traer texto y/o tool calls).
-    newMessages.push({ role: "assistant", content: result.text });
-
+    // El asistente respondió (puede traer texto y/o tool calls). Conservamos
+    // las tool calls en el mensaje para reenviarlas al proveedor en el
+    // siguiente turno; sin ellas los mensajes "tool" quedan huérfanos.
     if (!result.toolCalls.length) {
+      newMessages.push({ role: "assistant", content: result.text });
       return { text: result.text, newMessages, turns };
     }
+
+    newMessages.push({ role: "assistant", content: result.text, toolCalls: result.toolCalls });
 
     // Ejecuta cada tool solicitada y añade su resultado al historial.
     for (const call of result.toolCalls) {

@@ -91,6 +91,16 @@ export class AnthropicChatProvider implements ChatProvider {
   }
 }
 
+function safeParseArgs(raw: string): Record<string, unknown> {
+  if (!raw || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 function toAnthropicMessage(message: ChatMessage) {
   if (message.role === "tool") {
     return {
@@ -103,6 +113,19 @@ function toAnthropicMessage(message: ChatMessage) {
         }
       ]
     };
+  }
+  if (message.role === "assistant" && message.toolCalls?.length) {
+    const content: Array<Record<string, unknown>> = [];
+    if (message.content) content.push({ type: "text", text: message.content });
+    for (const call of message.toolCalls) {
+      content.push({
+        type: "tool_use",
+        id: call.id,
+        name: call.name,
+        input: safeParseArgs(call.arguments)
+      });
+    }
+    return { role: "assistant" as const, content };
   }
   return {
     role: message.role === "assistant" ? ("assistant" as const) : ("user" as const),

@@ -1,4 +1,4 @@
-﻿insert into whatsapp_projects (project_key, display_name, is_active)
+insert into whatsapp_projects (project_key, display_name, is_active)
 values
   ('luxichat', 'LuxiChat', true),
   ('navai', 'Navai', true)
