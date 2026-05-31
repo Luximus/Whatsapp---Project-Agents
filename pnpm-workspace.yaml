@@ -1,0 +1,26 @@
+# pnpm@11 — Configuración de seguridad y resolución.
+
+# === SEGURIDAD ===
+minimumReleaseAge: 1440
+minimumReleaseAgeExclude: []
+
+allowBuilds:
+  esbuild: true
+  es5-ext: false
+  protobufjs: false
+  '@scarf/scarf': false
+  '@firebase/util': false   # postinstall sólo es info-printout
+
+packageManagerStrict: true
+packageManagerStrictVersion: false
+engineStrict: true
+verifyDepsBeforeRun: warn
+
+# === RESOLUCIÓN ===
+preferFrozenLockfile: true
+autoInstallPeers: true
+strictPeerDependencies: false
+dedupePeerDependents: true
+resolutionMode: highest
+
+shamefullyHoist: true

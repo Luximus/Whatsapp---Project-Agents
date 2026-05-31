@@ -7,3 +7,4 @@ dist/
 .DS_Store
 Thumbs.db
 luxisoft-firebase-adminsdk-fbsvc-aa3585aca8.json
+pnpm-lock.yaml

@@ -134,6 +134,38 @@ const envSchema = z.object({
   OPENAI_BASE_URL: z.string().optional().default(""),
   OPENAI_AUDIO_TRANSCRIBE_MODEL: z.string().optional().default("gpt-4o-mini-transcribe"),
 
+  // -----------------------------
+  // Capa multi-proveedor de IA
+  // -----------------------------
+  // Selección de proveedor/modelo por defecto. Cada proyecto/agente podrá
+  // sobreescribir esto más adelante (Fase 3). Proveedores soportados:
+  // openai | anthropic | gemini | deepseek | minimax | grok
+  AI_CHAT_PROVIDER: z.string().optional().default("openai"),
+  AI_CHAT_MODEL: z.string().optional().default(""),
+  AI_TRANSCRIPTION_PROVIDER: z.string().optional().default("openai"),
+
+  ANTHROPIC_API_KEY: z.string().optional().default(""),
+  ANTHROPIC_BASE_URL: z.string().optional().default(""),
+  ANTHROPIC_CHAT_MODEL: z.string().optional().default("claude-sonnet-4-6"),
+
+  GEMINI_API_KEY: z.string().optional().default(""),
+  GEMINI_BASE_URL: z.string().optional().default(""),
+  GEMINI_CHAT_MODEL: z.string().optional().default("gemini-2.5-flash"),
+
+  DEEPSEEK_API_KEY: z.string().optional().default(""),
+  DEEPSEEK_BASE_URL: z.string().optional().default(""),
+  DEEPSEEK_CHAT_MODEL: z.string().optional().default("deepseek-chat"),
+
+  MINIMAX_API_KEY: z.string().optional().default(""),
+  MINIMAX_BASE_URL: z.string().optional().default(""),
+  MINIMAX_CHAT_MODEL: z.string().optional().default("MiniMax-Text-01"),
+
+  GROK_API_KEY: z.string().optional().default(""),
+  GROK_BASE_URL: z.string().optional().default(""),
+  GROK_CHAT_MODEL: z.string().optional().default("grok-3"),
+
+  OPENAI_CHAT_MODEL: z.string().optional().default("gpt-4o-mini"),
+
   WHATSAPP_REPLY_CONTEXT_PROBABILITY: z.coerce.number().min(0).max(100).default(35),
   WHATSAPP_MARK_AS_READ_PROBABILITY: z.coerce.number().min(0).max(100).default(100),
   WHATSAPP_TYPING_INDICATOR_PROBABILITY: z.coerce.number().min(0).max(100).default(100),
@@ -168,6 +200,32 @@ export const env = {
   openaiApiKey: raw.OPENAI_API_KEY.trim(),
   openaiBaseUrl: raw.OPENAI_BASE_URL.trim(),
   openaiAudioTranscribeModel: raw.OPENAI_AUDIO_TRANSCRIBE_MODEL.trim() || "gpt-4o-mini-transcribe",
+
+  aiChatProvider: raw.AI_CHAT_PROVIDER.trim().toLowerCase() || "openai",
+  aiChatModel: raw.AI_CHAT_MODEL.trim(),
+  aiTranscriptionProvider: raw.AI_TRANSCRIPTION_PROVIDER.trim().toLowerCase() || "openai",
+
+  anthropicApiKey: raw.ANTHROPIC_API_KEY.trim(),
+  anthropicBaseUrl: raw.ANTHROPIC_BASE_URL.trim(),
+  anthropicChatModel: raw.ANTHROPIC_CHAT_MODEL.trim() || "claude-sonnet-4-6",
+
+  geminiApiKey: raw.GEMINI_API_KEY.trim(),
+  geminiBaseUrl: raw.GEMINI_BASE_URL.trim(),
+  geminiChatModel: raw.GEMINI_CHAT_MODEL.trim() || "gemini-2.5-flash",
+
+  deepseekApiKey: raw.DEEPSEEK_API_KEY.trim(),
+  deepseekBaseUrl: raw.DEEPSEEK_BASE_URL.trim(),
+  deepseekChatModel: raw.DEEPSEEK_CHAT_MODEL.trim() || "deepseek-chat",
+
+  minimaxApiKey: raw.MINIMAX_API_KEY.trim(),
+  minimaxBaseUrl: raw.MINIMAX_BASE_URL.trim(),
+  minimaxChatModel: raw.MINIMAX_CHAT_MODEL.trim() || "MiniMax-Text-01",
+
+  grokApiKey: raw.GROK_API_KEY.trim(),
+  grokBaseUrl: raw.GROK_BASE_URL.trim(),
+  grokChatModel: raw.GROK_CHAT_MODEL.trim() || "grok-3",
+
+  openaiChatModel: raw.OPENAI_CHAT_MODEL.trim() || "gpt-4o-mini",
   whatsappReplyContextProbability: raw.WHATSAPP_REPLY_CONTEXT_PROBABILITY,
   whatsappMarkAsReadProbability: raw.WHATSAPP_MARK_AS_READ_PROBABILITY,
   whatsappTypingIndicatorProbability: raw.WHATSAPP_TYPING_INDICATOR_PROBABILITY,
@@ -186,3 +244,25 @@ export const env = {
     raw.REPORT_LOGO_URL.trim() ||
     "https://imagedelivery.net/juOGhpzwqbGB3xBvV9fTTQ/e0ebede4-9c85-419b-57f6-40d8fc898000/product"
 };
+
+/**
+ * Secretos/valores que pueden faltar en desarrollo (todos tienen default ""),
+ * pero cuya ausencia en producción es un error de configuración silencioso y
+ * peligroso. Llamar en el arranque para fallar rápido (`fail fast`).
+ */
+const REQUIRED_IN_PRODUCTION: ReadonlyArray<readonly [string, string]> = [
+  ["WHATSAPP_ACCESS_TOKEN", env.WHATSAPP_ACCESS_TOKEN],
+  ["WHATSAPP_PHONE_NUMBER_ID", env.WHATSAPP_PHONE_NUMBER_ID],
+  ["WHATSAPP_WEBHOOK_VERIFY_TOKEN", env.WHATSAPP_WEBHOOK_VERIFY_TOKEN],
+  ["WHATSAPP_APP_SECRET", env.WHATSAPP_APP_SECRET]
+];
+
+export function assertProductionEnv() {
+  if (process.env.NODE_ENV !== "production") return;
+  const missing = REQUIRED_IN_PRODUCTION.filter(([, value]) => !String(value).trim()).map(
+    ([key]) => key
+  );
+  if (missing.length) {
+    throw new Error(`missing_required_env_in_production: ${missing.join(", ")}`);
+  }
+}

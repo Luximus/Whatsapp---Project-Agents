@@ -12,11 +12,38 @@ Backend para WhatsApp Cloud API enfocado en verificacion por codigo.
 
 ## Arquitectura actual
 
-- El webhook de WhatsApp recibe texto o audio.
-- Si llega audio, se transcribe con OpenAI antes de extraer el codigo.
+- El webhook de WhatsApp recibe texto o audio. El `POST` verifica la firma
+  `X-Hub-Signature-256` (HMAC con `WHATSAPP_APP_SECRET`) sobre el cuerpo crudo.
+- Si llega audio, se transcribe vía la capa de IA (`src/lib/ai/`) antes de
+  extraer el codigo.
 - Los codigos se validan contra sesiones `bridge` o contra solicitudes almacenadas en PostgreSQL.
 - Cuando una sesion `bridge` queda verificada, se disparan callbacks pendientes.
+- Las respuestas de usuario salen del catalogo i18n (`src/i18n/`, `es`/`en`/`pt`).
 - Se genera un reporte diario operativo por email.
+
+### Capas internas
+
+- **`src/lib/ai/`** — capa de IA agnóstica de proveedor. Interfaces
+  `ChatProvider` / `TranscriptionProvider` y adaptadores para **OpenAI,
+  Anthropic, Gemini, Deepseek, MiniMax y Grok**. El proveedor por defecto se
+  elige con `AI_CHAT_PROVIDER` / `AI_TRANSCRIPTION_PROVIDER`. Cada proveedor
+  admite `<PROV>_BASE_URL` (útil para gateways o modelos self-hosted compatibles).
+- **`src/lib/agents/`** — runtime multi-agente propio (loop de tool-calling
+  sobre `ChatProvider`, sin SDKs externos). Carga `agents/<proyecto>/services.txt`
+  (prompt) + `agents/<proyecto>/scripts/*.js` (tools) por `import()` dinámico.
+  Listo para reactivar el asistente comercial; el webhook todavía no lo invoca.
+- **`src/i18n/`** — `t(key, locale)` + detección de idioma de mensajes cortos.
+
+## Calidad
+
+```bash
+npm run typecheck   # tsc --noEmit
+npm run lint        # eslint
+npm test            # vitest
+npm run format      # prettier --write
+```
+
+CI: `.github/workflows/ci.yml` (typecheck → lint → test → build).
 
 ## Variables de entorno
 

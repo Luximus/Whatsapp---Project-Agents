@@ -1,7 +1,9 @@
 import type { FastifyPluginAsync } from "fastify";
 import { consumeBridgeOtp, dispatchDueBridgeEvents } from "../lib/bridge.js";
 import { env } from "../env.js";
-import { transcribeAudioWithOpenAI } from "../lib/openaiAudio.js";
+import { verifyWhatsappSignature } from "../lib/whatsappSignature.js";
+import { transcribeAudio } from "../lib/ai/index.js";
+import { t, detectLocale } from "../i18n/index.js";
 import { consumeWhatsappVerificationCode } from "../lib/whatsappVerification.js";
 import {
   trackInboundMessage,
@@ -42,9 +44,6 @@ type WebhookStatus = {
   errors?: Array<{ code?: number; title?: string; message?: string }>;
 };
 
-const VERIFICATION_HELP_REPLY =
-  "Este numero solo procesa codigos de verificacion. Envia el codigo que recibiste en la app para continuar.";
-
 function clampProbability(value: number) {
   if (!Number.isFinite(value)) return 0;
   if (value <= 0) return 0;
@@ -79,6 +78,25 @@ function flattenWebhookMessages(body: any) {
 }
 
 export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
+  // Conservamos el cuerpo crudo SOLO en este contexto encapsulado (las rutas
+  // del webhook) para poder verificar la firma HMAC de Meta sobre los bytes
+  // exactos. El resto de rutas de la app siguen usando el parser JSON normal.
+  fastify.addContentTypeParser(
+    "application/json",
+    { parseAs: "buffer" },
+    (request, body, done) => {
+      (request as any).rawBody = body as Buffer;
+      try {
+        const parsed = (body as Buffer).length
+          ? JSON.parse((body as Buffer).toString("utf8"))
+          : {};
+        done(null, parsed);
+      } catch (err) {
+        done(err as Error, undefined);
+      }
+    }
+  );
+
   const safeReply = async (to: string, message: string, replyToMessageId?: string | null) => {
     try {
       const contextualReplyId =
@@ -138,7 +156,24 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     reply.code(403).send("Invalid token");
   });
 
-  fastify.post("/api/webhooks/whatsapp", async (request) => {
+  fastify.post("/api/webhooks/whatsapp", async (request, reply) => {
+    if (env.WHATSAPP_APP_SECRET) {
+      const valid = verifyWhatsappSignature({
+        appSecret: env.WHATSAPP_APP_SECRET,
+        rawBody: (request as any).rawBody ?? Buffer.alloc(0),
+        signatureHeader: request.headers["x-hub-signature-256"] as string | undefined
+      });
+      if (!valid) {
+        fastify.log.warn({ url: request.url }, "WhatsApp webhook signature verification failed");
+        reply.code(401);
+        return { error: "invalid_signature" };
+      }
+    } else {
+      fastify.log.warn(
+        "WHATSAPP_APP_SECRET not set: skipping webhook signature verification (insecure)"
+      );
+    }
+
     const body = request.body as any;
     const { messages, statuses } = flattenWebhookMessages(body);
 
@@ -192,6 +227,8 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       await markReadAndShowTyping(from, incomingMessageId || null);
 
       let text = String(msg.text?.body ?? "").trim();
+      // Idioma inicial inferido del texto entrante; se reevalúa tras transcribir.
+      let locale = detectLocale(text);
       const isAudioInput = messageType === "audio" || (!!msg.audio?.id && !text);
       trackInboundMessage({
         fromE164: from,
@@ -201,12 +238,13 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       if (isAudioInput && msg.audio?.id) {
         try {
           const media = await downloadWhatsappMedia(msg.audio.id);
-          text = await transcribeAudioWithOpenAI({
+          text = await transcribeAudio({
             data: media.data,
             mimeType: media.mimeType,
             filename: media.filename
           });
           text = text.trim();
+          locale = detectLocale(text);
         } catch (err) {
           fastify.log.warn(
             { err, from, incomingMessageId, mediaId: msg.audio.id ?? null },
@@ -214,11 +252,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           );
           trackOpenAIFailure();
           trackOperationalError();
-          await safeReply(
-            from,
-            "Recibi tu nota de voz, pero no pude transcribirla. Puedes reenviarla o escribir tu mensaje en texto.",
-            incomingMessageId
-          );
+          await safeReply(from, t("audio_transcription_failed", locale), incomingMessageId);
           continue;
         }
       }
@@ -236,21 +270,13 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
         if (bridgeResult.handled) {
           if (bridgeResult.status === "verified") {
-            await safeReply(
-              from,
-              "Codigo verificado. Vuelve a la app para continuar.",
-              incomingMessageId
-            );
+            await safeReply(from, t("code_verified", locale), incomingMessageId);
             await dispatchDueBridgeEvents(fastify, {
               projectKey: bridgeResult.session.project_key,
               limit: 20
             });
           } else {
-            await safeReply(
-              from,
-              "Codigo invalido o expirado. Genera uno nuevo en la app.",
-              incomingMessageId
-            );
+            await safeReply(from, t("code_invalid_or_expired", locale), incomingMessageId);
           }
           continue;
         }
@@ -263,22 +289,18 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           await safeReply(
             from,
             verificationResult.status === "verified"
-              ? "Codigo verificado. Vuelve a la app para continuar."
-              : "Codigo invalido o expirado. Genera uno nuevo en la app.",
+              ? t("code_verified", locale)
+              : t("code_invalid_or_expired", locale),
             incomingMessageId
           );
           continue;
         }
 
-        await safeReply(
-          from,
-          "Codigo invalido o expirado. Genera uno nuevo en la app.",
-          incomingMessageId
-        );
+        await safeReply(from, t("code_invalid_or_expired", locale), incomingMessageId);
         continue;
       }
 
-      await safeReply(from, VERIFICATION_HELP_REPLY, incomingMessageId || null);
+      await safeReply(from, t("verification_help", locale), incomingMessageId || null);
     }
 
     return { ok: true };

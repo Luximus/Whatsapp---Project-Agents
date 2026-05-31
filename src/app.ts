@@ -2,7 +2,7 @@
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
-import { env } from "./env.js";
+import { env, assertProductionEnv } from "./env.js";
 import { dbPlugin } from "./plugins/db.js";
 import { authPlugin } from "./plugins/auth.js";
 import { healthRoutes } from "./routes/health.js";
@@ -11,6 +11,8 @@ import { whatsappRoutes } from "./routes/whatsapp.js";
 import { bridgeRoutes } from "./routes/bridge.js";
 
 export function buildApp() {
+  assertProductionEnv();
+
   const app = Fastify({
     logger: { level: env.LOG_LEVEL }
   });
