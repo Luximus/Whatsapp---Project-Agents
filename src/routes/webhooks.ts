@@ -3,6 +3,7 @@ import { consumeBridgeOtp, dispatchDueBridgeEvents } from "../lib/bridge.js";
 import { env } from "../env.js";
 import { verifyWhatsappSignature } from "../lib/whatsappSignature.js";
 import { transcribeAudio } from "../lib/ai/index.js";
+import { handleAgentMessage } from "../lib/agents/index.js";
 import { t, detectLocale } from "../i18n/index.js";
 import { consumeWhatsappVerificationCode } from "../lib/whatsappVerification.js";
 import {
@@ -300,9 +301,38 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         continue;
       }
 
+      // Mensaje sin código OTP. Si el asistente está habilitado, lo enrutamos
+      // al runtime multi-agente; si falla o está desactivado, caemos al
+      // mensaje de ayuda de verificación (comportamiento histórico).
+      if (env.whatsappAgentEnabled) {
+        const replied = await tryAgentReply(from, text, incomingMessageId || null);
+        if (replied) continue;
+      }
+
       await safeReply(from, t("verification_help", locale), incomingMessageId || null);
     }
 
     return { ok: true };
   });
+
+  async function tryAgentReply(
+    to: string,
+    userMessage: string,
+    replyToMessageId: string | null
+  ): Promise<boolean> {
+    try {
+      const result = await handleAgentMessage({
+        projectKey: env.defaultProject,
+        userMessage,
+        context: { from: to, logger: fastify.log }
+      });
+      const reply = result.text?.trim();
+      if (!reply) return false;
+      return safeReply(to, reply, replyToMessageId);
+    } catch (err) {
+      trackOperationalError();
+      fastify.log.warn({ err, to }, "Agent reply failed; falling back to verification help");
+      return false;
+    }
+  }
 };

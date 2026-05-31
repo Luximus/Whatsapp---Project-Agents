@@ -20,7 +20,7 @@ nueva y agnóstica de proveedor** lista para reactivarlo, pero el webhook aún
 | **Bridge OTP** | Activo | Apps externas (multi-proyecto, API key por proyecto). OTP + callbacks firmados HMAC con reintentos. |
 | **Verificación WhatsApp** | Activo | Apps LUXISOFT (login/registro/recuperación por código). |
 | **Capa IA multi-proveedor** | Activo (usado en transcripción) | `src/lib/ai/` — chat + transcripción agnósticos de proveedor. |
-| **Runtime multi-agente** | Listo, NO conectado al webhook | `src/lib/agents/` + `agents/<proyecto>/`. |
+| **Runtime multi-agente** | Conectado al webhook tras flag `WHATSAPP_AGENT_ENABLED` (default off) | `src/lib/agents/` + `agents/<proyecto>/`. |
 
 ## Mapa rápido
 
@@ -70,10 +70,20 @@ nueva y agnóstica de proveedor** lista para reactivarlo, pero el webhook aún
 `npm run typecheck && npm run lint && npm test` (Vitest) deben pasar. CI en
 `.github/workflows/ci.yml`. ESLint flat (`eslint.config.js`) + Prettier.
 
+## Flags de activación (defaults seguros)
+
+- `WHATSAPP_AGENT_ENABLED` (default `false`): si `true`, los mensajes entrantes
+  **sin** código OTP se enrutan al runtime multi-agente (`agents/<proyecto>/`).
+  Si el agente falla, cae al mensaje de ayuda de verificación.
+- `BRIDGE_STORE` (default `memory`): backend del Bridge. `postgres` persiste en
+  `whatsapp_bridge_sessions`/`_events` (store en `lib/bridge/`). Cae a memoria
+  si se pide postgres sin pool disponible.
+
+Ambos vienen apagados para no cambiar el runtime de producción hasta activarlos
+y verificarlos explícitamente.
+
 ## Deuda conocida
 
-- **Sesiones del Bridge viven en memoria** (`lib/bridge.ts`) → se pierden al
-  reiniciar pm2. El `db/schema.sql` ya tiene tablas; persistirlas es el próximo
-  paso de escalabilidad.
-- `node_modules` puede arrastrar `openai`/`@openai/agents` de versiones previas;
-  ya **no** están en `package.json`.
+- El modo `BRIDGE_STORE=postgres` está implementado y con tests (pool mockeado)
+  pero **no verificado contra la BD real** todavía; validar end-to-end antes de
+  activarlo en producción.

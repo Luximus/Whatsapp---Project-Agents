@@ -120,6 +120,9 @@ const envSchema = z.object({
   WHATSAPP_APP_SECRET: z.string().optional().default(""),
 
   WHATSAPP_DEFAULT_PROJECT: z.string().optional().default("luxisoft"),
+  // Si está activo, los mensajes sin código OTP se enrutan al asistente
+  // multi-agente (agents/<proyecto>/). Default off: el webhook solo hace OTP.
+  WHATSAPP_AGENT_ENABLED: z.string().optional().default("false"),
 
   BRIDGE_PROJECTS_JSON: z.string().optional().default("{}"),
   BRIDGE_OTP_TTL_SECONDS: z.coerce.number().int().min(30).default(300),
@@ -199,6 +202,7 @@ export const env = {
   ...raw,
   corsOrigins: csvToArray(raw.CORS_ORIGIN),
   defaultProject: raw.WHATSAPP_DEFAULT_PROJECT.trim().toLowerCase() || "luxisoft",
+  whatsappAgentEnabled: parseBooleanFlag(raw.WHATSAPP_AGENT_ENABLED, false),
   bridgeProjects: parseBridgeProjects(raw.BRIDGE_PROJECTS_JSON),
   bridgeStore: raw.BRIDGE_STORE.trim().toLowerCase() === "postgres" ? "postgres" : "memory",
   openaiApiKey: raw.OPENAI_API_KEY.trim(),
