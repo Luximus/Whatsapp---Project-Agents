@@ -129,6 +129,9 @@ const envSchema = z.object({
   BRIDGE_EVENT_RETRY_BASE_SECONDS: z.coerce.number().int().min(5).default(20),
   BRIDGE_EVENT_DISPATCH_LIMIT: z.coerce.number().int().min(1).max(500).default(50),
   BRIDGE_DISPATCH_TOKEN: z.string().optional().default(""),
+  // Backend de almacenamiento del Bridge: "memory" (default, sin persistencia)
+  // o "postgres" (persiste en whatsapp_bridge_sessions/_events).
+  BRIDGE_STORE: z.string().optional().default("memory"),
 
   OPENAI_API_KEY: z.string().optional().default(""),
   OPENAI_BASE_URL: z.string().optional().default(""),
@@ -197,6 +200,7 @@ export const env = {
   corsOrigins: csvToArray(raw.CORS_ORIGIN),
   defaultProject: raw.WHATSAPP_DEFAULT_PROJECT.trim().toLowerCase() || "luxisoft",
   bridgeProjects: parseBridgeProjects(raw.BRIDGE_PROJECTS_JSON),
+  bridgeStore: raw.BRIDGE_STORE.trim().toLowerCase() === "postgres" ? "postgres" : "memory",
   openaiApiKey: raw.OPENAI_API_KEY.trim(),
   openaiBaseUrl: raw.OPENAI_BASE_URL.trim(),
   openaiAudioTranscribeModel: raw.OPENAI_AUDIO_TRANSCRIBE_MODEL.trim() || "gpt-4o-mini-transcribe",
