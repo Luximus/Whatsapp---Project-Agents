@@ -19,6 +19,7 @@ export const lpConnector: ServiceConnector = {
     return {
       accountId: res.customerId,
       displayName: res.displayName,
+      whatsappVerified: Boolean(res.whatsappVerified),
       metadata: { hasPanels: Boolean(res.hasPanels), maskedEmail: res.maskedEmail }
     };
   },

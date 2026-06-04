@@ -26,6 +26,7 @@ export const luxipanelConnector: ServiceConnector = {
     return {
       accountId: res.customerId,
       displayName: res.displayName,
+      whatsappVerified: Boolean(res.whatsappVerified),
       metadata: { maskedEmail: res.maskedEmail }
     };
   },

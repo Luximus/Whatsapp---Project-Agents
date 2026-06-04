@@ -39,12 +39,16 @@ async function openAuth(
 }
 
 export type StartLinkResult =
+  | { status: "linked"; serviceName: string; displayName?: string | null }
   | { status: "need_2fa_code"; serviceName: string; displayName?: string | null }
   | { status: "already_linked"; serviceName: string; displayName?: string | null }
   | { status: "unknown_service" }
   | { status: "unavailable"; serviceName: string }
   | { status: "needs_2fa"; serviceName: string }
   | { status: "2fa_unavailable"; serviceName: string }
+  // El teléfono aún NO está verificado por WhatsApp en la cuenta (OTP en Ajustes).
+  // Es el prerrequisito para enlazar y operar servicios por el chat.
+  | { status: "needs_whatsapp_verification"; serviceName: string }
   | { status: "not_found"; serviceName: string }
   | { status: "error"; serviceName?: string; message: string };
 
@@ -63,10 +67,6 @@ export async function startLink(
   if (!connector.capabilities().profile) {
     return { status: "unavailable", serviceName: connector.name };
   }
-  // 2FA obligatorio: el servicio debe poder verificar 2FA por este canal.
-  if (typeof connector.is2faEnabled !== "function" || typeof connector.verify2fa !== "function") {
-    return { status: "2fa_unavailable", serviceName: connector.name };
-  }
 
   const store = getLinkStore(host);
   try {
@@ -82,22 +82,27 @@ export async function startLink(
     const candidate = await connector.findAccountByPhone(input.phoneE164);
     if (!candidate) return { status: "not_found", serviceName: connector.name };
 
-    // La cuenta DEBE tener 2FA activo; si no, pedir activarlo primero.
-    const enabled = await connector.is2faEnabled(candidate.accountId);
-    if (!enabled) return { status: "needs_2fa", serviceName: connector.name };
+    // Prerrequisito de enlace: el teléfono debe estar VERIFICADO por WhatsApp en
+    // la cuenta (OTP hecho en Ajustes de LUXIPANEL/portal/app/desktop). Esa
+    // verificación ya probó la posesión del número (la Cloud API solo entrega el
+    // código a ese mismo número), así que el enlace se crea directo, sin pedir un
+    // TOTP de nuevo. Si no está verificado, se instruye al usuario a hacerlo.
+    if (!candidate.whatsappVerified) {
+      return { status: "needs_whatsapp_verification", serviceName: connector.name };
+    }
 
-    await store.createPendingLink({
+    await store.saveLink({
       phoneE164: input.phoneE164,
       serviceId: connector.id,
       accountId: candidate.accountId,
       displayName: candidate.displayName ?? null,
       metadata: candidate.metadata ?? {},
-      via: "totp",
-      ttlSeconds: env.linkOtpTtlSeconds
+      verifiedAt: new Date()
     });
-    void store.pruneOtps().catch(() => {});
+    // Posesión del número ya probada por el OTP de cuenta → abrir sesión del chat.
+    await openAuth(host, input.phoneE164, connector, candidate.accountId, "whatsapp_otp");
     return {
-      status: "need_2fa_code",
+      status: "linked",
       serviceName: connector.name,
       displayName: candidate.displayName
     };

@@ -13,6 +13,9 @@
 export interface LinkCandidate {
   accountId: string;
   displayName?: string;
+  /** El teléfono ya está verificado por WhatsApp en la cuenta del servicio
+   *  (OTP hecho en Ajustes). Prerrequisito para enlazar y operar servicios. */
+  whatsappVerified?: boolean;
   metadata?: Record<string, unknown>;
 }
 

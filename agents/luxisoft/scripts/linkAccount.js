@@ -10,10 +10,10 @@
 export default {
   name: "linkAccount",
   description:
-    "Inicia el vínculo del número de WhatsApp con la cuenta de un servicio para poder consultar su cuenta/perfil. " +
+    "Inicia/crea el vínculo del número de WhatsApp con la cuenta de un servicio para consultar su cuenta y operar servicios. " +
     "Servicios válidos: 'lp' (cuenta LUXISOFT), 'luxipanel', 'luxichat'. " +
-    "Requiere que el número de WhatsApp sea el mismo registrado en la cuenta Y que la cuenta tenga 2FA activo. " +
-    "Tras llamarla, pídele a la persona el código de su app de autenticación (2FA) y úsalo con confirmLink.",
+    "Requiere que el número de WhatsApp sea el mismo registrado en la cuenta Y que ese teléfono esté VERIFICADO por WhatsApp en Ajustes de la cuenta (validación OTP). " +
+    "Si ya está verificado, el vínculo queda hecho de inmediato (no se pide código aquí).",
   parameters: {
     type: "object",
     properties: {
@@ -36,6 +36,10 @@ export default {
     const res = await start({ service });
     const name = res?.serviceName || service;
     switch (res?.status) {
+      case "linked":
+        return `ok: tu número quedó vinculado a la cuenta de ${name}${res.displayName ? ` (${res.displayName})` : ""}. Ya puedes consultar tu cuenta (getAccountInfo) y operar servicios.`;
+      case "needs_whatsapp_verification":
+        return `error: tu teléfono aún no está verificado por WhatsApp en ${name}. Pídele que entre a su cuenta (Ajustes/perfil en LUXIPANEL, la app o el escritorio), ponga su número y toque "Validar por WhatsApp" para confirmarlo; una vez verificado, vuelva aquí y reintente el vínculo.`;
       case "need_2fa_code":
         return `ok: encontré la cuenta de ${name}${res.displayName ? ` (${res.displayName})` : ""}. Pídele el código de su app de autenticación (2FA) y confírmalo con confirmLink. NO le pidas la contraseña.`;
       case "needs_2fa":

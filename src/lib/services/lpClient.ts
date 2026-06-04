@@ -15,6 +15,9 @@ export interface LpAccountLookup {
   displayName?: string;
   maskedEmail?: string;
   hasPanels?: boolean;
+  /** El número ya verificó su teléfono por WhatsApp (OTP en la cuenta LP).
+   *  Prerrequisito para enlazar la cuenta y operar servicios por el chat. */
+  whatsappVerified?: boolean;
 }
 
 export interface LpPanelSummary {
