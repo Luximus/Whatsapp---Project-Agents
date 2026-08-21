@@ -1,4 +1,5 @@
 ﻿import { env } from "../env.js";
+import type { RichBlock } from "./richMessaging.js";
 
 const OTP_REGEX = /(?:codigo|code|otp)[^\d]{0,10}(\d{4,6})/i;
 const FALLBACK_OTP_REGEX = /(\d{4,6})/;
@@ -127,6 +128,54 @@ export async function sendWhatsappText(
   }
 
   return sendWhatsappRequest(payload);
+}
+
+export async function sendWhatsappRich(toE164: string, block: RichBlock) {
+  const to = toWaMeNumber(toE164);
+  if (block.kind === "buttons") {
+    return sendWhatsappRequest({
+      messaging_product: "whatsapp", to, type: "interactive",
+      interactive: {
+        type: "button", body: { text: block.body },
+        ...(block.footer ? { footer: { text: block.footer } } : {}),
+        action: { buttons: block.options.slice(0, 3).map((option) => ({ type: "reply", reply: { id: option.id, title: option.title } })) }
+      }
+    });
+  }
+  if (block.kind === "list") {
+    return sendWhatsappRequest({
+      messaging_product: "whatsapp", to, type: "interactive",
+      interactive: { type: "list", body: { text: block.body }, action: { button: block.buttonLabel, sections: block.sections } }
+    });
+  }
+  if (block.kind === "image") {
+    return sendWhatsappRequest({ messaging_product: "whatsapp", to, type: "image", image: { link: block.url, ...(block.caption ? { caption: block.caption } : {}) } });
+  }
+  if (block.kind === "link") {
+    return sendWhatsappRequest({
+      messaging_product: "whatsapp", to, type: "interactive",
+      interactive: { type: "cta_url", body: { text: block.body }, action: { name: "cta_url", parameters: { display_text: block.label, url: block.url } } }
+    });
+  }
+  return sendWhatsappText(toE164, [block.title, block.subtitle, block.url].filter(Boolean).join("\n"));
+}
+
+export async function sendWhatsappTemplate(input: {
+  toE164: string;
+  name: string;
+  languageCode?: string;
+  components?: Array<Record<string, unknown>>;
+}) {
+  return sendWhatsappRequest({
+    messaging_product: "whatsapp",
+    to: toWaMeNumber(input.toE164),
+    type: "template",
+    template: {
+      name: input.name,
+      language: { code: input.languageCode || "es" },
+      ...(input.components?.length ? { components: input.components } : {})
+    }
+  });
 }
 
 export async function uploadWhatsappMedia(input: {

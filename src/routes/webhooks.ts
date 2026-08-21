@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { consumeBridgeOtp, dispatchDueBridgeEvents } from "../lib/bridge.js";
+import { buildBridgeMessage, consumeBridgeOtp, dispatchDueBridgeEvents, fulfillBridgeOtpRequest } from "../lib/bridge.js";
 import { env } from "../env.js";
 import { verifyWhatsappSignature } from "../lib/whatsappSignature.js";
 import { transcribeAudio, synthesizeSpeech, isSpeechConfigured } from "../lib/ai/index.js";
@@ -9,6 +9,14 @@ import {
   loadConversationHistory,
   recordConversationTurn
 } from "../lib/agents/conversation/index.js";
+import {
+  markInboxCommercialSignal,
+  markHandoffNotified,
+  recordInboxInbound,
+  recordInboxOutbound,
+  requestHumanHandoff,
+  type InboxConversation
+} from "../lib/inbox.js";
 import { t, detectLocale } from "../i18n/index.js";
 import type { Locale } from "../i18n/index.js";
 import { consumeWhatsappVerificationCode } from "../lib/whatsappVerification.js";
@@ -47,6 +55,7 @@ import {
   markWhatsappMessageAsRead,
   normalizeE164,
   sendWhatsappAudio,
+  sendWhatsappRich,
   sendWhatsappText,
   sendWhatsappTypingIndicator
 } from "../lib/whatsapp.js";
@@ -154,7 +163,8 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       const useQuote =
         typeof options?.quote === "boolean"
           ? options.quote
-          : Boolean(replyToMessageId) && shouldApplyProbability(env.whatsappReplyContextProbability);
+          : Boolean(replyToMessageId) &&
+            shouldApplyProbability(env.whatsappReplyContextProbability);
       const contextualReplyId = useQuote ? (replyToMessageId ?? null) : null;
       await sendWhatsappText(to, message, {
         replyToMessageId: contextualReplyId
@@ -339,6 +349,19 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
       if (!text) continue;
 
+      // Fallback seguro para conversaciones nuevas: si Meta bloqueó el primer
+      // texto saliente, el formulario abre WhatsApp con esta solicitud. Al
+      // recibirla ya existe ventana de atención y podemos responder con el OTP.
+      const otpRequest = await fulfillBridgeOtpRequest(fastify, { from, text });
+      if (otpRequest.handled) {
+        if (otpRequest.status === "ready") {
+          await safeReply(from, buildBridgeMessage(otpRequest.session.flow, otpRequest.session.code, otpRequest.session.otp_ref), incomingMessageId);
+        } else {
+          await safeReply(from, t("code_invalid_or_expired", locale), incomingMessageId);
+        }
+        continue;
+      }
+
       const otp = extractOtp(text);
       if (otp) {
         trackOtpMessage();
@@ -396,7 +419,12 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
             );
             // Retoma la última solicitud (p.ej. "conéctate a mi servidor") sin
             // que el usuario tenga que repetirla: el agente tiene el historial.
-            await tryAgentReply(from, t("auth_retry_seed", locale), incomingMessageId || null, locale);
+            await tryAgentReply(
+              from,
+              t("auth_retry_seed", locale),
+              incomingMessageId || null,
+              locale
+            );
             continue;
           }
           if (linkResult.status === "invalid" || linkResult.status === "expired") {
@@ -409,7 +437,12 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           if (authRes.status === "authenticated") {
             await safeReply(from, t("auth_ok", locale), incomingMessageId);
             // Retoma automáticamente lo que el usuario pidió antes del 2FA.
-            await tryAgentReply(from, t("auth_retry_seed", locale), incomingMessageId || null, locale);
+            await tryAgentReply(
+              from,
+              t("auth_retry_seed", locale),
+              incomingMessageId || null,
+              locale
+            );
             continue;
           }
           if (authRes.status === "invalid") {
@@ -438,7 +471,24 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         if (replied) continue;
       }
 
-      await safeReply(from, t("verification_help", locale), incomingMessageId || null);
+      const fallbackConversation = await recordInboxInbound(fastify, {
+        projectKey: env.defaultProject,
+        channel: "whatsapp",
+        contactKey: from,
+        externalMessageId: incomingMessageId || null,
+        content: text,
+        metadata: { learningEligible: true }
+      });
+      const fallbackText = t("verification_help", locale);
+      const fallbackSent = await safeReply(from, fallbackText, incomingMessageId || null);
+      await recordInboxOutbound(fastify, {
+        conversationId: fallbackConversation.id,
+        actor: "system",
+        content: fallbackText,
+        deliveryStatus: fallbackSent ? "sent" : "failed",
+        error: fallbackSent ? null : "whatsapp_fallback_send_failed",
+        metadata: { learningEligible: true }
+      });
     }
 
     return { ok: true };
@@ -450,7 +500,19 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     replyToMessageId: string | null,
     locale: Locale
   ): Promise<boolean> {
+    let inboxConversation: InboxConversation | null = null;
     try {
+      inboxConversation = await recordInboxInbound(fastify, {
+        projectKey: env.defaultProject,
+        channel: "whatsapp",
+        contactKey: to,
+        externalMessageId: replyToMessageId,
+        content: userMessage
+      });
+      if (inboxConversation.status === "waiting_human" || inboxConversation.status === "human_active") {
+        fastify.log.info({ conversationId: inboxConversation.id, status: inboxConversation.status }, "WhatsApp message queued for human; AI paused");
+        return true;
+      }
       const history = await loadConversationHistory(fastify, {
         projectKey: env.defaultProject,
         phoneE164: to
@@ -459,7 +521,12 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         projectKey: env.defaultProject,
         userMessage,
         history,
-        context: { from: to, logger: fastify.log, actions: buildAgentActions(to, locale) }
+        context: {
+          from: to,
+          channel: "whatsapp",
+          logger: fastify.log,
+          actions: buildAgentActions(to, locale, inboxConversation)
+        }
       });
       const reply = result.text?.trim();
       if (!reply) return false;
@@ -474,6 +541,20 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         sent = await safeReply(to, reply, replyToMessageId, { quote: mode === "quoted" });
       }
       if (sent) {
+        for (const block of result.rich) {
+          try { await sendWhatsappRich(to, block); }
+          catch (err) { fastify.log.warn({ err, kind: block.kind }, "WhatsApp rich block failed; text retained"); }
+        }
+      }
+      if (sent) {
+        await recordInboxOutbound(fastify, {
+          conversationId: inboxConversation.id,
+          actor: "ai",
+          kind: mode === "audio" ? "audio" : "text",
+          content: reply,
+          rich: result.rich,
+          deliveryStatus: "sent"
+        });
         // Persistimos el turno para que el siguiente mensaje tenga contexto.
         await recordConversationTurn(fastify, {
           projectKey: env.defaultProject,
@@ -485,6 +566,16 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       return sent;
     } catch (err) {
       trackOperationalError();
+      if (inboxConversation) {
+        await recordInboxOutbound(fastify, {
+          conversationId: inboxConversation.id,
+          actor: "ai",
+          content: "",
+          deliveryStatus: "failed",
+          error: err instanceof Error ? err.message.slice(0, 1000) : String(err).slice(0, 1000),
+          metadata: { learningEligible: true }
+        }).catch(() => undefined);
+      }
       fastify.log.warn({ err, to }, "Agent reply failed; falling back to verification help");
       return false;
     }
@@ -492,8 +583,16 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Acciones de negocio que se inyectan en el contexto de las tools del agente.
   // La lógica vive aquí (capa de rutas), no en el runtime ni en el script.
-  function buildAgentActions(phoneE164: string, locale: Locale): AgentActions {
+  function buildAgentActions(phoneE164: string, locale: Locale, conversation: InboxConversation): AgentActions {
     const actions: AgentActions = {
+      async captureCommercialLead(input) {
+        const updated = await markInboxCommercialSignal(fastify, conversation.id, {
+          reason: input.reason,
+          service: input.service,
+          actor: "ai"
+        });
+        return { ok: Boolean(updated) };
+      },
       async scheduleMeeting(input: {
         contactName: string;
         company?: string;
@@ -535,8 +634,10 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         topic?: string;
         summary: string;
       }) {
-        // La transferencia a un humano se notifica por CORREO, nunca por WhatsApp
-        // (la Cloud API no permite escribir a quien no inició la conversación).
+        await requestHumanHandoff(fastify, conversation.id, {
+          reason: input.topic || "transferencia a humano",
+          summary: input.summary || ""
+        });
         const res = await sendSupportTicketEmail({
           projectKey: env.defaultProject,
           userPhone: phoneE164,
@@ -544,10 +645,12 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           contactEmail: input.contactEmail || "",
           company: input.company || "",
           topic: input.topic || "transferencia a humano",
-          summary: input.summary || ""
+          summary: input.summary || "",
+          recipient: "quote@luxisoft.com"
         });
         if (res.sent) {
           trackSupportTicketCreated();
+          await markHandoffNotified(fastify, conversation.id);
         } else {
           fastify.log.warn(
             { to: phoneE164, error: res.error },
@@ -563,7 +666,8 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     if (env.whatsappServicesEnabled) {
       // 2FA obligatorio: startLink ya NO envía código; el usuario confirma con
       // el código de su app autenticadora (TOTP). Solo devolvemos el estado.
-      actions.startLink = async (input) => startLink(fastify, { phoneE164, serviceId: input.service });
+      actions.startLink = async (input) =>
+        startLink(fastify, { phoneE164, serviceId: input.service });
 
       actions.confirmLink = async (input) =>
         confirmLink(fastify, { phoneE164, serviceId: input.service, code: input.code });

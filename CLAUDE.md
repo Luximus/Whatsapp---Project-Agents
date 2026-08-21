@@ -1,15 +1,16 @@
 # CLAUDE.md — `whatsapp/` (whatsapp-bridge)
 
-Backend sobre WhatsApp Cloud API. Proceso pm2 `whatsapp-bridge`, escucha en
-`PORT` (default `4010`). Proyecto **independiente**: solo comparte despliegue en
-`/var/www` (ver raíz `/var/www/CLAUDE.md`).
+Backend multicanal sobre WhatsApp Cloud API y Facebook Messenger. Proceso pm2
+`whatsapp-bridge`, escucha en `PORT` (default `4010`). Proyecto **independiente**:
+solo comparte despliegue en `/var/www` (ver raíz `/var/www/CLAUDE.md`).
 
 > Detalle de arquitectura, flujos, endpoints, schema y env: **`README.md`**.
 > Este archivo es solo el contrato operativo para agentes.
 
 ## Qué es
 
-Hoy el runtime en `main` es **Bridge OTP + verificación por WhatsApp**. El
+Hoy el runtime en `main` es **Bridge OTP + verificación por WhatsApp + asistente
+multi-agente + capa autenticada de servicios**. El
 asistente comercial "Valeria" fue retirado del runtime monolítico (vivía en
 `lib/projectAgent.ts`, eliminado) y reimplementado sobre la **infraestructura
 multi-agente nueva y agnóstica de proveedor** (`agents/luxisoft/`). El webhook
@@ -23,18 +24,26 @@ el webhook solo procesa códigos OTP y cae al mensaje de ayuda de verificación.
 | **Verificación WhatsApp**   | Activo                                                                | Apps LUXISOFT (login/registro/recuperación por código).                                             |
 | **Capa IA multi-proveedor** | Activo (transcripción siempre; chat cuando el agente está activo)     | `src/lib/ai/` — chat + transcripción agnósticos de proveedor.                                       |
 | **Runtime multi-agente**    | Conectado al webhook tras flag `WHATSAPP_AGENT_ENABLED` (default off) | `src/lib/agents/` + `agents/<proyecto>/`.                                                           |
+| **Capa de servicios**       | Conectada al agente tras `WHATSAPP_SERVICES_ENABLED` (default off)    | Vínculos LP/LUXIPANEL/LuxiChat, sesión autenticada y operación de servidores.                       |
+| **Messenger**               | Conectado al mismo agente tras `META_MESSENGER_ENABLED`               | Página LuxiSoft; texto/postbacks, memoria aislada y tools comerciales.                              |
+| **Instagram**               | Deshabilitado                                                         | Adaptador conservado, flag apagado y sin suscripción activa en Meta.                                |
+
+> El estado real de producción, incidencias y resultados de calidad se mantiene
+> en **`STATUS.md`**; no inferir el despliegue efectivo únicamente de los defaults.
 
 ## Mapa rápido
 
 - `src/server.ts` entry · `src/app.ts` plugins+rutas+errores (llama `assertProductionEnv`)
 - `src/env.ts` config validada con `zod` (incluye `assertProductionEnv`)
-- `src/routes/` HTTP (`webhooks.ts`, `bridge.ts`, `whatsapp.ts`, `health.ts`)
+- `src/routes/` HTTP (`webhooks.ts`, `metaWebhooks.ts`, `bridge.ts`,
+  `whatsapp.ts`, `health.ts`)
 - `src/lib/` negocio (`whatsapp.ts`, `bridge.ts`, `reporting.ts`,
   `whatsappVerification.ts`, `whatsappSignature.ts`, `firebaseAdmin.ts`,
   `scraping/textWeb.ts` = extractor de texto desde HTML,
   `openaiAudio.ts` = wrapper deprecado → usar `lib/ai/`)
 - `src/lib/ai/` capa IA agnóstica: `types.ts`, `config.ts`, `chat/` (openai,
-  anthropic, gemini, + openai-compatible: deepseek/minimax/grok), `transcription/`,
+  anthropic, gemini, openai-compatible deepseek/minimax/grok y cadena CLI en
+  `chat/cliChain.ts`), `transcription/`,
   `speech/` (TTS texto→voz: openai-compat `/audio/speech`, gemini PCM→WAV, minimax t2a;
   selección por `AI_SPEECH_PROVIDER`)
 - `src/lib/agents/` runtime multi-agente: `registry.ts` (carga `agents/<proyecto>/`),
@@ -43,6 +52,9 @@ el webhook solo procesa códigos OTP y cae al mensaje de ayuda de verificación.
   en `env.ts`), `index.ts` (router `handleAgentMessage`),
   `conversation/` (memoria de conversación por número: postgres si hay pool, si no
   memoria; tabla `whatsapp_agent_messages`)
+- `src/lib/services/` capa de servicios: registro de connectors LP/LUXIPANEL/
+  LuxiChat, store Postgres con fallback a memoria, puerta de autenticación y
+  orquestación del asistente de servidor mediante LP SSO → LUXIPANEL
 - `src/i18n/` mensajes multi-idioma (`es`/`en`/`pt`) + detección de idioma
 - `src/plugins/` `db.ts` (pool PG), `auth.ts` (Firebase)
 - `agents/<proyecto>/` `services.txt` (prompt) + `scripts/*.js` (tools)
@@ -56,9 +68,16 @@ el webhook solo procesa códigos OTP y cae al mensaje de ayuda de verificación.
 - **Webhook firmado:** `POST /api/webhooks/whatsapp` verifica
   `X-Hub-Signature-256` (HMAC con `WHATSAPP_APP_SECRET`) sobre el body crudo.
   No quitar esa verificación; el parser raw-body está encapsulado en esa ruta.
+- **Webhook Meta firmado:** `POST /api/webhooks/meta` usa el mismo esquema HMAC.
+  Debe confirmar rápido y procesar el agente fuera del ACK; conservar dedup de
+  `messageId` para que los reintentos de Meta no dupliquen respuestas.
+- **Identidad multicanal:** la memoria usa IDs separados por canal. No mezclar
+  PSID/IGSID con teléfonos. En Messenger/Instagram no inyectar tools privadas de
+  cuenta/servidor: esas requieren identidad telefónica verificada.
 - **IA siempre vía `src/lib/ai/`** — nunca llamar a un SDK/HTTP de un proveedor
   directamente en el negocio. Añadir proveedor = nuevo adaptador en `chat/` y su
-  entrada en la factoría. Selección por env `AI_CHAT_PROVIDER` / `<PROV>_*`.
+  entrada en la factoría. `AI_CHAT_CHAIN` manda cuando no está vacío; producción
+  conserva el orden `codex,codex-qwen,claude`. No invertirlo silenciosamente.
 - **Extender un agente = nuevo `agents/<proyecto>/scripts/*.js`** (export default
   `{name, description, parameters, execute}`) **+ prompt en `services.txt`.** No
   meter lógica de negocio en el runtime (`lib/agents/`). Los scripts se cargan por
@@ -80,6 +99,14 @@ el webhook solo procesa códigos OTP y cae al mensaje de ayuda de verificación.
   insultos, contenido inseguro). No diluir estas reglas al editar el prompt.
 - **Callbacks del Bridge van firmados (HMAC-SHA256):** no cambiar formato de
   payload ni de firma sin coordinar con los consumidores externos.
+- **Vínculo vigente:** `startLink` solo enlaza si LP indica
+  `whatsappVerified=true`; en ese caso crea el vínculo y abre sesión con método
+  `whatsapp_otp`. No restaurar el flujo TOTP anterior sin coordinar el contrato.
+  Las acciones sensibles posteriores sí exigen sesión viva y usan TOTP para
+  reautenticar cuando expira.
+- **Operación de servidor:** no persistir el bearer corto de LUXIPANEL. Emitir
+  SSO fresco desde LP y mantener únicamente `conversationId`/ids de sesión, como
+  hace `lib/services/serverAssistant.ts`.
 - **El comportamiento probabilístico** (`WHATSAPP_*_PROBABILITY`, debounce) es
   intencional para parecer humano; no volverlo determinista sin pedirlo.
 - Secretos (`WHATSAPP_ACCESS_TOKEN`, `*_API_KEY`, `BRIDGE_DISPATCH_TOKEN`):
@@ -89,7 +116,8 @@ el webhook solo procesa códigos OTP y cae al mensaje de ayuda de verificación.
 ## Calidad
 
 `npm run typecheck && npm run lint && npm test` (Vitest) deben pasar. CI en
-`.github/workflows/ci.yml`. ESLint flat (`eslint.config.js`) + Prettier.
+`.github/workflows/ci.yml`. ESLint flat (`eslint.config.js`) + Prettier. Consultar
+`STATUS.md` antes de asumir que la rama está verde.
 
 ## Flags de activación (defaults seguros)
 
@@ -102,6 +130,11 @@ el webhook solo procesa códigos OTP y cae al mensaje de ayuda de verificación.
   agente y persiste cada turno (solo texto user/assistant) en
   `whatsapp_agent_messages`. TTL = ventana de inactividad antes de olvidar. Si no
   hay pool PG, cae a memoria de proceso.
+- `META_MESSENGER_ENABLED` (default `false`): enruta Messenger al mismo agente.
+  Requiere Page token, Page ID, verify token y App Secret.
+- `META_INSTAGRAM_ENABLED` (default `false`): controla Instagram de forma
+  independiente. En producción debe permanecer `false` mientras el canal esté
+  retirado; si se reactiva, también exige Instagram Account ID.
 - `WHATSAPP_REPLY_TEXT_PROBABILITY`/`_AUDIO_PROBABILITY`/`_QUOTED_PROBABILITY`
   (defaults `35`/`35`/`30`): pesos del **modo de respuesta del asistente IA**.
   Por cada respuesta del agente se elige uno al azar: texto plano · **nota de
@@ -114,11 +147,33 @@ el webhook solo procesa códigos OTP y cae al mensaje de ayuda de verificación.
 - `BRIDGE_STORE` (default `memory`): backend del Bridge. `postgres` persiste en
   `whatsapp_bridge_sessions`/`_events` (store en `lib/bridge/`). Cae a memoria
   si se pide postgres sin pool disponible.
+- `WHATSAPP_SERVICES_ENABLED` (default `false`): inyecta las tools de cuenta y
+  servidor. En producción está activado; confirmar siempre el estado efectivo
+  en `.env`/PM2 y en `STATUS.md`.
+- `AUTH_SESSION_TTL_SECONDS` (default `3600`): sesión autenticada deslizante. El
+  servidor purga cada cinco minutos sesiones inactivas, conversación y sesiones
+  de servidor asociadas.
 
 `WHATSAPP_AGENT_ENABLED` y `BRIDGE_STORE` vienen apagados para no cambiar el
 runtime de producción hasta activarlos y verificarlos explícitamente.
 
 ## Deuda conocida
+
+- **Operación (2026-08-20):** TLS fue renovado hasta el 2026-11-18 y Certbot
+  migró de `webroot` fallido al autenticador Nginx. Meta funciona con el token
+  permanente `SYSTEM_USER` ya administrado por `luxisoft.com`; teléfono, WABA,
+  suscripción y callback fueron verificados. Falta repetir una conversación real
+  entrante y validar la respuesta completa. Ver `STATUS.md`.
+- **IA (2026-08-20):** chat migrado a la cadena CLI Codex Luna → Codex-Qwen 3.7
+  → Claude Opus 4.8. Codex y Claude están verificados; Qwen continúa en `429`,
+  pero el fallback evita que bloquee WhatsApp o Messenger.
+- **Instagram (2026-08-20):** deshabilitado por decisión operativa. Se conserva
+  el adaptador y `META_APP_REVIEW.md` para una eventual reactivación, pero el flag
+  debe permanecer apagado y la App no debe tener suscripción `instagram` activa.
+- La suite tiene 3 pruebas desactualizadas en `services.test.ts`: aún esperan el
+  flujo de vínculo TOTP retirado por `6a978a0`; 100/103 pruebas pasan.
+- `.env.example` todavía no incluye las variables `WHATSAPP_SERVICES_ENABLED`,
+  `LINK_OTP_*`, `AUTH_SESSION_*`, `LP_*`, `LUXIPANEL_*` y `LUXICHAT_*`.
 
 - El modo `BRIDGE_STORE=postgres` está implementado y con tests (pool mockeado)
   pero **no verificado contra la BD real** todavía; validar end-to-end antes de
@@ -130,3 +185,19 @@ runtime de producción hasta activarlos y verificarlos explícitamente.
   una tabla nueva al runtime, aplicar solo su DDL con el usuario de la app, o
   correr el schema completo con un rol con privilegios. (El BOM UTF-8 que rompía
   el primer statement ya se eliminó de `db/schema.sql` y `db/seed.sql`.)
+
+<!-- luxipanel-context:start -->
+
+## Contexto LUXIPANEL (Obsidian)
+
+Este proyecto tiene un **vault de contexto** en `/home/jmarin/luxipanel-context/projects/whatsapp`, gestionado por el módulo Obsidian de LUXIPANEL. Antes de trabajar, consulta y mantén actualizadas estas notas:
+
+- `/home/jmarin/luxipanel-context/projects/whatsapp/Contexto.md` — resumen del estado y objetivo.
+- `/home/jmarin/luxipanel-context/projects/whatsapp/Decisiones.md` — decisiones y su porqué.
+- `/home/jmarin/luxipanel-context/projects/whatsapp/Comandos.md` — comandos útiles.
+- `/home/jmarin/luxipanel-context/projects/whatsapp/Errores.md` — errores conocidos y soluciones.
+- `/home/jmarin/luxipanel-context/projects/whatsapp/Reglas.md` — convenciones y reglas.
+
+Puedes leer/editar estos archivos directamente o pedírselo al asistente IA del panel (herramientas `obsidian.*`). Resume aquí lo aprendido en cada sesión.
+
+<!-- luxipanel-context:end -->

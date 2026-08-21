@@ -99,6 +99,33 @@ export function extractBridgeReference(text: string | null | undefined) {
   return match?.[1]?.toUpperCase() ?? null;
 }
 
+export function buildBridgeOtpRequest(otpRef: string) {
+  return `SOLICITAR CODIGO LUXISOFT REF ${otpRef}`;
+}
+
+/**
+ * Abre la ventana de atención de WhatsApp cuando Meta no permite iniciar una
+ * conversación con texto libre. El usuario envía esta frase prellenada y el
+ * Bridge responde con el OTP dentro de esa conversación ya iniciada.
+ */
+export async function fulfillBridgeOtpRequest(
+  fastify: any,
+  input: { from: string; text: string },
+) {
+  const match = input.text.trim().match(/^SOLICITAR\s+CODIGO\s+LUXISOFT\s+REF\s+([A-Z0-9]{8})$/i);
+  if (!match) return { handled: false as const };
+  const store = getBridgeStore(fastify);
+  await store.prune();
+  const sessions = await store.listPendingSessionsByPhone(input.from);
+  const session = sessions.find((row) => row.otp_ref.toUpperCase() === match[1]!.toUpperCase());
+  if (!session) return { handled: true as const, status: "not_found" as const };
+  if (session.expires_at <= new Date()) {
+    await store.updateSession(session.id, { status: "expired" });
+    return { handled: true as const, status: "expired" as const };
+  }
+  return { handled: true as const, status: "ready" as const, session };
+}
+
 function flowDisplayName(flow: BridgeFlow) {
   switch (flow) {
     case "verification":

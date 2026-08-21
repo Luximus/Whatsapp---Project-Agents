@@ -1,68 +1,69 @@
-/**
- * Tool: devuelve el catálogo de productos de LUXISOFT para que el asistente
- * describa cada uno con datos exactos en lugar de improvisar.
- *
- * Cada script de agente exporta por defecto un objeto { name, description,
- * parameters (JSON Schema), execute(args, context) -> string }.
- * El runtime lo carga por import() dinámico (sin eval).
- */
-const CATALOG = {
-  web: "luxisoft.com: sitio y plataforma de LUXISOFT, punto de entrada a los productos, a la cuenta de cliente y al soporte.",
-  luxipanel:
-    "LUXIPANEL: panel de administración de servidores estilo cPanel (archivos, terminal web, DNS, SSL/TLS, correo, firewall, backups, cron, monitoreo y antivirus) con asistente de IA integrado. Se usa desde el navegador.",
-  licencias:
-    "LP-LICENSE-SERVER (LP-LS): licencias y pagos, portal de cliente, gestión de dominios y certificados SSL, y acceso seguro a servidores. Respalda a LUXIPANEL en modo gestionado.",
-  voz: "NAVAI: framework de agentes de voz en tiempo real para asistentes, encuestas y evaluaciones, integrable con otros canales como WhatsApp.",
-  chat: "LuxiChat: backend de chat para tus aplicaciones.",
-  whatsapp: "WhatsApp Bridge: verificación OTP y asistentes por WhatsApp."
+const API = String(process.env.LUXISOFT_PLATFORM_API_URL || "http://127.0.0.1:3200/api/v1").replace(/\/+$/, "");
+
+const FALLBACK = {
+  positioning: "LuxiSoft permite crear o modificar un sitio o tienda con IA, publicarlo, vender y administrarlo desde una sola plataforma.",
+  features: ["sitio asistido por IA", "catálogo", "pagos en línea según plan", "WhatsApp con IA", "dominio propio según plan", "panel y estadísticas"],
+  plans: ["Free", "Plus", "Premium"]
 };
 
-// Sinónimos comunes → clave del catálogo, para que el filtro sea tolerante.
-const ALIASES = {
-  luxisoft: "web",
-  "luxisoft.com": "web",
-  sitio: "web",
-  website: "web",
-  panel: "luxipanel",
-  paneles: "luxipanel",
-  cpanel: "luxipanel",
-  "lp-ls": "licencias",
-  "lp-license-server": "licencias",
-  lp: "licencias",
-  licencia: "licencias",
-  license: "licencias",
-  licenses: "licencias",
-  pagos: "licencias",
-  navai: "voz",
-  voice: "voz",
-  luxichat: "chat",
-  otp: "whatsapp",
-  bridge: "whatsapp"
-};
+const money = (cents) => new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(Number(cents || 0) / 100);
+
+async function json(path) {
+  const response = await fetch(`${API}${path}`, { headers: { accept: "application/json" }, signal: globalThis.AbortSignal.timeout(5000) });
+  if (!response.ok) throw new Error(`luxisoft_catalog_http_${response.status}`);
+  return response.json();
+}
 
 export default {
   name: "getServiceCatalog",
-  description:
-    "Lista los productos de LUXISOFT (web, LUXIPANEL, LP-LS, NAVAI, LuxiChat, WhatsApp Bridge). Úsala para describir qué ofrece la empresa o dar soporte de un producto.",
+  description: "Consulta la oferta VIGENTE de LuxiSoft: planes y precios actuales, motores de negocio habilitados y funciones. Úsala antes de recomendar o cotizar; nunca memorices precios.",
   parameters: {
     type: "object",
     properties: {
-      area: {
-        type: "string",
-        description:
-          "Filtro opcional por producto (web, luxipanel, licencias, voz, chat, whatsapp). Acepta sinónimos como navai, lp-ls o luxisoft."
-      }
+      area: { type: "string", enum: ["overview", "plans", "engines", "demos"], description: "Información que necesita la persona." },
+      planCode: { type: "string", enum: ["free", "plus", "premium"], description: "Plan específico si preguntó por uno." }
     },
     additionalProperties: false
   },
-  execute(args) {
-    const raw = typeof args?.area === "string" ? args.area.trim().toLowerCase() : "";
-    const area = ALIASES[raw] ?? raw;
-    if (area && CATALOG[area]) {
-      return CATALOG[area];
+  async execute(args, context) {
+    const area = String(args?.area || "overview");
+    if (["voz", "navai"].includes(area.toLowerCase())) return "NAVAI: proyecto de agentes de voz en tiempo real de Luxisoft para asistentes, encuestas y evaluaciones.";
+    try {
+      if (area === "plans") {
+        const payload = await json("/billing/plans");
+        const plans = Array.isArray(payload?.plans) ? payload.plans : [];
+        const filtered = args?.planCode ? plans.filter((plan) => plan.code === args.planCode) : plans;
+        const lines = filtered.map((plan) => {
+          const periods = (plan.periods || []).map((period) => `${period.code}: ${money(period.priceCopCents)}${period.installments > 1 ? ` × ${period.installments} cuotas` : " pago único"}`).join("; ");
+          return `${String(plan.code).toUpperCase()}: ${plan.maxProducts == null ? "productos ilimitados" : `${plan.maxProducts} productos`}, ${plan.aiReplies} respuestas IA/mes, ${plan.siteChanges} cambios IA/mes${periods ? `. ${periods}` : ". Sin costo"}`;
+        });
+        context?.render?.([{ kind: "buttons", body: "¿Qué quieres hacer ahora?", options: [
+          { id: "START_TRIAL", title: "Probar 7 días" },
+          { id: "REQUEST_QUOTE", title: "Solicitar asesoría" },
+          { id: "VIEW_DEMOS", title: "Ver ejemplos" }
+        ] }]);
+        return lines.join("\n");
+      }
+      if (area === "engines") {
+        const payload = await json("/templates");
+        const templates = Array.isArray(payload?.data) ? payload.data : [];
+        const enabled = templates.filter((row) => row.enabled !== false);
+        const coming = templates.filter((row) => row.enabled === false);
+        context?.render?.([{ kind: "list", body: "Elige el tipo de proyecto que más se parece a tu negocio.", buttonLabel: "Ver opciones", sections: [{ title: "Disponibles", rows: enabled.slice(0, 10).map((row) => ({ id: `ENGINE:${row.key}`, title: row.name, description: row.description })) }] }]);
+        return `Disponibles hoy:\n${enabled.map((row) => `- ${row.name}: ${row.description}. ${Array.isArray(row.features) ? row.features.join(", ") : ""}`).join("\n")}\n\nPróximamente (no ofrecer como activos):\n${coming.map((row) => `- ${row.name}`).join("\n")}`;
+      }
+      if (area === "demos") {
+        context?.render?.([{ kind: "link", body: "Explora ejemplos reales creados con LuxiSoft.", label: "Ver proyectos", url: "https://luxisoft.com/es#proyectos" }]);
+        return "Ejemplos publicados: Eje Veleño, VitaSana, UFIT Mercado Saludable, LuxiGames, LUXIPANEL y NAVAI. Usa el enlace oficial para ver la selección vigente.";
+      }
+      context?.render?.([{ kind: "buttons", body: "Puedo orientarte según tu objetivo.", options: [
+        { id: "CATALOG:ENGINES", title: "Crear mi sitio" },
+        { id: "CATALOG:PLANS", title: "Planes y precios" },
+        { id: "HUMAN_HELP", title: "Hablar con alguien" }
+      ] }]);
+      return `${FALLBACK.positioning}\nIncluye: ${FALLBACK.features.join(", ")}. Planes: ${FALLBACK.plans.join(", ")}. La prueba completa dura 7 días y no requiere tarjeta.`;
+    } catch {
+      return `${FALLBACK.positioning} Incluye ${FALLBACK.features.join(", ")}. No pude consultar el catálogo en vivo; no des precios y ofrece reintentar o transferir a una persona.`;
     }
-    return Object.entries(CATALOG)
-      .map(([key, value]) => `- ${key}: ${value}`)
-      .join("\n");
   }
 };

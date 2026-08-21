@@ -1,15 +1,14 @@
 /**
  * Tool: transfiere la conversación a un agente humano.
  *
- * Notifica al equipo por CORREO (no por WhatsApp). La lógica de envío se inyecta
- * vía `context.actions` desde la capa de rutas (webhook).
+ * Pausa la IA, envía el chat a la bandeja humana y notifica por correo.
  */
 export default {
   name: "escalateToHuman",
   description:
     "Transfiere la conversación a un agente humano del equipo de LUXISOFT cuando no puedes resolver " +
     "algo por chat (requiere acceso a la cuenta, datos privados, un caso técnico o el cliente lo pide). " +
-    "Resume el caso de forma clara. El equipo recibe la notificación por correo y dará seguimiento.",
+    "Resume el caso de forma clara. La IA dejará de responder hasta que el agente humano cierre la conversación.",
   parameters: {
     type: "object",
     properties: {
@@ -46,7 +45,7 @@ export default {
     });
 
     if (result?.ok) {
-      return "ok: caso enviado al equipo humano por correo. Confirma a la persona que un agente la contactará pronto.";
+      return "ok: conversación enviada a la bandeja humana y agente IA pausado. Confirma que una persona del equipo continuará por este mismo chat.";
     }
     return `error: no_se_pudo_transferir${result?.message ? `: ${result.message}` : ""}`;
   }

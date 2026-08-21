@@ -4,6 +4,7 @@ import { env } from "../env.js";
 import {
   BRIDGE_FLOWS,
   buildBridgeMessage,
+  buildBridgeOtpRequest,
   createBridgeSession,
   dispatchDueBridgeEvents,
   enqueueBridgeEvent,
@@ -15,7 +16,7 @@ import {
   resolveBridgeSessionStatus,
   verifyBridgeSessionCode
 } from "../lib/bridge.js";
-import { normalizeE164, sendWhatsappText } from "../lib/whatsapp.js";
+import { buildWaUrl, normalizeE164, sendWhatsappText } from "../lib/whatsapp.js";
 import { parseOrThrow } from "../lib/zod.js";
 
 const flowSchema = z.enum(BRIDGE_FLOWS);
@@ -123,7 +124,10 @@ async function createSessionRequest(
       : "No fue posible entregar el codigo por WhatsApp.",
     waMessageId,
     deliveryOk,
-    deliveryError
+    deliveryError,
+    initiationUrl: deliveryOk || !env.WHATSAPP_VERIFY_NUMBER_E164
+      ? null
+      : buildWaUrl(env.WHATSAPP_VERIFY_NUMBER_E164, buildBridgeOtpRequest(session.otp_ref))
   };
 }
 
@@ -151,7 +155,8 @@ export const bridgeRoutes: FastifyPluginAsync = async (fastify) => {
       instructions: created.instructions,
       wa_message_id: created.waMessageId,
       delivery_ok: created.deliveryOk,
-      delivery_error: created.deliveryError
+      delivery_error: created.deliveryError,
+      initiation_url: created.initiationUrl
     };
   });
 

@@ -23,7 +23,6 @@ vi.mock("./registry.js", () => ({
 
 import {
   startLink,
-  confirmLink,
   confirmPendingLink,
   authenticate,
   getAccountInfo,
@@ -99,28 +98,16 @@ describe("vínculo con 2FA obligatorio", () => {
     expect(r.status).toBe("not_found");
   });
 
-  it("needs_2fa si la cuenta no tiene 2FA activo", async () => {
+  it("exige que el teléfono esté verificado por WhatsApp", async () => {
     fake.connector.findAccountByPhone.mockResolvedValue({ accountId: "cust-1" });
-    fake.connector.is2faEnabled.mockResolvedValue(false);
     const r = await startLink({}, { phoneE164: "+57300", serviceId: "lp" });
-    expect(r.status).toBe("needs_2fa");
+    expect(r.status).toBe("needs_whatsapp_verification");
   });
 
-  it("need_2fa_code cuando hay cuenta con 2FA; confirma con TOTP y abre sesión", async () => {
-    fake.connector.findAccountByPhone.mockResolvedValue({ accountId: "cust-1", displayName: "Jose" });
-    fake.connector.is2faEnabled.mockResolvedValue(true);
+  it("vincula directamente una cuenta cuyo teléfono ya fue verificado", async () => {
+    fake.connector.findAccountByPhone.mockResolvedValue({ accountId: "cust-1", displayName: "Jose", whatsappVerified: true });
     const start = await startLink({}, { phoneE164: "+57302", serviceId: "lp" });
-    expect(start.status).toBe("need_2fa_code");
-
-    // código TOTP incorrecto
-    fake.connector.verify2fa.mockResolvedValueOnce(false);
-    const bad = await confirmLink({}, { phoneE164: "+57302", serviceId: "lp", code: "000000" });
-    expect(bad.status).toBe("invalid");
-
-    // código TOTP correcto → vinculado + sesión 2FA abierta
-    fake.connector.verify2fa.mockResolvedValueOnce(true);
-    const ok = await confirmLink({}, { phoneE164: "+57302", serviceId: "lp", code: "123456" });
-    expect(ok.status).toBe("linked");
+    expect(start.status).toBe("linked");
     expect(await getLinkStore({}).getAuthSession("+57302")).not.toBeNull();
 
     // getAccountInfo ahora pasa (sesión 2FA viva)
@@ -133,9 +120,9 @@ describe("vínculo con 2FA obligatorio", () => {
   });
 
   it("confirmPendingLink confirma un TOTP suelto sin saber el servicio", async () => {
-    fake.connector.findAccountByPhone.mockResolvedValue({ accountId: "cust-1" });
-    fake.connector.is2faEnabled.mockResolvedValue(true);
-    await startLink({}, { phoneE164: "+57400", serviceId: "lp" });
+    await getLinkStore({}).createPendingLink({
+      phoneE164: "+57400", serviceId: "lp", accountId: "cust-1", via: "totp", ttlSeconds: 300
+    });
     fake.connector.verify2fa.mockResolvedValue(true);
     const r = await confirmPendingLink({}, { phoneE164: "+57400", code: "111111" });
     expect(r).toMatchObject({ status: "linked", serviceName: "Cuenta LUXISOFT" });

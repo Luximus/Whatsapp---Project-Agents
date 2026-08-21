@@ -1,4 +1,5 @@
 import type { ChatToolDefinition } from "../ai/types.js";
+import type { RichBlock } from "../richMessaging.js";
 
 /**
  * Contrato de una tool de agente. Cada `agents/<proyecto>/scripts/*.js` debe
@@ -79,6 +80,8 @@ export interface AgentActions {
   scheduleMeeting?: (input: ScheduleMeetingInput) => Promise<AgentActionResult>;
   /** Transfiere a un humano: envía la solicitud por correo (NO por WhatsApp). */
   escalateToHuman?: (input: EscalateToHumanInput) => Promise<AgentActionResult>;
+  /** Registra una señal comercial real para CRM y atribución publicitaria. */
+  captureCommercialLead?: (input: { reason: string; service?: string }) => Promise<AgentActionResult>;
   /**
    * Inicia el vínculo del número con la cuenta de un servicio: busca la cuenta
    * por teléfono y, si la encuentra, envía un OTP por WhatsApp (la ruta entrega
@@ -123,7 +126,13 @@ export interface AgentActions {
     status: string;
     serverName?: string;
     linuxUser?: string;
-    servers?: Array<{ id: string; name: string; linuxUser: string; panel?: string; enabled: boolean }>;
+    servers?: Array<{
+      id: string;
+      name: string;
+      linuxUser: string;
+      panel?: string;
+      enabled: boolean;
+    }>;
     message?: string;
   }>;
   /** Activa/desactiva (soft-disable) un acceso SSH. */
@@ -156,10 +165,14 @@ export interface AgentToolContext {
   projectKey: string;
   /** Teléfono E164 del interlocutor, si aplica. */
   from?: string | null;
+  /** Canal que originó el turno; permite conservar una sola persona multicanal. */
+  channel?: "whatsapp" | "messenger" | "instagram" | null;
   /** Logger inyectable (Fastify u otro). */
   logger?: Pick<Console, "info" | "warn" | "error">;
   /** Acciones de negocio inyectadas por la capa de rutas (envío de correos, etc.). */
   actions?: AgentActions;
+  /** Adjunta UI segura al turno; los renderizadores de canal validan límites. */
+  render?: (blocks: RichBlock[]) => void;
 }
 
 /** Un agente cargado: prompt de sistema + sus tools. */

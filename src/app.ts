@@ -7,8 +7,11 @@ import { dbPlugin } from "./plugins/db.js";
 import { authPlugin } from "./plugins/auth.js";
 import { healthRoutes } from "./routes/health.js";
 import { webhookRoutes } from "./routes/webhooks.js";
+import { metaWebhookRoutes } from "./routes/metaWebhooks.js";
 import { whatsappRoutes } from "./routes/whatsapp.js";
 import { bridgeRoutes } from "./routes/bridge.js";
+import { inboxRoutes } from "./routes/inbox.js";
+import { learningRoutes } from "./routes/learning.js";
 
 export function buildApp() {
   assertProductionEnv();
@@ -18,10 +21,7 @@ export function buildApp() {
   });
 
   app.setErrorHandler((error: any, request, reply) => {
-    const statusCode =
-      error?.statusCode ??
-      (error?.code === "23505" ? 409 : undefined) ??
-      500;
+    const statusCode = error?.statusCode ?? (error?.code === "23505" ? 409 : undefined) ?? 500;
 
     if (statusCode >= 500) {
       app.log.error(
@@ -72,6 +72,9 @@ export function buildApp() {
     .register(authPlugin)
     .register(healthRoutes)
     .register(webhookRoutes)
+    .register(metaWebhookRoutes)
     .register(whatsappRoutes)
-    .register(bridgeRoutes);
+    .register(bridgeRoutes)
+    .register(inboxRoutes)
+    .register(learningRoutes);
 }

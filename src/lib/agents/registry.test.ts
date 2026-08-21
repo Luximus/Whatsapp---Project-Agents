@@ -40,6 +40,19 @@ describe("registry (agente de ejemplo luxisoft)", () => {
     const names = agent.tools.map((t) => t.name);
     expect(names).toContain("scheduleMeeting");
     expect(names).toContain("escalateToHuman");
+    expect(names).toContain("captureCommercialLead");
+  });
+
+  it("captureCommercialLead registra una señal comercial normalizada", async () => {
+    const agent = await loadAgent("luxisoft");
+    const tool = agent.tools.find((t) => t.name === "captureCommercialLead");
+    let received: any = null;
+    const output = await tool!.execute(
+      { reason: "  solicita una cotización  ", service: "  sitio IA " },
+      { projectKey: "luxisoft", actions: { captureCommercialLead: async (input) => { received = input; return { ok: true }; } } }
+    );
+    expect(received).toEqual({ reason: "solicita una cotización", service: "sitio IA" });
+    expect(output).toContain("ok:");
   });
 
   it("scheduleMeeting invoca la acción inyectada con el nombre normalizado", async () => {

@@ -118,6 +118,17 @@ const envSchema = z.object({
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().optional().default(""),
   WHATSAPP_APP_SECRET: z.string().optional().default(""),
 
+  // Meta Messaging (Messenger + Instagram) usa la misma Meta App y el mismo
+  // runtime de agente, pero credenciales/activos de transporte separados.
+  META_MESSENGER_ENABLED: z.string().optional().default("false"),
+  META_INSTAGRAM_ENABLED: z.string().optional().default("false"),
+  META_GRAPH_VERSION: z.string().optional().default("v25.0"),
+  META_PAGE_ACCESS_TOKEN: z.string().optional().default(""),
+  META_PAGE_ID: z.string().optional().default(""),
+  META_INSTAGRAM_ACCOUNT_ID: z.string().optional().default(""),
+  META_WEBHOOK_VERIFY_TOKEN: z.string().optional().default(""),
+  META_APP_SECRET: z.string().optional().default(""),
+
   WHATSAPP_DEFAULT_PROJECT: z.string().optional().default("luxisoft"),
   // Si está activo, los mensajes sin código OTP se enrutan al asistente
   // multi-agente (agents/<proyecto>/). Default off: el webhook solo hace OTP.
@@ -180,6 +191,18 @@ const envSchema = z.object({
   // openai | anthropic | gemini | deepseek | minimax | grok
   AI_CHAT_PROVIDER: z.string().optional().default("openai"),
   AI_CHAT_MODEL: z.string().optional().default(""),
+  // Cadena de motores CLI para chat. Si está vacía se conserva el proveedor
+  // API de AI_CHAT_PROVIDER. Orden de producción: Codex -> Qwen -> Claude.
+  AI_CHAT_CHAIN: z.string().optional().default("codex,codex-qwen,claude"),
+  AI_CHAT_CLI_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(900_000).default(180_000),
+  AI_CHAT_CLI_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(1),
+  CODEX_CHAT_BIN: z.string().optional().default("/usr/bin/codex"),
+  CODEX_CHAT_MODEL: z.string().optional().default("gpt-5.6-luna"),
+  QWEN_CHAT_PROFILE: z.string().optional().default("qwen"),
+  QWEN_CHAT_MODEL: z.string().optional().default("qwen3.7-max"),
+  QWEN_API_KEY: z.string().optional().default(""),
+  CLAUDE_CHAT_BIN: z.string().optional().default("/home/jmarin/.local/bin/claude"),
+  CLAUDE_CHAT_MODEL: z.string().optional().default("claude-opus-4-8"),
   AI_TRANSCRIPTION_PROVIDER: z.string().optional().default("openai"),
   // Proveedor TTS (texto→voz) para responder con nota de voz:
   // openai | deepseek | grok (compat. OpenAI) | gemini | minimax
@@ -256,6 +279,16 @@ const envSchema = z.object({
   REPORT_EMAIL_TO: z.string().optional().default("reports@luxisoft.com"),
   REPORT_CRON: z.string().optional().default("59 23 * * *"),
   REPORT_TIMEZONE: z.string().optional().default("America/Bogota"),
+  CONVERSATION_LEARNING_ENABLED: z.string().optional().default("false"),
+  CONVERSATION_LEARNING_CRON: z.string().optional().default("10 0 * * *"),
+  CONVERSATION_LEARNING_TIMEZONE: z.string().optional().default("America/Bogota"),
+  CONVERSATION_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
+  CONVERSATION_LEARNING_MAX_PROPOSALS: z.coerce.number().int().min(1).max(50).default(10),
+  CONVERSATION_LEARNING_MAX_INPUT_CHARS: z.coerce.number().int().min(4000).max(200000).default(40000),
+  CONVERSATION_LEARNING_POLL_MS: z.coerce.number().int().min(1000).max(60000).default(5000),
+  CONVERSATION_LEARNING_WORK_ROOT: z.string().optional().default("/tmp/whatsapp-learning"),
+  CONVERSATION_LEARNING_MIN_AVAILABLE_MB: z.coerce.number().int().min(256).default(1536),
+  CONVERSATION_LEARNING_PM2_BIN: z.string().optional().default("/home/jmarin/.local/share/pnpm/bin/pm2"),
   REPORT_LOGO_URL: z
     .string()
     .optional()
@@ -271,6 +304,15 @@ export const env = {
   corsOrigins: csvToArray(raw.CORS_ORIGIN),
   defaultProject: raw.WHATSAPP_DEFAULT_PROJECT.trim().toLowerCase() || "luxisoft",
   whatsappAgentEnabled: parseBooleanFlag(raw.WHATSAPP_AGENT_ENABLED, false),
+  metaMessengerEnabled: parseBooleanFlag(raw.META_MESSENGER_ENABLED, false),
+  metaInstagramEnabled: parseBooleanFlag(raw.META_INSTAGRAM_ENABLED, false),
+  metaGraphVersion: raw.META_GRAPH_VERSION.trim() || "v25.0",
+  metaPageAccessToken: raw.META_PAGE_ACCESS_TOKEN.trim(),
+  metaPageId: raw.META_PAGE_ID.trim(),
+  metaInstagramAccountId: raw.META_INSTAGRAM_ACCOUNT_ID.trim(),
+  metaWebhookVerifyToken:
+    raw.META_WEBHOOK_VERIFY_TOKEN.trim() || raw.WHATSAPP_WEBHOOK_VERIFY_TOKEN.trim(),
+  metaAppSecret: raw.META_APP_SECRET.trim() || raw.WHATSAPP_APP_SECRET.trim(),
   whatsappServicesEnabled: parseBooleanFlag(raw.WHATSAPP_SERVICES_ENABLED, false),
   linkOtpTtlSeconds: raw.LINK_OTP_TTL_SECONDS,
   linkOtpMaxAttempts: raw.LINK_OTP_MAX_ATTEMPTS,
@@ -291,6 +333,18 @@ export const env = {
 
   aiChatProvider: raw.AI_CHAT_PROVIDER.trim().toLowerCase() || "openai",
   aiChatModel: raw.AI_CHAT_MODEL.trim(),
+  aiChatChain: raw.AI_CHAT_CHAIN.split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean),
+  aiChatCliTimeoutMs: raw.AI_CHAT_CLI_TIMEOUT_MS,
+  aiChatCliConcurrency: raw.AI_CHAT_CLI_CONCURRENCY,
+  codexChatBin: raw.CODEX_CHAT_BIN.trim() || "/usr/bin/codex",
+  codexChatModel: raw.CODEX_CHAT_MODEL.trim() || "gpt-5.6-luna",
+  qwenChatProfile: raw.QWEN_CHAT_PROFILE.trim() || "qwen",
+  qwenChatModel: raw.QWEN_CHAT_MODEL.trim() || "qwen3.7-max",
+  qwenApiKey: raw.QWEN_API_KEY.trim(),
+  claudeChatBin: raw.CLAUDE_CHAT_BIN.trim() || "/home/jmarin/.local/bin/claude",
+  claudeChatModel: raw.CLAUDE_CHAT_MODEL.trim() || "claude-opus-4-8",
   aiTranscriptionProvider: raw.AI_TRANSCRIPTION_PROVIDER.trim().toLowerCase() || "openai",
   aiSpeechProvider: raw.AI_SPEECH_PROVIDER.trim().toLowerCase() || "openai",
 
@@ -350,6 +404,19 @@ export const env = {
   reportEmailTo: raw.REPORT_EMAIL_TO.trim() || "reports@luxisoft.com",
   reportCron: raw.REPORT_CRON.trim() || "59 23 * * *",
   reportTimezone: raw.REPORT_TIMEZONE.trim() || "America/Bogota",
+  conversationLearningEnabled: parseBooleanFlag(raw.CONVERSATION_LEARNING_ENABLED, false),
+  conversationLearningCron: raw.CONVERSATION_LEARNING_CRON.trim() || "10 0 * * *",
+  conversationLearningTimezone:
+    raw.CONVERSATION_LEARNING_TIMEZONE.trim() || "America/Bogota",
+  conversationRetentionDays: raw.CONVERSATION_RETENTION_DAYS,
+  conversationLearningMaxProposals: raw.CONVERSATION_LEARNING_MAX_PROPOSALS,
+  conversationLearningMaxInputChars: raw.CONVERSATION_LEARNING_MAX_INPUT_CHARS,
+  conversationLearningPollMs: raw.CONVERSATION_LEARNING_POLL_MS,
+  conversationLearningWorkRoot:
+    raw.CONVERSATION_LEARNING_WORK_ROOT.trim() || "/tmp/whatsapp-learning",
+  conversationLearningMinAvailableMb: raw.CONVERSATION_LEARNING_MIN_AVAILABLE_MB,
+  conversationLearningPm2Bin:
+    raw.CONVERSATION_LEARNING_PM2_BIN.trim() || "/home/jmarin/.local/share/pnpm/bin/pm2",
   reportLogoUrl:
     raw.REPORT_LOGO_URL.trim() ||
     "https://imagedelivery.net/juOGhpzwqbGB3xBvV9fTTQ/e0ebede4-9c85-419b-57f6-40d8fc898000/product"
@@ -374,5 +441,22 @@ export function assertProductionEnv() {
   );
   if (missing.length) {
     throw new Error(`missing_required_env_in_production: ${missing.join(", ")}`);
+  }
+
+  if (env.metaMessengerEnabled || env.metaInstagramEnabled) {
+    const missingMeta = [
+      ["META_PAGE_ACCESS_TOKEN", env.metaPageAccessToken],
+      ["META_PAGE_ID", env.metaPageId],
+      ["META_WEBHOOK_VERIFY_TOKEN", env.metaWebhookVerifyToken],
+      ["META_APP_SECRET|WHATSAPP_APP_SECRET", env.metaAppSecret]
+    ].filter(([, value]) => !String(value).trim());
+    if (env.metaInstagramEnabled && !env.metaInstagramAccountId) {
+      missingMeta.push(["META_INSTAGRAM_ACCOUNT_ID", env.metaInstagramAccountId]);
+    }
+    if (missingMeta.length) {
+      throw new Error(
+        `missing_required_meta_env_in_production: ${missingMeta.map(([key]) => key).join(", ")}`
+      );
+    }
   }
 }

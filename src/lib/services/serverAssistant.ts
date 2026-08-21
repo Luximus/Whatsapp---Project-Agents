@@ -13,8 +13,14 @@ import type { AccountLink } from "./types.js";
 /**
  * Orquestación de "operar un servidor en background por el asistente IA de
  * LUXIPANEL desde WhatsApp" (Fase 2). Es específica del servicio `luxipanel`
- * (capabilities().serverAssistant). El cobro por MB lo hace LP-LS sobre el
- * tráfico del gateway SSH (ssh-data-meter), no aquí.
+ * (capabilities().serverAssistant).
+ *
+ * Medición de MB: NO se mide aquí. Esta orquestación abre la sesión por SSO
+ * (LUXIPANEL `LicenseProxyExecutor` → `/api/agents/exec` de LP-LS), así que el
+ * tráfico SSH cruza el gateway de LP-LS y lo mide su `ssh-data-meter` (queda en
+ * `ssh_data_usage` con source="ssh"). Ese es el único camino medido por LP-LS.
+ * (Las sesiones SSH DIRECTAS del panel —`/login`/navegación, no este flujo— las
+ * mide LUXIPANEL aparte y las reporta a LP-LS como source="ssh_panel".)
  *
  * No persistimos el bearer de LUXIPANEL (vida corta). Cada operación re-emite
  * una sesión SSO fresca por loopback y la canjea; el `conversationId` estable

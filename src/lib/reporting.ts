@@ -82,6 +82,7 @@ type SupportTicketEmailInput = {
   topic: string;
   summary: string;
   transcript?: string[];
+  recipient?: string;
 };
 
 type ProjectFollowupEmailInput = {
@@ -703,9 +704,10 @@ export async function sendMeetingQuoteEmail(input: MeetingQuoteEmailInput) {
 }
 
 export async function sendSupportTicketEmail(input: SupportTicketEmailInput) {
+  const recipient = input.recipient?.trim() || env.supportTicketEmailTo;
   if (!smtpConfigured()) {
     loggerRef.warn(
-      { to: env.supportTicketEmailTo },
+      { to: recipient },
       "Support ticket email skipped: SMTP not configured"
     );
     return {
@@ -762,14 +764,14 @@ export async function sendSupportTicketEmail(input: SupportTicketEmailInput) {
   try {
     await transporter.sendMail({
       from: env.smtpFrom || env.smtpUser,
-      to: env.supportTicketEmailTo,
+      to: recipient,
       subject: `Ticket WhatsApp - ${dateLabel}`,
       html,
       text
     });
 
     loggerRef.info(
-      { to: env.supportTicketEmailTo, projectKey: input.projectKey, userPhone: input.userPhone },
+      { to: recipient, projectKey: input.projectKey, userPhone: input.userPhone },
       "Support ticket email sent"
     );
     return { ok: true, sent: true };
@@ -777,7 +779,7 @@ export async function sendSupportTicketEmail(input: SupportTicketEmailInput) {
     loggerRef.error(
       {
         err,
-        to: env.supportTicketEmailTo,
+        to: recipient,
         projectKey: input.projectKey,
         userPhone: input.userPhone
       },

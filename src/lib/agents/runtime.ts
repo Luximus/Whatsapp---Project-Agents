@@ -7,6 +7,7 @@ import {
   type AgentToolContext,
   type LoadedAgent
 } from "./types.js";
+import type { RichBlock } from "../richMessaging.js";
 
 const DEFAULT_MAX_TURNS = 6;
 
@@ -22,6 +23,7 @@ export interface RunAgentOptions {
 
 export interface RunAgentResult {
   text: string;
+  rich: RichBlock[];
   /** Mensajes generados durante la ejecución (assistant + tool), para persistir. */
   newMessages: ChatMessage[];
   turns: number;
@@ -76,7 +78,15 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   // La identidad (nombre femenino) del asistente depende del proveedor de chat:
   // se sustituye el token {{ASSISTANT_NAME}} del prompt antes de invocar.
   const assistantName = resolveAssistantName(provider.name);
-  const systemPrompt = agent.systemPrompt.replace(/\{\{\s*ASSISTANT_NAME\s*\}\}/g, assistantName);
+  const channelName =
+    context.channel === "instagram"
+      ? "Instagram"
+      : context.channel === "messenger"
+        ? "Messenger"
+        : "WhatsApp";
+  const systemPrompt = agent.systemPrompt
+    .replace(/\{\{\s*ASSISTANT_NAME\s*\}\}/g, assistantName)
+    .replace(/\{\{\s*CHANNEL_NAME\s*\}\}/g, channelName);
 
   const baseMessages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
@@ -85,6 +95,11 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   ];
 
   const newMessages: ChatMessage[] = [];
+  const rich: RichBlock[] = [];
+  const toolContext: AgentToolContext = {
+    ...context,
+    render: (blocks) => rich.push(...blocks.slice(0, Math.max(0, 8 - rich.length)))
+  };
   let turns = 0;
 
   while (turns < maxTurns) {
@@ -100,7 +115,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     // siguiente turno; sin ellas los mensajes "tool" quedan huérfanos.
     if (!result.toolCalls.length) {
       newMessages.push({ role: "assistant", content: result.text });
-      return { text: result.text, newMessages, turns };
+      return { text: result.text, rich, newMessages, turns };
     }
 
     newMessages.push({ role: "assistant", content: result.text, toolCalls: result.toolCalls });
@@ -109,7 +124,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     for (const call of result.toolCalls) {
       const tool = toolsByName.get(call.name);
       const output = tool
-        ? await executeTool(tool, call.arguments, context)
+        ? await executeTool(tool, call.arguments, toolContext)
         : `error: unknown_tool:${call.name}`;
       newMessages.push({
         role: "tool",
@@ -122,5 +137,5 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
 
   // Se agotaron los turnos sin respuesta final: devuelve el último texto.
   const lastAssistant = [...newMessages].reverse().find((m) => m.role === "assistant");
-  return { text: lastAssistant?.content ?? "", newMessages, turns };
+  return { text: lastAssistant?.content ?? "", rich, newMessages, turns };
 }

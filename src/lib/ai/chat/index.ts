@@ -3,6 +3,7 @@ import { isAiProviderName, type AiProviderName, type ChatProvider } from "../typ
 import { OpenAiCompatibleChatProvider } from "./openaiCompatible.js";
 import { AnthropicChatProvider } from "./anthropic.js";
 import { GeminiChatProvider } from "./gemini.js";
+import { getCliFallbackChatProvider } from "./cliChain.js";
 
 const OPENAI_COMPATIBLE: ReadonlySet<AiProviderName> = new Set([
   "openai",
@@ -35,6 +36,9 @@ export function createChatProvider(provider: AiProviderName): ChatProvider {
 
 /** Proveedor de chat por defecto según `AI_CHAT_PROVIDER`. */
 export function getDefaultChatProvider(): ChatProvider {
+  if (env.aiChatChain.length) {
+    return getCliFallbackChatProvider();
+  }
   const name = env.aiChatProvider;
   if (!isAiProviderName(name)) {
     throw new Error(`invalid_ai_chat_provider:${name}`);

@@ -2,10 +2,12 @@ import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { resetBridgeStores } from "./bridge/factory.js";
 import {
   buildBridgeMessage,
+  buildBridgeOtpRequest,
   buildBridgeSignature,
   consumeBridgeOtp,
   createBridgeSession,
   extractBridgeReference,
+  fulfillBridgeOtpRequest,
   verifyBridgeSessionCode
 } from "./bridge.js";
 
@@ -71,6 +73,18 @@ describe("bridge business logic (memory store)", () => {
     expect(msg).toContain("654321");
     expect(msg).toContain("REF12345");
     expect(extractBridgeReference("usa la ref ABCD1234 por favor")).toBe("ABCD1234");
+  });
+
+  it("la solicitud iniciada por el usuario solo entrega el OTP al mismo teléfono y referencia", async () => {
+    const session = await createBridgeSession(fastify, {
+      projectKey: "luxisoft", flow: "verification", phoneE164: "+573001112233", userCode: "123456",
+    });
+    const text = buildBridgeOtpRequest(session.otp_ref);
+    const good = await fulfillBridgeOtpRequest(fastify, { from: "+573001112233", text });
+    expect(good.handled).toBe(true);
+    expect(good.status).toBe("ready");
+    expect(await fulfillBridgeOtpRequest(fastify, { from: "+573009999999", text }))
+      .toMatchObject({ handled: true, status: "not_found" });
   });
 
   it("buildBridgeSignature es estable y verificable", () => {

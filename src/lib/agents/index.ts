@@ -44,6 +44,7 @@ export async function handleAgentMessage(input: {
     context: {
       projectKey: agent.projectKey,
       from: input.context?.from ?? null,
+      channel: input.context?.channel ?? null,
       logger: input.context?.logger,
       actions: input.context?.actions
     }
