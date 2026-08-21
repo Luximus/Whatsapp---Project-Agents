@@ -112,7 +112,9 @@ export async function publishNextChange(db:LearningDb,logger:LearningLogger=cons
     await db.query(`update whatsapp_learning_change_jobs set status='published',published_at=now(),updated_at=now() where id=$1`,[job.id]);
     await db.query(`update whatsapp_learning_proposals set status='published',published_at=now(),updated_at=now() where id=$1`,[job.proposal_id]);
     await db.query(`insert into whatsapp_learning_events(proposal_id,job_id,event_type,actor_user_id,actor_email,payload) values($1,$2,'published',$3,$4,$5::jsonb)`,[job.proposal_id,job.id,job.published_by_user_id,job.published_by_email,JSON.stringify({commitSha:job.commit_sha})]);
-    await rm(backup,{recursive:true,force:true});logger.info({jobId:job.id,commitSha:job.commit_sha},"Learning change published");return true;
+    await rm(backup,{recursive:true,force:true});
+    if(job.worktree_path&&job.branch_name)await removeWorktree(job.worktree_path,job.branch_name).catch((cleanupError)=>logger.warn({jobId:job.id,error:String(cleanupError)},"Learning worktree cleanup failed"));
+    logger.info({jobId:job.id,commitSha:job.commit_sha},"Learning change published");return true;
   }catch(error){const message=error instanceof Error?error.message:String(error);
     if(existsSync(backup)){await rm(path.join(REPO_ROOT,"dist"),{recursive:true,force:true});await rename(backup,path.join(REPO_ROOT,"dist"));await run(env.conversationLearningPm2Bin,["restart","whatsapp-bridge","--update-env"],"",REPO_ROOT,120000);}
     await db.query(`update whatsapp_learning_change_jobs set status='failed',error=$2,updated_at=now() where id=$1`,[job.id,message]);await db.query(`update whatsapp_learning_proposals set status='failed',updated_at=now() where id=$1`,[job.proposal_id]);logger.error({jobId:job.id,error:message},"Learning publish failed");return true;}
