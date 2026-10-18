@@ -28,6 +28,9 @@ jobs:
       - name: Dependency security regressions
         run: npm run test:dependencies
 
+      - name: Firebase credential compatibility
+        run: npm run test:firebase
+
       - name: Typecheck
         run: npm run typecheck
 
