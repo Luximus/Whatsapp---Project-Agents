@@ -349,3 +349,35 @@ provider requests. Existing authentication/webhook tests remain required.
 This is a compatible SDK update, not an upgrade to Firebase 14, which removes
 the namespace API used here. Runtime installation still requires the reviewed
 selective dependency manifest and preservation of operational configuration.
+
+
+### Development toolchain hardening (2026-10-18)
+
+Vitest is pinned to 4.1.12 and Vite to 7.3.6. Vitest 4 removes the Tinypool
+worker dependency, while the application keeps its existing Node test environment
+and explicit discovery of `src/**/*.test.ts` and `test/**/*.test.ts`. Both test
+and watch commands use one worker with file parallelism disabled to respect
+the shared host budget. No UI or
+browser server is enabled. See the [Vitest 4 migration guide](https://v4.vitest.dev/guide/migration.html).
+
+The [Vitest UI advisory](https://github.com/vitest-dev/vitest/security/advisories/GHSA-5xrq-8626-4rwp)
+requires an exposed test API or the documented Windows UI/browser conditions.
+The [Tinypool advisory](https://github.com/tinylibs/tinypool/security/advisories/GHSA-85c8-ppgw-ccpr)
+requires prototype pollution reaching worker options. These are toolchain risks;
+this review did not demonstrate their exploitation through a production route.
+Removing the vulnerable worker dependency also avoids forcing Tinypool 2 into
+Vitest 3's incompatible declared dependency range.
+
+Major-scoped overrides patch ESLint's brace expansion and YAML parsers and Vite's
+PostCSS, Nano ID and source-map dependencies. `npm run test:toolchain` exercises
+the copies resolved from actual consumers with small work budgets, valid mappings
+and denied mock redirects; no server is opened. The complete existing application
+suite, typecheck, lint and production dependency/authentication regressions remain
+required. Production package versions must remain identical to the parent commit.
+
+CI installs with `--ignore-scripts --include=dev` and runs `npm run audit:security`
+with an explicit development-inclusive audit and a high-severity failure threshold.
+This gate does not hide the remaining moderate/low findings. Release of development
+packages to an execution checkout requires its own reviewed selective manifest;
+this change does not authorize an unrestricted runtime install or deletion of
+unrelated dependencies.
