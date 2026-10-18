@@ -112,11 +112,20 @@ TypeScript, lint, pruebas y build. El diff debe aprobarse de nuevo con
 npm run typecheck     # tsc --noEmit
 npm run lint          # eslint   (lint:fix para autofix)
 npm test              # vitest    (test:watch para modo watch)
+npm run test:dependencies # regresiones locales de dependencias transitivas
 npm run format        # prettier --write   (format:check para verificar)
 npm run db:apply      # aplica db/schema.sql contra DATABASE_URL
 ```
 
-CI: `.github/workflows/ci.yml` (typecheck → lint → test → build).
+CI: `.github/workflows/ci.yml` (dependencias → typecheck → lint → test → build).
+
+El lockfile y los overrides fijan `websocket-driver` 0.7.5, `protobufjs` 7.6.6
+y `fast-xml-parser` 5.11.1 dentro de los rangos de sus consumidores. Las pruebas
+de dependencias siguen las resoluciones reales de Firebase y comprueban límites
+de tramas, round trips Protobuf y entidades XML con fixtures locales. No requieren
+credenciales, conexiones a proveedores ni una base de datos. Mantener estos casos
+al actualizar el lockfile; una alerta de dependencia por sí sola no demuestra
+explotación a través de las rutas de la aplicación.
 
 ## Variables de entorno
 
