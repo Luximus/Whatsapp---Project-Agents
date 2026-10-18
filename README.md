@@ -355,7 +355,9 @@ selective dependency manifest and preservation of operational configuration.
 
 Vitest is pinned to 4.1.12 and Vite to 7.3.6. Vitest 4 removes the Tinypool
 worker dependency, while the application keeps its existing Node test environment
-and explicit discovery of `src/**/*.test.ts` and `test/**/*.test.ts`. No UI or
+and explicit discovery of `src/**/*.test.ts` and `test/**/*.test.ts`. Both test
+and watch commands use one worker with file parallelism disabled to respect
+the shared host budget. No UI or
 browser server is enabled. See the [Vitest 4 migration guide](https://v4.vitest.dev/guide/migration.html).
 
 The [Vitest UI advisory](https://github.com/vitest-dev/vitest/security/advisories/GHSA-5xrq-8626-4rwp)
