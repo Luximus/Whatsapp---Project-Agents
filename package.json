@@ -19,7 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:apply": "tsx scripts/db-apply.ts",
-    "test:dependencies": "node --test test/dependency-security.test.mjs test/server-dependency-security.test.mjs"
+    "test:dependencies": "node --test test/dependency-security.test.mjs test/server-dependency-security.test.mjs",
+    "test:firebase": "node --import tsx --test test/firebase-sdk-security.test.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
@@ -30,7 +31,7 @@
     "dotenv": "^17.2.1",
     "fastify": "^5.12.7",
     "fastify-plugin": "^5.0.1",
-    "firebase-admin": "^13.5.0",
+    "firebase-admin": "^13.10.0",
     "node-cron": "^4.2.1",
     "nodemailer": "^10.1.6",
     "pdfkit": "^0.18.0",
@@ -64,7 +65,6 @@
     "@grpc/grpc-js": "1.14.6",
     "find-my-way": "9.10.0",
     "form-data@2.x": "2.5.6",
-    "node-forge": "1.4.0",
     "fast-uri@3.x": "3.1.8"
   }
 }

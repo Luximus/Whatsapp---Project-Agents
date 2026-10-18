@@ -305,12 +305,10 @@ reads application credentials.
 
 Provider transitives use compatible fixes: Busboy 3.2.3, gRPC JS 1.14.6,
 fast-uri 3.1.8, find-my-way 9.10.0 and the published form-data 2.5.6 backport.
-Forge 1.4.0 addresses the older advisories; the remaining RSA verification issue
-[GHSA-86w9-cpqp-85rv](https://github.com/digitalbazaar/forge/security/advisories/GHSA-86w9-cpqp-85rv)
-remains in this change. Firebase Admin 13.10.0 officially removes Forge using
-Node crypto while preserving the namespace API; that SDK update is validated
-separately before a combined installation. See the [official release](https://github.com/firebase/firebase-admin-node/releases/tag/v13.10.0).
-Do not describe this update alone as a clean production audit.
+The subsequent Firebase Admin 13.10.0 update below removes Forge, including the
+remaining [RSA verification advisory](https://github.com/digitalbazaar/forge/security/advisories/GHSA-86w9-cpqp-85rv),
+by using Node crypto. Audit production and development dependencies explicitly;
+absence of high/critical advisories does not establish complete application security.
 
 Primary references: [Fastify malformed URLs](https://github.com/fastify/fastify/security/advisories/GHSA-p68q-wchp-6fh7),
 [primitive body validation](https://github.com/fastify/fastify/security/advisories/GHSA-w2qp-rph6-63g4),
@@ -334,3 +332,20 @@ raw file/URL access. No SMTP server is contacted. See the
 [official changelog](https://github.com/nodemailer/nodemailer/blob/master/CHANGELOG.md).
 The Vitest/lint toolchain findings are also tracked separately; this HTTP/provider
 update preserves those tools instead of mixing a test-runner migration into it.
+
+### Firebase credential parser update (2026-10-18)
+
+Firebase Admin 13.10.0 replaces Forge with Node's built-in crypto while retaining
+this application's `admin` namespace and authentication wrapper. The runtime
+Node 22 satisfies the SDK's Node >=18 requirement. See the [official release](https://github.com/firebase/firebase-admin-node/releases/tag/v13.10.0).
+
+`npm run test:firebase` exercises the real wrapper with ephemeral RSA PKCS8 and
+PKCS1 keys, validates locally signed custom tokens, rejects malformed identity
+tokens and invalid PEM, and walks Firebase's resolved production dependencies
+to ensure Forge is absent. The fixture refuses checkouts containing `.env` and
+blocks sockets, HTTP(S) and fetch; it never reads service credentials or sends
+provider requests. Existing authentication/webhook tests remain required.
+
+This is a compatible SDK update, not an upgrade to Firebase 14, which removes
+the namespace API used here. Runtime installation still requires the reviewed
+selective dependency manifest and preservation of operational configuration.
