@@ -294,8 +294,9 @@ Facebook Messenger webhook:
 
 ### HTTP and provider dependency patches (2026-10-18)
 
-Fastify remains on major 5 and its routing/URI dependencies stay on their current
-majors. The dependency regression suite uses in-process injection to verify
+Fastify remains on major 5 and its routing/URI dependencies satisfy their
+consumers' declared ranges. The new serializer 7 uses fast-uri 4.2.2, while
+AJV keeps fast-uri 3.1.8 through a major-scoped override. The dependency regression suite uses in-process injection to verify
 malformed URL isolation, authenticated fallback access, JSON validation with
 content-type whitespace, primitive-body type consistency and restrictive proxy
 trust. Multipart fixtures resolve the parser through Firebase and use finite
@@ -306,8 +307,10 @@ Provider transitives use compatible fixes: Busboy 3.2.3, gRPC JS 1.14.6,
 fast-uri 3.1.8, find-my-way 9.10.0 and the published form-data 2.5.6 backport.
 Forge 1.4.0 addresses the older advisories; the remaining RSA verification issue
 [GHSA-86w9-cpqp-85rv](https://github.com/digitalbazaar/forge/security/advisories/GHSA-86w9-cpqp-85rv)
-is still tracked because its corrected release was not available from npm at
-review time. Do not describe this update as a clean production audit.
+remains in this change. Firebase Admin 13.10.0 officially removes Forge using
+Node crypto while preserving the namespace API; that SDK update is validated
+separately before a combined installation. See the [official release](https://github.com/firebase/firebase-admin-node/releases/tag/v13.10.0).
+Do not describe this update alone as a clean production audit.
 
 Primary references: [Fastify malformed URLs](https://github.com/fastify/fastify/security/advisories/GHSA-p68q-wchp-6fh7),
 [primitive body validation](https://github.com/fastify/fastify/security/advisories/GHSA-w2qp-rph6-63g4),

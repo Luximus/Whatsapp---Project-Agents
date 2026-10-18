@@ -5,6 +5,19 @@ import test from 'node:test';
 const require = createRequire(new URL('../package.json', import.meta.url));
 const Fastify = require('fastify');
 
+test('serializer and validator retain their declared URI major and serialize schema references', () => {
+  const fastifyRequire = createRequire(require.resolve('fastify'));
+  const serializerRequire = createRequire(fastifyRequire.resolve('fast-json-stringify'));
+  const validatorRequire = createRequire(createRequire(fastifyRequire.resolve('@fastify/ajv-compiler')).resolve('ajv'));
+  assert.match(serializerRequire('fast-uri/package.json').version, /^4\./);
+  assert.match(validatorRequire('fast-uri/package.json').version, /^3\./);
+  const stringify = fastifyRequire('fast-json-stringify')({
+    type: 'object', properties: { item: { $ref: '#/definitions/item' } },
+    definitions: { item: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] } }
+  });
+  assert.deepEqual(JSON.parse(stringify({ item: { label: 'fixture', private: 'omitted' } })), { item: { label: 'fixture' } });
+});
+
 test('malformed public URLs cannot enter an authenticated sibling fallback', async (t) => {
   const app = Fastify();
   t.after(() => app.close());
