@@ -290,3 +290,44 @@ Facebook Messenger webhook:
 
 - `GET /api/webhooks/meta`
 - `POST /api/webhooks/meta`
+
+
+### HTTP and provider dependency patches (2026-10-18)
+
+Fastify remains on major 5 and its routing/URI dependencies stay on their current
+majors. The dependency regression suite uses in-process injection to verify
+malformed URL isolation, authenticated fallback access, JSON validation with
+content-type whitespace, primitive-body type consistency and restrictive proxy
+trust. Multipart fixtures resolve the parser through Firebase and use finite
+synthetic data. No fixture opens an HTTP listener, sends provider requests or
+reads application credentials.
+
+Provider transitives use compatible fixes: Busboy 3.2.3, gRPC JS 1.14.6,
+fast-uri 3.1.8, find-my-way 9.10.0 and the published form-data 2.5.6 backport.
+Forge 1.4.0 addresses the older advisories; the remaining RSA verification issue
+[GHSA-86w9-cpqp-85rv](https://github.com/digitalbazaar/forge/security/advisories/GHSA-86w9-cpqp-85rv)
+is still tracked because its corrected release was not available from npm at
+review time. Do not describe this update as a clean production audit.
+
+Primary references: [Fastify malformed URLs](https://github.com/fastify/fastify/security/advisories/GHSA-p68q-wchp-6fh7),
+[primitive body validation](https://github.com/fastify/fastify/security/advisories/GHSA-w2qp-rph6-63g4),
+[restrictive proxy trust](https://github.com/fastify/fastify/security/advisories/GHSA-444r-cwp2-x5xf),
+[Busboy multipart headers](https://github.com/fastify/busboy/security/advisories/GHSA-gxm5-99cw-xjw9)
+and [gRPC malformed messages](https://github.com/grpc/grpc-node/security/advisories/GHSA-99f4-grh7-6pcq).
+
+An affected package version does not establish an application exploit. In this
+application, body validation primarily uses Zod; the HTTP2, custom fallback and
+restrictive-proxy configurations from several advisories are not enabled.
+Firebase provider-response parsing and configured service-account key parsing
+have different trust boundaries from inbound application input. Tests establish
+patched component behavior and application compatibility separately.
+
+Nodemailer moves to 10.1.6 after a targeted compatibility review: Node 22
+meets its Node >=20 requirement and reporting uses SMTP options, inline
+HTML/text and Buffer attachments. It uses no remote-content fetch, raw message,
+OAuth2 token endpoint or custom proxy. Synthetic stream-transport tests cover
+its actual reporting templates, recipient envelope and rejection of forbidden
+raw file/URL access. No SMTP server is contacted. See the
+[official changelog](https://github.com/nodemailer/nodemailer/blob/master/CHANGELOG.md).
+The Vitest/lint toolchain findings are also tracked separately; this HTTP/provider
+update preserves those tools instead of mixing a test-runner migration into it.

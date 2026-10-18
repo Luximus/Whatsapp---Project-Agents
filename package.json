@@ -19,7 +19,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:apply": "tsx scripts/db-apply.ts",
-    "test:dependencies": "node --test test/dependency-security.test.mjs"
+    "test:dependencies": "node --test test/dependency-security.test.mjs test/server-dependency-security.test.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
@@ -28,11 +28,11 @@
     "@react-email/components": "^1.0.10",
     "@react-email/render": "^2.0.4",
     "dotenv": "^17.2.1",
-    "fastify": "^5.6.0",
+    "fastify": "^5.12.7",
     "fastify-plugin": "^5.0.1",
     "firebase-admin": "^13.5.0",
     "node-cron": "^4.2.1",
-    "nodemailer": "^8.0.4",
+    "nodemailer": "^10.1.6",
     "pdfkit": "^0.18.0",
     "pg": "^8.16.3",
     "react": "^19.2.4",
@@ -59,6 +59,12 @@
   "overrides": {
     "fast-xml-parser": "5.11.1",
     "protobufjs": "7.6.6",
-    "websocket-driver": "0.7.5"
+    "websocket-driver": "0.7.5",
+    "@fastify/busboy": "3.2.3",
+    "@grpc/grpc-js": "1.14.6",
+    "fast-uri": "3.1.8",
+    "find-my-way": "9.10.0",
+    "form-data@2.x": "2.5.6",
+    "node-forge": "1.4.0"
   }
 }
