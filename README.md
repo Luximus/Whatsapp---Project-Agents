@@ -403,6 +403,6 @@ volver a aparecer. El consumidor Luxisoft restringe estas dos rutas a sus
 administradores y fija el actor desde la sesión. No hay operación masiva.
 
 Instalación sin migración: publicar y compilar en worktree limpio; instalar solo
-`src/lib/inboxManagement` y `src/routes/inbox` (TS/JS/map), preservando los módulos
+`src/lib/inboxManagement` y `src/routes/inbox` (TS/JS), preservando los módulos
 runtime de historial duradero y menús que difieren de main. Verificar los hashes,
 el proceso y los canarios de historial antes del despliegue del frontend.
