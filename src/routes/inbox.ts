@@ -6,7 +6,6 @@ import {
   closeInboxConversation,
   ensureInboxConversation,
   getInboxConversation,
-  listInboxConversations,
   listInboxMessages,
   markHandoffNotified,
   recordInboxOutbound,
@@ -16,15 +15,10 @@ import { sendMetaRich, sendMetaText } from "../lib/metaMessaging.js";
 import { sanitizeRichBlocks } from "../lib/richMessaging.js";
 import { sendSupportTicketEmail } from "../lib/reporting.js";
 import { sendWhatsappRich, sendWhatsappTemplate, sendWhatsappText } from "../lib/whatsapp.js";
+import { eraseInboxConversation, inboxListSchema, inboxTagsSchema, listInboxTags, listManagedInbox, setInboxTags } from "../lib/inboxManagement.js";
 
 const uuid = z.string().uuid();
 const actor = z.object({ userId: z.string().min(1).max(200), email: z.string().email() });
-const querySchema = z.object({
-  status: z.enum(["ai_active", "waiting_human", "human_active", "closed"]).optional(),
-  channel: z.enum(["whatsapp", "messenger"]).optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
-  search: z.string().trim().max(120).optional()
-});
 
 function externalMessageId(payload: any): string | null {
   return String(payload?.messages?.[0]?.id ?? payload?.messageId ?? "").trim() || null;
@@ -53,9 +47,29 @@ export const inboxRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get("/api/bridge/inbox/conversations", async (request) => {
     const auth = requireBridgeProjectAuth(request);
-    const query = querySchema.parse(request.query ?? {});
-    return { ok: true, data: await listInboxConversations(fastify, auth.projectKey, query) };
+    const query = inboxListSchema.parse(request.query ?? {});
+    return { ok: true, data: await listManagedInbox(fastify, auth.projectKey, query) };
   });
+
+  fastify.get("/api/bridge/inbox/tags", async (request) => {
+    const auth = requireBridgeProjectAuth(request);
+    return { ok: true, data: await listInboxTags(fastify, auth.projectKey) };
+  });
+  fastify.patch("/api/bridge/inbox/conversations/:id/tags", async (request, reply) => {
+    const auth = requireBridgeProjectAuth(request);
+    const id = uuid.parse((request.params as { id: string }).id);
+    const input = actor.extend({ tags: inboxTagsSchema }).parse(request.body);
+    if (!await setInboxTags(fastify, auth.projectKey, id, input.tags)) return reply.code(404).send({ ok: false, error: "conversation_not_found" });
+    return { ok: true, data: { id, tags: input.tags } };
+  });
+  for (const mode of ["clear", "delete"] as const) {
+    fastify.post(`/api/bridge/inbox/conversations/:id/${mode}`, async (request) => {
+      const auth = requireBridgeProjectAuth(request);
+      const id = uuid.parse((request.params as { id: string }).id);
+      const input = actor.extend({ lastMessageAt: z.string().datetime({ offset: true }) }).parse(request.body);
+      return { ok: true, data: await eraseInboxConversation(fastify, auth.projectKey, id, { ...input, mode }) };
+    });
+  }
 
   fastify.get("/api/bridge/inbox/conversations/:id", async (request, reply) => {
     const auth = requireBridgeProjectAuth(request);

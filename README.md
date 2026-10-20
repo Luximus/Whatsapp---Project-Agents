@@ -381,3 +381,28 @@ This gate does not hide the remaining moderate/low findings. Release of developm
 packages to an execution checkout requires its own reviewed selective manifest;
 this change does not authorize an unrestricted runtime install or deletion of
 unrelated dependencies.
+
+## Gestión de bandeja desde Luxisoft
+
+El bridge expone etiquetas y borrado individual bajo `/api/bridge/inbox`, siempre
+con la clave API del proyecto. `GET /tags` lista las etiquetas usadas; el listado
+`GET /conversations` acepta `tag` junto con `status`, `channel` y `search`, antes
+del límite. `PATCH /conversations/:id/tags` recibe `{userId,email,tags}` (máximo
+10 etiquetas de 40 caracteres, persistidas en metadata). No sincroniza etiquetas
+con la aplicación móvil de WhatsApp.
+
+`POST /conversations/:id/clear` o `/delete` reciben
+`{userId,email,lastMessageAt}`. La confirmación debe indicar el último mensaje
+observado: si cambia, devuelve 409 sin borrar. Ambos eliminan en una transacción
+el archivo de mensajes, resúmenes/eventos y memoria de compatibilidad del mismo
+proyecto/canal/contacto; `clear` conserva chat/asignación/etiquetas y `delete`
+retira también la conversación. No borra CRM, consentimientos, sesiones de
+cuenta, mensajes en teléfonos ni propuestas de aprendizaje ya generadas. Una
+respuesta externa que ya esté en curso no se cancela; actividad nueva puede
+volver a aparecer. El consumidor Luxisoft restringe estas dos rutas a sus
+administradores y fija el actor desde la sesión. No hay operación masiva.
+
+Instalación sin migración: publicar y compilar en worktree limpio; instalar solo
+`src/lib/inboxManagement` y `src/routes/inbox` (TS/JS/map), preservando los módulos
+runtime de historial duradero y menús que difieren de main. Verificar los hashes,
+el proceso y los canarios de historial antes del despliegue del frontend.
