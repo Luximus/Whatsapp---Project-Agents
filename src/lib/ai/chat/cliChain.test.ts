@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AiProviderError, type ChatCompletionRequest } from "../types.js";
 import {
   buildCliChatPrompt,
+  classifyCliFailure,
   CliFallbackChatProvider,
   parseCliChatResult,
   resetCliChatChainForTests,
@@ -80,6 +81,44 @@ describe("CliFallbackChatProvider", () => {
     expect((await provider.complete(request)).text).toBe("ok");
     expect(qwen).not.toHaveBeenCalled();
   });
+
+  it("reintenta el primario tras capacidad agotada sin cambiar el orden de proveedores", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    try {
+      const calls: string[] = [];
+      const provider = new CliFallbackChatProvider([
+        engine("codex", async () => {
+          calls.push("codex");
+          if (calls.filter((name) => name === "codex").length === 1) {
+            throw new AiProviderError("openai", "capacity", { statusCode: 503 });
+          }
+          return { text: "recuperado", toolCalls: [], model: "luna", provider: "openai" };
+        }),
+        engine("codex-qwen", async () => {
+          calls.push("codex-qwen");
+          throw new AiProviderError("openai", "denied", { statusCode: 403 });
+        }),
+        engine("claude", async () => {
+          calls.push("claude");
+          throw new AiProviderError("anthropic", "expired", { statusCode: 401 });
+        })
+      ]);
+      const answer = provider.complete(request);
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect((await answer).text).toBe("recuperado");
+      expect(calls).toEqual(["codex", "codex-qwen", "claude", "codex"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+it("clasifica capacidad y autenticación sin imprimir detalles del proveedor", () => {
+  expect(classifyCliFailure("Selected model is at capacity", false)).toBe(503);
+  expect(classifyCliFailure("OAuth session expired and could not be refreshed", false)).toBe(401);
+  expect(classifyCliFailure("AccessDenied.Unpurchased 403 Forbidden", false)).toBe(403);
+  expect(classifyCliFailure("Too many requests 429", false)).toBe(429);
 });
 
 describe("contrato CLI", () => {

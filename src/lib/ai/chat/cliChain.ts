@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import { createCliWorkspace, cliWorkspaceEnvironment } from "./tempWorkspace.js";
 import { env } from "../../../env.js";
 import {
   AiProviderError,
@@ -21,6 +22,8 @@ const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_TOOL_CALLS = 4;
 const COOLDOWN_MS = 60_000;
 const QUOTA_COOLDOWN_MS = 15 * 60_000;
+const ACCESS_COOLDOWN_MS = 5 * 60_000;
+const CAPACITY_RETRY_DELAY_MS = 1_500;
 
 type CommandResult = {
   code: number | null;
@@ -324,12 +327,20 @@ function failure(engine: CliChatEngine, result: CommandResult): AiProviderError 
     .filter(Boolean)
     .join("\n")
     .slice(-2_000);
-  const quota = /quota|usage limit|rate.?limit|429|too many requests|exhausted/i.test(detail);
-  const statusCode = quota ? 429 : result.timedOut ? 504 : undefined;
+  const statusCode = classifyCliFailure(detail, result.timedOut);
   return new AiProviderError(engine.provider, `cli_chat_failed:${engine.name}`, {
     statusCode,
     details: { engine: engine.name, detail }
   });
+}
+
+export function classifyCliFailure(detail: string, timedOut: boolean): number | undefined {
+  if (/quota|usage limit|rate.?limit|429|too many requests|exhausted/i.test(detail)) return 429;
+  if (/selected model is at capacity|model.*at capacity|overloaded/i.test(detail)) return 503;
+  if (/oauth session expired|failed to authenticate|unauthori[sz]ed|401/i.test(detail)) return 401;
+  if (/accessdenied|forbidden|not eligible|403/i.test(detail)) return 403;
+  if (timedOut) return 504;
+  return undefined;
 }
 
 function makeCodexEngine(name: "codex" | "codex-qwen"): CliChatEngine {
@@ -350,7 +361,7 @@ function makeCodexEngine(name: "codex" | "codex-qwen"): CliChatEngine {
     },
     complete: async (request) => {
       const prompt = buildCliChatPrompt(request);
-      const dir = await mkdtemp(path.join(os.tmpdir(), "whatsapp-ai-"));
+      const dir = await createCliWorkspace();
       const outputFile = path.join(dir, "output.json");
       const schemaFile = path.join(dir, "schema.json");
       try {
@@ -366,7 +377,7 @@ function makeCodexEngine(name: "codex" | "codex-qwen"): CliChatEngine {
             "-s",
             "read-only",
             "-C",
-            os.tmpdir(),
+            dir,
             ...(qwen ? ["-p", env.qwenChatProfile] : []),
             "-m",
             model,
@@ -380,9 +391,9 @@ function makeCodexEngine(name: "codex" | "codex-qwen"): CliChatEngine {
           ],
           stdin: `# SYSTEM\n${prompt.system}\n\n${prompt.conversation}`,
           timeoutMs: env.aiChatCliTimeoutMs,
-          cwd: os.tmpdir(),
+          cwd: dir,
           processEnv: {
-            ...process.env,
+            ...cliWorkspaceEnvironment(dir),
             ...(env.qwenApiKey ? { QWEN_API_KEY: env.qwenApiKey } : {})
           }
         });
@@ -409,40 +420,45 @@ function makeClaudeEngine(): CliChatEngine {
     available: () => existsSync(env.claudeChatBin),
     complete: async (request) => {
       const prompt = buildCliChatPrompt(request);
-      const result = await runCommand({
-        bin: env.claudeChatBin,
-        args: [
-          "-p",
-          "--no-session-persistence",
-          "--tools",
-          "",
-          "--strict-mcp-config",
-          "--output-format",
-          "json",
-          "--model",
-          model,
-          "--system-prompt",
-          prompt.system
-        ],
-        stdin: prompt.conversation,
-        timeoutMs: env.aiChatCliTimeoutMs,
-        cwd: os.tmpdir(),
-        processEnv: process.env
-      });
-      let answer = "";
+      const dir = await createCliWorkspace();
       try {
-        const payload = JSON.parse(result.stdout) as { result?: string; is_error?: boolean };
-        answer = payload.result ?? "";
-        if (payload.is_error) throw failure(engine, result);
-      } catch (error) {
-        if (error instanceof AiProviderError) throw error;
-        throw failure(engine, result);
+        const result = await runCommand({
+          bin: env.claudeChatBin,
+          args: [
+            "-p",
+            "--no-session-persistence",
+            "--tools",
+            "",
+            "--strict-mcp-config",
+            "--output-format",
+            "json",
+            "--model",
+            model,
+            "--system-prompt",
+            prompt.system
+          ],
+          stdin: prompt.conversation,
+          timeoutMs: env.aiChatCliTimeoutMs,
+          cwd: dir,
+          processEnv: cliWorkspaceEnvironment(dir)
+        });
+        let answer = "";
+        try {
+          const payload = JSON.parse(result.stdout) as { result?: string; is_error?: boolean };
+          answer = payload.result ?? "";
+          if (payload.is_error) throw failure(engine, result);
+        } catch (error) {
+          if (error instanceof AiProviderError) throw error;
+          throw failure(engine, result);
+        }
+        const parsed = parseCliChatResult(answer, "anthropic", model);
+        if (result.code !== 0 || result.timedOut || result.spawnError || !parsed) {
+          throw failure(engine, { ...result, stdout: `${result.stdout}\n${answer}` });
+        }
+        return parsed;
+      } finally {
+        await rm(dir, { recursive: true, force: true });
       }
-      const parsed = parseCliChatResult(answer, "anthropic", model);
-      if (result.code !== 0 || result.timedOut || result.spawnError || !parsed) {
-        throw failure(engine, { ...result, stdout: `${result.stdout}\n${answer}` });
-      }
-      return parsed;
     }
   };
   return engine;
@@ -470,14 +486,14 @@ export class CliFallbackChatProvider implements ChatProvider {
 
   async complete(request: ChatCompletionRequest): Promise<ChatCompletionResult> {
     const attempts: string[] = [];
-    const now = Date.now();
+    let capacityEngine: CliChatEngine | null = null;
     for (const engine of this.engines) {
       if (!engine.available()) {
         attempts.push(`${engine.name}:unavailable`);
         continue;
       }
       const coolingUntil = cooldowns.get(engine.name) ?? 0;
-      if (coolingUntil > now) {
+      if (coolingUntil > Date.now()) {
         attempts.push(`${engine.name}:cooldown`);
         continue;
       }
@@ -490,10 +506,22 @@ export class CliFallbackChatProvider implements ChatProvider {
         return result;
       } catch (error) {
         const statusCode = error instanceof AiProviderError ? error.statusCode : undefined;
-        cooldowns.set(
-          engine.name,
-          Date.now() + (statusCode === 429 ? QUOTA_COOLDOWN_MS : COOLDOWN_MS)
-        );
+        if (statusCode === 503) {
+          // A capacity rejection can clear within seconds; keep the primary
+          // available to the next customer instead of skipping it for a minute.
+          cooldowns.delete(engine.name);
+          capacityEngine ??= engine;
+        } else {
+          cooldowns.set(
+            engine.name,
+            Date.now() +
+              (statusCode === 429
+                ? QUOTA_COOLDOWN_MS
+                : statusCode === 401 || statusCode === 403
+                  ? ACCESS_COOLDOWN_MS
+                  : COOLDOWN_MS)
+          );
+        }
         attempts.push(`${engine.name}:${statusCode ?? "error"}`);
         console.warn("AI chat engine failed", {
           engine: engine.name,
@@ -501,6 +529,26 @@ export class CliFallbackChatProvider implements ChatProvider {
           statusCode,
           error: error instanceof Error ? error.message : String(error)
         });
+      } finally {
+        release();
+      }
+    }
+    if (capacityEngine) {
+      await new Promise((resolve) => setTimeout(resolve, CAPACITY_RETRY_DELAY_MS));
+      const release = await (semaphore ??= new Semaphore(env.aiChatCliConcurrency)).acquire();
+      try {
+        const result = await capacityEngine.complete(request);
+        console.warn("AI chat capacity retry recovered", { engine: capacityEngine.name, attempts });
+        return result;
+      } catch (error) {
+        const statusCode = error instanceof AiProviderError ? error.statusCode : undefined;
+        attempts.push(`${capacityEngine.name}:retry:${statusCode ?? "error"}`);
+        if (statusCode !== 503) {
+          cooldowns.set(
+            capacityEngine.name,
+            Date.now() + (statusCode === 429 ? QUOTA_COOLDOWN_MS : COOLDOWN_MS)
+          );
+        }
       } finally {
         release();
       }
