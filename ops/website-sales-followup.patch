@@ -1,0 +1,29 @@
+--- a/dist/src/routes/webhooks.js
++++ b/dist/src/routes/webhooks.js
+@@ -453,7 +453,7 @@
+             }, inboxConversation.inboundMessageId ?? null);
+             const website = createWebsiteContext(userMessage, history);
+             const actions = website.withActions(buildAgentActions(to, locale, inboxConversation, userMessage, history));
+-            const websiteOfferIntent = /jmarin\.luxisoft\.com|(?:pagina|página|perfil|website|profile) (?:como est[ae]|like this)/i.test([userMessage, ...history.filter(m => m.role === "user").slice(-8).map(m => m.content)].join(" ")) && !/planes de (?:la )?plataforma|\b(?:plus|premium)\b/i.test(userMessage);
++            const websiteOfferIntent = /jmarin\.luxisoft\.com|(?:pagina|página|perfil(?: profesional)?|website|(?:professional )?profile) (?:como est[ae]|like this)/i.test([userMessage, ...history.filter(m => m.role === "user").slice(-8).map(m => m.content)].join(" ")) && !/planes de (?:la )?plataforma|\b(?:plus|premium)\b/i.test(userMessage);
+             let modelMessage = await enrichWithCommercialPlanContext({
+                 projectKey: env.defaultProject,
+                 userMessage,
+@@ -462,7 +462,7 @@
+                 actions
+             });
+             if (websiteOfferIntent)
+-                modelMessage = (await website.enrichMessage()) + "\n[Oferta específica verificada de página web; no es una suscripción Plus/Premium]\n" + JSON.stringify(await websitePageSales("catalog", to, locale));
++                modelMessage = (await website.enrichMessage()) + "\n[Oferta específica verificada de página web; no es una suscripción Plus/Premium]\n" + JSON.stringify({ catalog: await websitePageSales("catalog", to, locale), request: await websitePageSales("start", to, locale) });
+             const result = await handleAgentMessage({
+                 projectKey: env.defaultProject,
+                 userMessage: modelMessage,
+@@ -607,7 +607,7 @@
+     // La lógica vive aquí (capa de rutas), no en el runtime ni en el script.
+     function buildAgentActions(phoneE164, locale, conversation, userMessage, history) {
+         const actions = {
+-            websitePageSales: ({ action }) => websitePageSales(action, phoneE164, locale),
++            websitePageSales: ({ action, details }) => websitePageSales(action, phoneE164, locale, details),
+             searchConversationHistory: (input) => readConversationHistory(fastify, {
+                 projectKey: env.defaultProject, channel: "whatsapp", contactKey: phoneE164
+             }, input),

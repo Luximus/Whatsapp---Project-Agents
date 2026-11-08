@@ -518,8 +518,8 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         projectKey: env.defaultProject,
         phoneE164: to
       });
-      const salesContext = /jmarin\.luxisoft\.com|(?:pagina|página|perfil|website|profile) (?:como est[ae]|like this)/i.test([userMessage,...history.filter(m=>m.role==="user").slice(-8).map(m=>m.content)].join(" "));
-      const modelMessage = salesContext ? userMessage + "\n[Oferta específica verificada de página web; no es Plus/Premium]\n" + JSON.stringify(await websitePageSales("catalog",to,locale)) : userMessage;
+      const salesContext = /jmarin\.luxisoft\.com|(?:pagina|página|perfil(?: profesional)?|website|(?:professional )?profile) (?:como est[ae]|like this)/i.test([userMessage,...history.filter(m=>m.role==="user").slice(-8).map(m=>m.content)].join(" "));
+      const modelMessage = salesContext ? userMessage + "\n[Oferta específica verificada de página web; no es Plus/Premium]\n" + JSON.stringify({catalog:await websitePageSales("catalog",to,locale),request:await websitePageSales("start",to,locale)}) : userMessage;
       const result = await handleAgentMessage({
         projectKey: env.defaultProject,
         userMessage:modelMessage,
@@ -588,7 +588,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
   // La lógica vive aquí (capa de rutas), no en el runtime ni en el script.
   function buildAgentActions(phoneE164: string, locale: Locale, conversation: InboxConversation): AgentActions {
     const actions: AgentActions = {
-      websitePageSales: ({action}) => websitePageSales(action,phoneE164,locale),
+      websitePageSales: ({action,details}) => websitePageSales(action,phoneE164,locale,details),
       async captureCommercialLead(input) {
         const updated = await markInboxCommercialSignal(fastify, conversation.id, {
           reason: input.reason,
