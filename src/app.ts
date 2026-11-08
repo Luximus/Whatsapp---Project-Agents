@@ -1,4 +1,5 @@
-﻿import Fastify from "fastify";
+import {websiteSalesRoutes} from "./routes/websiteSales.js";
+import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
@@ -76,5 +77,6 @@ export function buildApp() {
     .register(whatsappRoutes)
     .register(bridgeRoutes)
     .register(inboxRoutes)
+    .register(websiteSalesRoutes)
     .register(learningRoutes);
 }

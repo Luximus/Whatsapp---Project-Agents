@@ -1,3 +1,4 @@
+import {websitePageSales} from "../lib/websitePageSales.js";
 import type { FastifyPluginAsync } from "fastify";
 import { buildBridgeMessage, consumeBridgeOtp, dispatchDueBridgeEvents, fulfillBridgeOtpRequest } from "../lib/bridge.js";
 import { env } from "../env.js";
@@ -517,9 +518,11 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         projectKey: env.defaultProject,
         phoneE164: to
       });
+      const salesContext = /jmarin\.luxisoft\.com|(?:pagina|página|perfil|website|profile) (?:como est[ae]|like this)/i.test([userMessage,...history.filter(m=>m.role==="user").slice(-8).map(m=>m.content)].join(" "));
+      const modelMessage = salesContext ? userMessage + "\n[Oferta específica verificada de página web; no es Plus/Premium]\n" + JSON.stringify(await websitePageSales("catalog",to,locale)) : userMessage;
       const result = await handleAgentMessage({
         projectKey: env.defaultProject,
-        userMessage,
+        userMessage:modelMessage,
         history,
         context: {
           from: to,
@@ -534,7 +537,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       // texto citando al usuario. Si la voz falla o no aplica, cae a texto plano.
       const mode = pickAgentReplyMode();
       let sent = false;
-      if (mode === "audio") {
+      if (mode === "audio" && !/https:\/\/(?:luxisoft\.com\/api\/v1\/website-sales|checkout\.wompi\.co)/.test(reply)) {
         sent = await tryReplyWithVoice(to, reply);
       }
       if (!sent) {
@@ -585,6 +588,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
   // La lógica vive aquí (capa de rutas), no en el runtime ni en el script.
   function buildAgentActions(phoneE164: string, locale: Locale, conversation: InboxConversation): AgentActions {
     const actions: AgentActions = {
+      websitePageSales: ({action}) => websitePageSales(action,phoneE164,locale),
       async captureCommercialLead(input) {
         const updated = await markInboxCommercialSignal(fastify, conversation.id, {
           reason: input.reason,

@@ -1,0 +1,1 @@
+CREATE TABLE whatsapp_website_notices(marker text PRIMARY KEY,project_key text NOT NULL,phone text NOT NULL,payload jsonb NOT NULL,status text NOT NULL DEFAULT 'pending',created_at timestamptz NOT NULL DEFAULT now());

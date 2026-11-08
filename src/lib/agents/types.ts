@@ -76,6 +76,7 @@ export interface ListLinksResult {
  * debe degradar con gracia.
  */
 export interface AgentActions {
+  websitePageSales?: (input: {action: "catalog"|"start"|"status"}) => Promise<unknown>;
   /** Agenda una cita: envía el correo de agendamiento al equipo comercial. */
   scheduleMeeting?: (input: ScheduleMeetingInput) => Promise<AgentActionResult>;
   /** Transfiere a un humano: envía la solicitud por correo (NO por WhatsApp). */
