@@ -1,0 +1,57 @@
+--- a/dist/src/app.js
++++ b/dist/src/app.js
+@@ -1,3 +1,4 @@
++import { websiteSalesRoutes } from "./routes/websiteSales.js";
+ import Fastify from "fastify";
+ import cors from "@fastify/cors";
+ import helmet from "@fastify/helmet";
+@@ -67,6 +68,7 @@
+         .register(whatsappRoutes)
+         .register(bridgeRoutes)
+         .register(inboxRoutes)
++        .register(websiteSalesRoutes)
+         .register(learningRoutes)
+         .register(maintenanceRoutes);
+ }
+--- a/dist/src/routes/webhooks.js
++++ b/dist/src/routes/webhooks.js
+@@ -1,3 +1,4 @@
++import { websitePageSales } from "../lib/websitePageSales.js";
+ import { createHash } from "node:crypto";
+ import { WebhookQueue } from "../lib/webhookQueue.js";
+ import { createWebsiteContext } from "../lib/scraping/websiteContext.js";
+@@ -452,13 +453,16 @@
+             }, inboxConversation.inboundMessageId ?? null);
+             const website = createWebsiteContext(userMessage, history);
+             const actions = website.withActions(buildAgentActions(to, locale, inboxConversation, userMessage, history));
+-            const modelMessage = await enrichWithCommercialPlanContext({
++            const websiteOfferIntent = /jmarin\.luxisoft\.com|(?:pagina|página|perfil|website|profile) (?:como est[ae]|like this)/i.test([userMessage, ...history.filter(m => m.role === "user").slice(-8).map(m => m.content)].join(" ")) && !/planes de (?:la )?plataforma|\b(?:plus|premium)\b/i.test(userMessage);
++            let modelMessage = await enrichWithCommercialPlanContext({
+                 projectKey: env.defaultProject,
+                 userMessage,
+                 modelMessage: await website.enrichMessage(),
+                 history,
+                 actions
+             });
++            if (websiteOfferIntent)
++                modelMessage = (await website.enrichMessage()) + "\n[Oferta específica verificada de página web; no es una suscripción Plus/Premium]\n" + JSON.stringify(await websitePageSales("catalog", to, locale));
+             const result = await handleAgentMessage({
+                 projectKey: env.defaultProject,
+                 userMessage: modelMessage,
+@@ -532,7 +536,7 @@
+             // texto citando al usuario. Si la voz falla o no aplica, cae a texto plano.
+             const mode = pickAgentReplyMode();
+             let sent = false;
+-            if (mode === "audio") {
++            if (mode === "audio" && !/https:\/\/(?:luxisoft\.com\/api\/v1\/website-sales|checkout\.wompi\.co)/.test(reply)) {
+                 sent = await tryReplyWithVoice(to, reply);
+             }
+             if (!sent) {
+@@ -603,6 +607,7 @@
+     // La lógica vive aquí (capa de rutas), no en el runtime ni en el script.
+     function buildAgentActions(phoneE164, locale, conversation, userMessage, history) {
+         const actions = {
++            websitePageSales: ({ action }) => websitePageSales(action, phoneE164, locale),
+             searchConversationHistory: (input) => readConversationHistory(fastify, {
+                 projectKey: env.defaultProject, channel: "whatsapp", contactKey: phoneE164
+             }, input),
