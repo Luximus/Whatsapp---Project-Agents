@@ -107,7 +107,7 @@ export function advisorViolation(text: string, p: AdvisorPolicy) {
   const amounts = text.match(/\$\s*\d[\d.,]*|\b(?:COP|USD)\s*\d[\d.,]*|\b\d[\d.,]*\s*(?:COP|USD|pesos)\b/gi) ?? [];
   const detailsCount=[/tokens/i,/videos/i,/\bmes(?:es)?\b|months/i,/habiles|business days/i,/renov|renew/i,/dominio propio|custom domain/i,/almacenamiento|storage/i].filter(re=>re.test(text)).length;
   const unsolicitedExclusion = p.aiPlatformInterest && !p.accountComparison && /chat\s*gpt\s*(?:plus|pro)\b|suscripci[oó]n personal.{0,20}chat\s*gpt|(?:\bno\b|not|n[aã]o).{0,65}(?:chat\s*gpt|suscripci[oó]n|subscription|assinatura|vendemos|sell|vendemos contas)|(?:chat\s*gpt.{0,20}(?:plus|pro)).{0,35}(?:not included|n[aã]o inclu)/i.test(text);
-  return unsolicitedExclusion || (p.aiPlatformInterest && !p.accountContinuation && !p.price && (!/luxisoft/i.test(text) || !/consult|formular|p[aá]ginas?|web|sites|pages|questions|queries|content|tiendas|lojas|applications/i.test(text))) || (p.packagesInquiry && !p.details && !p.price && detailsCount > 2) || (p.acceptedInformation && /[¿?]/.test(text) && /quieres? que (?:te )?(?:explique|muestre)|quieres? conocer|would you like me to explain/i.test(text)) ||
+  return unsolicitedExclusion || (p.aiPlatformInterest && !p.accountComparison && !p.accountContinuation && !p.price && (!/luxisoft/i.test(text) || !/consult|formular|p[aá]ginas?|web|sites|pages|questions|queries|content|tiendas|lojas|applications/i.test(text))) || (p.packagesInquiry && !p.details && !p.price && detailsCount > 2) || (p.acceptedInformation && /[¿?]/.test(text) && /quieres? que (?:te )?(?:explique|muestre)|quieres? conocer|would you like me to explain/i.test(text)) ||
     (p.usageInquiry && /(?:\d[\d.,]*\s*(?:a|y|[-–])\s*\d[\d.,]*\s*(?:tokens?|mensajes?)|\d[\d.,]*\s*mensajes?)/i.test(text)) || (p.exploring && (detailsCount>1 || text.split(/\s+/).length>60)) || (!p.price && money(text)) || (!p.portal && /website-sales\/portal\//.test(text)) ||
     (!p.details && (text.split(/\s+/).length > 110 || (amounts.length>1 && (periods.size>1 || plans.size>1))));
 }
@@ -156,6 +156,7 @@ export function advisorFallback(text: string, p: AdvisorPolicy) {
     const link=p.accountContinuation||p.portal?' https://luxisoft.com/'+(locale==='en'?'en':'es')+'/auth?next=%2F'+(locale==='en'?'en':'es')+'%2Fplataforma':'';
     // A factual affirmative fallback; never pretend a personal third-party plan is included.
     if(!p.accountComparison)return messages[locale]+link;
+    return ({es:'La cuenta ofrecida es de Luxisoft y permite usar modelos integrados de OpenAI para consultas, formularios y páginas. Una suscripción personal a ChatGPT Plus o Pro se contrata por separado en ChatGPT.',en:'The account offered is a Luxisoft account with integrated OpenAI models for questions, forms and websites. A personal ChatGPT Plus or Pro subscription is purchased separately through ChatGPT.',pt:'A conta oferecida é da Luxisoft e permite usar modelos integrados da OpenAI para consultas, formulários e páginas. Uma assinatura pessoal do ChatGPT Plus ou Pro é contratada separadamente no ChatGPT.'})[locale];
   }
   return (
     (safe && !advisorViolation(safe,p) ? safe : "") ||

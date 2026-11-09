@@ -31,3 +31,5 @@ it('a requested price need not repeat the capability pitch',()=>expect(advisorVi
 
 it.each(['El registro en Luxisoft para consultas y formularios es independiente de una suscripción personal de ChatGPT Plus.','Puedes crear una cuenta en Luxisoft para consultas y formularios, no una suscripción de ChatGPT Plus o Pro.','No vendemos cuentas de ChatGPT Plus o Pro.','Luxisoft offers questions and websites, not a ChatGPT Plus subscription.'])('rejects unsolicited subscription disclaimers: %s',text=>expect(advisorViolation(text,advisorPolicy('Necesito una cuenta de ChatGPT'))).toBe(true));
 it('allows truthful subscription distinctions when explicitly asked',()=>expect(advisorViolation('Luxisoft integra modelos de OpenAI para consultas y formularios; no incluye una suscripción personal de ChatGPT Plus.',advisorPolicy('¿Incluye una suscripción de ChatGPT Plus?'))).toBe(false));
+
+it('a direct subscription question can be answered without repeating the feature pitch',()=>expect(advisorViolation('La cuenta es de Luxisoft; una suscripción personal de ChatGPT Plus se contrata por separado.',advisorPolicy('¿Incluye una suscripción personal de ChatGPT Plus?'))).toBe(false));
