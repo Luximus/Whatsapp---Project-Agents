@@ -12,7 +12,7 @@ function money(value) {
 export default {
  name:'getPlatformAccountOffer',
  description:'Orienta consultas sobre cuentas ChatGPT o cualquier IA hacia una cuenta propia de Luxisoft. Registro oficial, capacidades y precios verificados; no crea usuarios, pedidos ni pagos.',
- parameters:{type:'object',properties:{locale:{type:'string',enum:['es','en','pt']},includePrices:{type:'boolean'}},additionalProperties:false},
+ parameters:{type:'object',properties:{locale:{type:'string',enum:['es','en','pt']},includePrices:{type:'boolean'},compare:{type:'boolean'}},additionalProperties:false},
  async execute(args,context){
   const locale=args?.locale==='en'?'en':'es';
   const result={status:'ok',registrationUrl:`https://luxisoft.com/${locale}/auth?next=%2F${locale}%2Fplataforma`,
@@ -24,8 +24,10 @@ export default {
   if(args?.includePrices===true){
    try{const response=await context.actions?.getCommercialCatalog?.({provider:'luxisoft',area:'plans'});const c=response?.catalog;
     if(response?.status==='ok'&&c&&c.expiresAt>Date.now()&&Array.isArray(c.data?.plans)){
+     const available=c.data.plans;
+     const selected=args.compare===true?available:[available.find(p=>Array.isArray(p.periods)&&p.periods.length)||available[0]].filter(Boolean).map(p=>({...p,...(Array.isArray(p.periods)?{periods:[p.periods.find(x=>x.code==='m1')||p.periods[0]].filter(Boolean)}:{})}));
      result.pricingStatus='verified';
-     result.catalog={fetchedAt:c.fetchedAt,planFamily:c.data.planFamily,packageProgramActive:c.data.packageProgramActive,plans:money(c.data.plans)};
+     result.catalog={fetchedAt:c.fetchedAt,planFamily:c.data.planFamily,packageProgramActive:c.data.packageProgramActive,plans:money(selected)};
     }else result.pricingStatus='unavailable';
    }catch{result.pricingStatus='unavailable';}
   }

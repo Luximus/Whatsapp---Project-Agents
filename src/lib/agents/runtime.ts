@@ -142,7 +142,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   if (policy?.aiPlatformInterest) {
     const offerTool=toolsByName.get("getPlatformAccountOffer");
     if (offerTool) {
-      const facts=await executeTool(offerTool,JSON.stringify({includePrices:policy.price,locale:policy.locale}),toolContext);
+      const facts=await executeTool(offerTool,JSON.stringify({includePrices:policy.price,compare:policy.details,locale:policy.locale}),toolContext);
       baseMessages.push({role:"user",content:"[Contexto verificado para orientar a una cuenta de plataforma; no es la oferta de página a medida]\n"+facts});
     }
   }
