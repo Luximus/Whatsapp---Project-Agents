@@ -170,7 +170,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     if (!result.toolCalls.length) {
       let text = policy ? cleanAdvisorBody(result.text,raw) : result.text;
       const operationRequested=/\b(?:quiero|necesito|solicito|i want|quero).{0,50}(?:contratar|pagar|conectar|eliminar|reiniciar|vincular|buy|pay|connect|delete|restart|link)\b/i.test(raw);
-      const requiredInput=operationRequested && newMessages.some(m=>{if(m.role!=="tool")return false;try{return ["needs_confirmation","requires_confirmation","needs_input","requires_input"].includes(JSON.parse(m.content).status);}catch{return false;}});
+      const requiredInput=(operationRequested || /^(?:conecta|reinicia|elimina|vincula|connect|restart|delete|link)\b/i.test(raw)) && newMessages.some(m=>{if(m.role!=="tool")return false;try{return ["needs_confirmation","requires_confirmation","needs_input","requires_input"].includes(JSON.parse(m.content).status);}catch{
+        const call=newMessages.flatMap(turn=>turn.toolCalls??[]).find(call=>call.id===m.toolCallId);
+        return Boolean(call && ["connectServer","assistantSend","authenticate"].includes(call.name) && /^(?:auth_required:|elige_servidor:|error: (?:falta_codigo_2fa|codigo_2fa_incorrecto))/.test(m.content));
+      }});
       const questionsAllowed=requestsQuestions(raw)||requiredInput;
       const draft=text;
       if ((informative && unsolicitedQuestion(text,raw,questionsAllowed)) || (policy && (!text.trim() || advisorViolation(text, policy) || (!requestsQuestions(raw)&&redundantAdvisorBody(text,raw,options.history??[]))))) {
