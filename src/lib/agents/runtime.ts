@@ -4,6 +4,7 @@ import {
   advisorViolation,
   advisorToolAllowed,
   advisorToolResult,
+  advisorWelcome,
   advisorFallback
 } from "./advisorPolicy.js";
 import { createChatProvider, getDefaultChatProvider } from "../ai/chat/index.js";
@@ -28,6 +29,7 @@ export interface RunAgentOptions {
   history?: ChatMessage[];
   context: AgentToolContext;
   maxTurns?: number;
+  isSuperseded?: () => Promise<boolean>;
 }
 
 export interface RunAgentResult {
@@ -86,7 +88,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
 
   // La identidad (nombre femenino) del asistente depende del proveedor de chat:
   // se sustituye el token {{ASSISTANT_NAME}} del prompt antes de invocar.
-  const assistantName = resolveAssistantName(provider.name);
+  const assistantName = context.channel === "whatsapp" && agent.projectKey === "luxisoft" ? "Luisa" : resolveAssistantName(provider.name);
   const channelName =
     context.channel === "instagram"
       ? "Instagram"
@@ -130,7 +132,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   }
   let turns = 0;
 
+  const obsolete = async () => Boolean(await options.isSuperseded?.());
+  const superseded = () => ({text:"",rich:[],newMessages:[],turns});
   while (turns < maxTurns) {
+    if (await obsolete()) return superseded();
     turns += 1;
     const result = await provider.complete({
       messages: [...baseMessages, ...newMessages],
@@ -138,6 +143,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       tools: toolDefs.length ? toolDefs : undefined
     });
 
+    if (await obsolete()) return superseded();
     // El asistente respondió (puede traer texto y/o tool calls). Conservamos
     // las tool calls en el mensaje para reenviarlas al proveedor en el
     // siguiente turno; sin ellas los mensajes "tool" quedan huérfanos.
@@ -166,6 +172,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         if (!text.trim() || advisorViolation(text, policy)) text = advisorFallback(text, policy);
         context.logger?.info?.("advisor_response_corrected");
       }
+      if (policy) text = advisorWelcome(text, policy);
       newMessages.push({ role: "assistant", content: text });
       return { text, rich, newMessages, turns };
     }
@@ -174,6 +181,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
 
     // Ejecuta cada tool solicitada y añade su resultado al historial.
     for (const call of result.toolCalls) {
+      if (await obsolete()) return superseded();
       const tool = toolsByName.get(call.name);
       let args: Record<string, unknown> = {};
       try {

@@ -5,7 +5,7 @@ const plain = (s: string) =>
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
 const buying = (s: string) =>
-  !/\b(no quiero|not ready|nao quero|solo informacion|just information)\b/.test(s) &&
+  !/\b(no quiero|not ready|nao quero|no ahora|espera|cancela|mejor no|not now|cancel|olvidalo|no me interesa|no gracias|solo informacion|just information)\b/.test(s) &&
   /\b(quiero|deseo|confirmo|voy a|i want to|quero)\s+(contratar|comprar|pagar|buy|purchase|pay|contratarlo)|\b(enviame|dame|send me|manda).{0,35}(enlace de pago|payment link|link de pagamento)\b/.test(
     s
   );
@@ -52,6 +52,7 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
       (yes && /cotizacion|agend|demo|meeting|quote|valid.{0,40}equipo|confirm.{0,40}condicion|consult.{0,40}equipo/.test(last)));
   const exploring = !usageInquiry && !acceptedInformation && !/paquetes|packages|como contratar|how to sign up/.test(s) && !price && !details && !purchase && !/incluy|inclu|benefici|benefit|entrega|deliver|cuando|when|prazo|plazo|renov|vigencia|hosting|tokens?|videos?|voz|voice|soporte|support|no puedo|cannot/.test(s);
   return {
+    firstContact: !history.some(m => m.role === "assistant"),
     exploring,
     usageInquiry,
     packagesInquiry,
@@ -71,6 +72,7 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
 }
 export type AdvisorPolicy = ReturnType<typeof advisorPolicy>;
 export const advisorInstructions = `\nREGLAS PRIORITARIAS PARA EL ASESOR DE WHATSAPP (sustituyen mandatos de enumerar, cotizar o cerrar de las secciones anteriores y herramientas):
+IDENTIDAD FIJA: Eres Luisa, asistente comercial virtual de LUXISOFT S.A.S., independientemente del proveedor. El servidor antepone el saludo, presentación y pregunta de cortesía una sola vez si firstContact=true: escribe únicamente el cuerpo útil, sin otro saludo ni presentación. Si solo saludan, invita brevemente a contar qué necesitan; no enumeres servicios ni añadas preguntas. Si hay una duda concreta, respóndela en ese mismo turno sin exigir contestar cómo se encuentra. En turnos siguientes reconoce con naturalidad cómo está, agradece cuando corresponda, muestra empatía ante una dificultad y retoma el objetivo; no repitas saludos, identidad ni la pregunta de cortesía. No finjas ser humana ni impongas un guion social.
 Actúa como asesora virtual experta y consultiva en TODO el portafolio. Escucha y responde primero la duda concreta. Usa el historial y las observaciones de sitios; una referencia de otra persona no describe necesariamente el negocio del cliente. No preguntes datos ya conocidos.
 Si exploring=true, escribe como máximo 45 palabras: reconoce el objetivo, aporta UN beneficio y pregunta solo por el dato relevante que falte. No enumeres videos, Tokens, duraciones, entrega, renovaciones o exclusiones antes de que interesen al cliente.
 CONTINUIDAD: Un «sí», «sí por favor», «claro» o equivalente responde a tu última propuesta. Da la explicación aceptada o ejecuta la gestión autorizada; nunca vuelvas a ofrecer la misma explicación. Si pide paquetes o cómo contratar inicialmente, responde modalidades y proceso en dos o tres frases, sin enumerar videos, almacenamiento, exclusiones y renovaciones; explica esos detalles cuando los solicite. No adelantes precio hasta que lo pida ni crees pedidos. No antepongas un cuestionario a una pregunta concreta. Cada respuesta debe añadir información nueva; no repitas beneficios, nombre del negocio ni confirmaciones «Perfecto» en cada turno.
@@ -140,4 +142,14 @@ export function advisorFallback(text: string, p: AdvisorPolicy) {
       pt: "Posso ajudar com essa solicitação. Qual aspecto você gostaria de esclarecer primeiro?"
     }[p.locale as "es" | "en" | "pt"]
   );
+}
+
+export function advisorWelcome(text: string, p: AdvisorPolicy) {
+  if (!p.firstContact) return text;
+  const greeting = {
+    es: "¡Hola! Soy Luisa, asistente comercial virtual de LUXISOFT S.A.S. ¿Cómo te encuentras?",
+    en: "Hello! I'm Luisa, the virtual sales assistant at LUXISOFT S.A.S. How are you?",
+    pt: "Olá! Sou Luisa, assistente comercial virtual da LUXISOFT S.A.S. Como você está?"
+  }[p.locale as "es" | "en" | "pt"];
+  return greeting + "\n\n" + text;
 }

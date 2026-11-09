@@ -41,3 +41,22 @@ créditos, topes ni facturación. getAiUsagePricing consulta las recargas vigent
 por el contrato comercial, publica importe y saldo por separado sin marcas,
 rechaza caché vencida/fallos y nunca convierte saldo en mensajes sin medición.
 No atribuir esta inclusión a otros servicios del portafolio.
+
+## Luisa y mensajes consecutivos (2026-11-09)
+
+WhatsApp corporativo conserva la identidad Luisa, asistente comercial virtual de
+LUXISOFT S.A.S., en todos los proveedores. El primer turno añade saludo,
+presentación y cortesía; el cuerpo atiende una duda concreta sin imponer un
+intercambio social. El historial evita repetir la introducción.
+
+replyBatch espera tres segundos de calma por contacto y consulta tanto la
+bandeja como los mensajes aceptados pendientes en la cola durable. Guarda cada
+entrada, combina las pendientes de respuesta y descarta un turno obsoleto antes
+de generar, ejecutar nuevas tools o enviar texto/audio. OTP, estados, reacciones
+y otros contactos no bloquean una respuesta. La síntesis de voz vuelve a validar
+antes de enviar. Una llamada externa ya iniciada o un mensaje entregado no se
+pueden deshacer: nunca se reintentan efectos aceptados para aparentar cancelación.
+
+ops/upgrade-reply-batch.mjs actualiza por anclas exactas el webhook efectivo,
+conservando trabajo ajeno no publicado, historial, firma, OTP y colas. Compilar
+el commit publicado e instalar únicamente sus módulos y este overlay validado.

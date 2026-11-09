@@ -35,6 +35,7 @@ export async function handleAgentMessage(input: {
   userMessage: string;
   originalUserMessage?: string;
   history?: ChatMessage[];
+  isSuperseded?: () => Promise<boolean>;
   context?: Partial<AgentToolContext>;
 }): Promise<RunAgentResult> {
   const agent = await getAgent(input.projectKey);
@@ -43,6 +44,7 @@ export async function handleAgentMessage(input: {
     userMessage: input.userMessage,
     originalUserMessage: input.originalUserMessage,
     history: input.history,
+    isSuperseded: input.isSuperseded,
     context: {
       projectKey: agent.projectKey,
       from: input.context?.from ?? null,

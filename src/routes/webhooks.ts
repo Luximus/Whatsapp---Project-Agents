@@ -1,3 +1,4 @@
+import { replyBatch } from "../lib/replyBatch.js";
 import {websitePageSales} from "../lib/websitePageSales.js";
 import type { FastifyPluginAsync } from "fastify";
 import { buildBridgeMessage, consumeBridgeOtp, dispatchDueBridgeEvents, fulfillBridgeOtpRequest } from "../lib/bridge.js";
@@ -185,12 +186,13 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
   // Intenta responder con NOTA DE VOZ sintetizando el texto. Devuelve true si se
   // envió; ante cualquier fallo devuelve false para que el llamador caiga a
   // texto (nunca dejamos al usuario sin respuesta por un fallo de TTS).
-  const tryReplyWithVoice = async (to: string, message: string): Promise<boolean> => {
+  const tryReplyWithVoice = async (to: string, message: string, canSend?: () => Promise<boolean>): Promise<boolean> => {
     try {
       const audio = await synthesizeSpeech({ text: message });
       // WhatsApp solo trata OGG/Opus como nota de voz real; el resto va como
       // audio normal reproducible.
       const asVoiceMessage = audio.mimeType === "audio/ogg";
+      if (canSend && !await canSend()) return false;
       await sendWhatsappAudio(
         to,
         { data: audio.data, mimeType: audio.mimeType, filename: `reply.${audio.extension}` },
@@ -502,6 +504,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     locale: Locale
   ): Promise<boolean> {
     let inboxConversation: InboxConversation | null = null;
+    let batch: ReturnType<typeof replyBatch> | null = null;
     try {
       inboxConversation = await recordInboxInbound(fastify, {
         projectKey: env.defaultProject,
@@ -514,6 +517,20 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         fastify.log.info({ conversationId: inboxConversation.id, status: inboxConversation.status }, "WhatsApp message queued for human; AI paused");
         return true;
       }
+      const prepareBatchActions = (actions: AgentActions) => {
+        const transfer = actions.escalateToHuman;
+        if (transfer) actions.escalateToHuman = async input => {
+          const result = await transfer(input);
+          if (result.ok) batch?.confirmOwnHandoff();
+          return result;
+        };
+        return actions;
+      };
+      if (env.defaultProject === "luxisoft" && replyToMessageId) {
+        batch = replyBatch(fastify.pg,env.defaultProject,inboxConversation.id,to,replyToMessageId);
+        if (!await batch.ready()) return true;
+        userMessage = await batch.text(userMessage);
+      }
       const history = await loadConversationHistory(fastify, {
         projectKey: env.defaultProject,
         phoneE164: to
@@ -521,6 +538,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       const salesContext = /jmarin\.luxisoft\.com|(?:pagina|página|perfil(?: profesional)?|website|(?:professional )?profile) (?:como est[ae]|like this)/i.test([userMessage,...history.filter(m=>m.role==="user").slice(-8).map(m=>m.content)].join(" "));
       const modelMessage = salesContext ? userMessage + "\n[Oferta específica verificada de página web; no es Plus/Premium]\n" + JSON.stringify({catalog:await websitePageSales("catalog",to,locale).catch(()=>({status:"catalog_unavailable"}))}) : userMessage;
       const result = await handleAgentMessage({
+        isSuperseded: batch?.newer,
         projectKey: env.defaultProject,
         userMessage:modelMessage,
         originalUserMessage:userMessage,
@@ -529,9 +547,10 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           from: to,
           channel: "whatsapp",
           logger: fastify.log,
-          actions: buildAgentActions(to, locale, inboxConversation)
+          actions: prepareBatchActions(buildAgentActions(to, locale, inboxConversation))
         }
       });
+      if (batch && await batch.newer()) return true;
       const reply = result.text?.trim();
       if (!reply) return false;
       // El asistente IA elige modo por probabilidad: nota de voz / texto plano /
@@ -539,13 +558,15 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       const mode = pickAgentReplyMode();
       let sent = false;
       if (mode === "audio" && !/https:\/\/(?:luxisoft\.com\/api\/v1\/website-sales|checkout\.wompi\.co)/.test(reply)) {
-        sent = await tryReplyWithVoice(to, reply);
+        sent = await tryReplyWithVoice(to, reply, async()=>!batch || !await batch.newer());
       }
       if (!sent) {
+        if (batch && await batch.newer()) return true;
         sent = await safeReply(to, reply, replyToMessageId, { quote: mode === "quoted" });
       }
       if (sent) {
         for (const block of result.rich) {
+          if (batch && await batch.newer()) break;
           try { await sendWhatsappRich(to, block); }
           catch (err) { fastify.log.warn({ err, kind: block.kind }, "WhatsApp rich block failed; text retained"); }
         }
@@ -569,6 +590,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       }
       return sent;
     } catch (err) {
+      if (batch && await batch.newer()) return true;
       trackOperationalError();
       if (inboxConversation) {
         await recordInboxOutbound(fastify, {
