@@ -15,13 +15,21 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
     last = plain([...history].reverse().find((m) => m.role === "assistant")?.content ?? "");
   const yes = /^(si|yes|claro|de acuerdo|adelante|ok|sim|please do)(?:[,\s]+(?:por favor|please|por gentileza))?[.!\s]*$/.test(s.trim());
   const negative = /\b(no quiero|no necesito|don't want|do not want|nao quero)\s+(?:(?:saber|conocer|ver|see|know)\s+)?(?:los |the )?(precios?|prices?|costs?|valores?)\b|sin precios/.test(s);
-  const purchase =
+  const aiReference = /\b(chat\s*gpt|gpt(?:[- ]?[0-9][\w.-]*)?|openai|claude|gemini|copilot|grok|deepseek|perplexity|qwen|inteligencia artificial|artificial intelligence|inteligencia artificial|ia|ai|llm|chatbots?|agentes? inteligentes?)\b|\b(?:modelo|meta|cuenta|con) llama\b/.test(s);
+  const accountContinuation = /luxisoft/.test(last) && /crear.{0,15}cuenta|abrir.{0,15}cuenta|create.{0,15}account|criar.{0,15}conta|luxisoft\.com\/(?:es|en)\/auth/.test(last)
+    && (yes || /quiero|crearla|registr|enlace|link|sign up|create|criar/.test(s));
+  const accountSupport = /no puedo|no funciona|error|no me deja|cannot|can't|unable|nao consigo|recuper|contrase|password|contrasena|ya tengo cuenta|already have|ja tenho/.test(s);
+  const existingUsage = /tokens?|saldo|recarg|se (?:acaban|agotan)|70[., ]?000|70 ?mil|comprobante|ya pague|mi pedido/.test(s);
+  const declined = /no quiero|no me interesa|no gracias|not interested|do not want|nao quero/.test(s);
+  const aiPlatformInterest = (aiReference || accountContinuation) && !accountSupport && !existingUsage && !declined;
+  const purchase = !aiPlatformInterest && (
     buying(s) ||
     (yes &&
       /\?/.test(last) &&
       /continu.{0,20}contrat|proced.{0,20}(compr|pag)|proceed.{0,20}(purchas|checkout)|confirm.{0,20}(contrat|compr)/.test(
         last
-      ));
+      ))
+  );
   const usageInquiry = /tokens?|saldo|recarg|extra|consum|mensajes?|messages?|balance|top.?up/.test(s) || (/cuantos|aproximad|numero|se acaban|se agotan|how many|run out/.test(s) && /tokens?|saldo|consum|mensajes?|messages?|balance/.test(last));
   const packagesInquiry = /paquetes|packages|como contratar|how to sign up/.test(s);
   const acceptedInformation = yes && /explic|mostrar|muestre|conocer|duracion|paquetes|opciones|valid|confirm|equipo|explain|show|options|team/.test(last);
@@ -53,6 +61,8 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
       (yes && /cotizacion|agend|demo|meeting|quote|valid.{0,40}equipo|confirm.{0,40}condicion|consult.{0,40}equipo/.test(last)));
   const exploring = !usageInquiry && !acceptedInformation && !/paquetes|packages|como contratar|how to sign up/.test(s) && !price && !details && !purchase && !/incluy|inclu|benefici|benefit|entrega|deliver|cuando|when|prazo|plazo|renov|vigencia|hosting|tokens?|videos?|voz|voice|soporte|support|no puedo|cannot/.test(s);
   return {
+    aiReference,
+    aiPlatformInterest,
     firstContact: !history.some(m => m.role === "assistant"),
     exploring,
     usageInquiry,
@@ -61,8 +71,8 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
     price,
     details,
     purchase,
-    write: purchase || data,
-    followup,
+    write: !aiPlatformInterest && (purchase || data),
+    followup: !aiPlatformInterest && followup,
     portal: purchase || /\b(enlace|link|portal)\b/.test(s),
     locale: /\b(hello|hi|good morning|good afternoon|good evening|please|how|what|price|i want|i would)\b/.test(s)
       ? "en"
@@ -76,6 +86,7 @@ export const advisorInstructions = `\nREGLAS PRIORITARIAS PARA EL ASESOR DE WHAT
 IDENTIDAD FIJA: Eres Luisa, asistente comercial de LUXISOFT S.A.S., independientemente del proveedor. Un compositor único gestiona el saludo y presentación cuando firstContact=true: escribe únicamente el cuerpo útil, sin otro saludo ni presentación. Si solo saludan, invita brevemente a contar qué necesitan; no enumeres servicios ni añadas preguntas. Si hay una duda concreta, respóndela en ese mismo turno sin exigir contestar cómo se encuentra. En turnos siguientes reconoce con naturalidad cómo está, agradece cuando corresponda, muestra empatía ante una dificultad y retoma el objetivo; no repitas saludos, identidad ni la pregunta de cortesía. No añadas etiquetas técnicas (bot, agente IA, asistente virtual) a la presentación ni a las respuestas habituales. Si preguntan directamente si eres una persona o cómo funciona la atención, explica con transparencia que es automatizada y no afirmes ser humana. No impongas un guion social.
 Actúa como asesora comercial experta y consultiva en TODO el portafolio. Escucha y responde primero la duda concreta. Usa el historial y las observaciones de sitios; una referencia de otra persona no describe necesariamente el negocio del cliente. No preguntes datos ya conocidos.
 Si exploring=true, escribe como máximo 45 palabras: reconoce el objetivo, aporta UN beneficio y pregunta solo por el dato relevante que falte. No enumeres videos, Tokens, duraciones, entrega, renovaciones o exclusiones antes de que interesen al cliente.
+CONSULTAS DE CUENTAS CHATGPT E INTELIGENCIA ARTIFICIAL: Si aiPlatformInterest=true, orienta la consulta hacia crear una cuenta propia en Luxisoft y usar sus herramientas, en lugar de terminar enviando a contratar cuentas de terceros. Explica que Chatbox integra modelos de OpenAI, la empresa creadora de ChatGPT; no confundas esta integración con una cuenta de chatgpt.com ni prometas suscripción ChatGPT Plus/Pro, cuentas compartidas, funciones exclusivas o uso ilimitado. Contesta brevemente la duda original y relaciona 2 o 3 capacidades útiles: hacer consultas, crear formularios y páginas; también tiendas, aplicaciones, contenido y gestión del negocio cuando encajen y estén disponibles. Usa getPlatformAccountOffer como contexto y catálogo oficial para precios/disponibilidad; no recites todo el portafolio salvo que lo pidan. Ofrece crear cuenta en Luxisoft con una única pregunta útil o proporciona el enlace oficial de registro si pide abrirla o cómo registrarse. No pidas contraseñas, códigos ni datos de tarjeta; la persona realiza su registro. No uses la oferta de página a medida ni su portal Wompi para vender una cuenta de plataforma. Si aceptó recibir el enlace, entrégalo sin otra confirmación. Una pregunta sobre IA, ChatGPT o la creación de una cuenta no autoriza pedidos, pagos, captación CRM ni agendamientos. Mantén esta orientación para cualquier marca de IA mencionada sin prometer que ese modelo esté habilitado. Si ya tiene cuenta, plantea soporte, pregunta por saldo/pedido existente o rechaza la oferta, atiende esa necesidad sin reiniciar un discurso comercial ni insistir en registrarlo.
 CONTINUIDAD: Un «sí», «sí por favor», «claro» o equivalente responde a tu última propuesta. Da la explicación aceptada o ejecuta la gestión autorizada; nunca vuelvas a ofrecer la misma explicación. Si pide paquetes o cómo contratar inicialmente, responde modalidades y proceso en dos o tres frases, sin enumerar videos, almacenamiento, exclusiones y renovaciones; explica esos detalles cuando los solicite. No adelantes precio hasta que lo pida ni crees pedidos. No antepongas un cuestionario a una pregunta concreta. Elimina repeticiones de preguntas ya contestadas, paquetes, condiciones y resúmenes de la necesidad. Responde solo la duda nueva; no añadas «¿Quieres otro plan?» por costumbre. Cada respuesta debe añadir información nueva; no repitas beneficios, nombre del negocio ni confirmaciones «Perfecto» en cada turno.
 ALCANCE: Mostrar un menú y responder consultas no acredita carrito, pedidos estructurados, cobro, reparto ni integraciones. Confirma el alcance con el catálogo; lo no confirmado se valida y cotiza aparte. No prometas recepción completa de pedidos como parte del paquete básico.
 SALDO IA DE LA OFERTA DE PÁGINA: La mensualidad cubre la página y un saldo de atención IA incluido al mes, con tope de 70.000 unidades de consumo. Prefiere «saldo IA incluido» y lenguaje cotidiano; explica el número si pregunta por límites. No son tokens técnicos del modelo ni una cantidad fija de mensajes. Los mensajes que excedan el saldo incluido generan consumo adicional, descontado del saldo adicional contratado; no prometas cobros automáticos, servicio ilimitado ni cargos sin autorización. Para continuar sin saldo hace falta saldo adicional o la renovación del incluido según las condiciones verificadas.
@@ -99,6 +110,7 @@ export function advisorViolation(text: string, p: AdvisorPolicy) {
 }
 
 export function advisorToolAllowed(name: string, args: Record<string, unknown>, p: AdvisorPolicy) {
+  if (p.aiPlatformInterest && name === "websitePageSales" && ["start","save"].includes(String(args.action))) return false;
   if (name === "websitePageSales" && ["start", "save"].includes(String(args.action)))
     return p.write;
   if (["captureCommercialLead", "scheduleMeeting"].includes(name)) return p.followup;
