@@ -8,7 +8,7 @@ describe('Free before paid plans',()=>{
   const action=vi.fn(async()=>catalog());
   const r=JSON.parse(await offer.execute({}, {actions:{getCommercialCatalog:action}}));
   expect(action).toHaveBeenCalledOnce();expect(r.freeAccess.allowance.tokens).toBe(20000);
-  expect(r.catalog).toBeUndefined();expect(r.orientation).toMatch(/gratuita.*20.000.*facilidades de pago/);
+  expect(r.catalog).toBeUndefined();expect(r.orientation).toMatch(/gratuita.*20.000.*modalidades de pago/);
  });
  it('retains Free first when price is requested and converts cents',async()=>{
   const r=JSON.parse(await offer.execute({includePrices:true},{actions:{getCommercialCatalog:async()=>catalog()}}));
