@@ -1,4 +1,4 @@
-import {onlyGreeting,cleanAdvisorBody,redundantAdvisorBody,advisorPrompt,informationInstructions,requestsQuestions,unsolicitedQuestion,informativeFallback} from "./advisorResponse.js";
+import {onlyGreeting,cleanAdvisorBody,redundantAdvisorBody,advisorPrompt,informationInstructions,brandInstructions,unsolicitedProvider,providerNeutralFallback,asksAboutProvider,requestsQuestions,unsolicitedQuestion,informativeFallback} from "./advisorResponse.js";
 import {
   advisorPolicy,
   advisorInstructions,
@@ -115,7 +115,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   const informative = agent.projectKey === "luxisoft";
   const systemPrompt = (
     (policy ? advisorPrompt(agent.systemPrompt) : agent.systemPrompt) +
-    (policy ? advisorInstructions + "\nPOLÍTICA DEL TURNO: " + JSON.stringify(policy) : "") + (informative ? "\n"+informationInstructions : "")
+    (policy ? advisorInstructions + "\nPOLÍTICA DEL TURNO: " + JSON.stringify(policy) : "") + (informative ? "\n"+informationInstructions+"\n"+brandInstructions : "")
   )
     .replace(/\{\{\s*ASSISTANT_NAME\s*\}\}/g, assistantName)
     .replace(/\{\{\s*CHANNEL_NAME\s*\}\}/g, channelName);
@@ -145,7 +145,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   if (policy?.aiPlatformInterest) {
     const offerTool=toolsByName.get("getPlatformAccountOffer");
     if (offerTool) {
-      const facts=await executeTool(offerTool,JSON.stringify({includePrices:policy.price,compare:policy.details,locale:policy.locale}),toolContext);
+      const facts=await executeTool(offerTool,JSON.stringify({includeProvider:asksAboutProvider(raw),includePrices:policy.price,compare:policy.details,locale:policy.locale}),toolContext);
       try{platformOrientation=JSON.parse(facts).orientation||"";}catch{/* unavailable facts */}
       baseMessages.push({role:"user",content:"[Contexto verificado para orientar a una cuenta de plataforma; no es la oferta de página a medida]\n"+facts});
     }
@@ -176,7 +176,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       }});
       const questionsAllowed=requestsQuestions(raw)||requiredInput;
       const draft=text;
-      if ((informative && unsolicitedQuestion(text,raw,questionsAllowed)) || (policy && (!text.trim() || advisorViolation(text, policy) || (!requestsQuestions(raw)&&redundantAdvisorBody(text,raw,options.history??[]))))) {
+      if ((informative && (unsolicitedQuestion(text,raw,questionsAllowed)||unsolicitedProvider(text,raw))) || (policy && (!text.trim() || advisorViolation(text, policy) || (!requestsQuestions(raw)&&redundantAdvisorBody(text,raw,options.history??[]))))) {
         try {
           const corrected = await provider.complete({
             messages: [
@@ -186,7 +186,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
               {
                 role: "user",
                 content:
-                  "Reformula únicamente tu respuesta de acuerdo con la política del turno. No uses herramientas ni ejecutes acciones. Responde la duda original de forma breve sin preguntas de seguimiento ni invitaciones a ampliar, salvo petición expresa del cliente o dato indispensable exigido por una herramienta para su operación solicitada, sin saludos, presentación, preguntas ya contestadas ni repetir explicaciones anteriores. Conserva importes y condiciones verificadas; no adelantes precios o enlaces no solicitados."
+                  "Reformula únicamente tu respuesta de acuerdo con la política del turno. No uses herramientas ni ejecutes acciones. Responde la duda original de forma breve sin preguntas de seguimiento ni invitaciones a ampliar, salvo petición expresa del cliente o dato indispensable exigido por una herramienta para su operación solicitada, sin saludos, presentación, preguntas ya contestadas ni repetir explicaciones anteriores. No menciones OpenAI salvo pregunta directa del cliente sobre la empresa o proveedor; usa ChatGPT como referencia conocida sin prometer una suscripción personal. Conserva importes y condiciones verificadas; no adelantes precios o enlaces no solicitados."
               }
             ],
             model: agent.chatModel || undefined,
@@ -200,7 +200,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         context.logger?.info?.("advisor_response_corrected");
       }
       if(informative && unsolicitedQuestion(text,raw,questionsAllowed)) text=informativeFallback(text,raw,questionsAllowed)||((!policy||!advisorViolation(draft,policy))?informativeFallback(draft,raw,questionsAllowed):'')||({es:'La información solicitada requiere verificación del equipo para responder con precisión.',en:'The requested information requires verification by the team for an accurate answer.',pt:'A informação solicitada requer verificação da equipe para uma resposta precisa.'}[policy?.locale as 'es'|'en'|'pt']??'La información solicitada requiere verificación del equipo para responder con precisión.');
-      if(policy?.aiPlatformInterest && !policy.accountContinuation && !policy.accountComparison && !policy.specificPlan && platformOrientation && advisorViolation(text,policy)) text=platformOrientation;
+      if(informative && unsolicitedProvider(text,raw)) text=platformOrientation && policy?.aiPlatformInterest && !policy.providerInquiry && !policy.accountComparison?platformOrientation:providerNeutralFallback(text,raw,policy?.locale);
+      if(policy?.aiPlatformInterest && !policy.providerInquiry && !policy.accountContinuation && !policy.accountComparison && !policy.specificPlan && platformOrientation && advisorViolation(text,policy)) text=platformOrientation;
       if (policy) text = advisorWelcome(text, policy,raw);
       newMessages.push({ role: "assistant", content: text });
       return { text, rich, newMessages, turns };
@@ -241,6 +242,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
 
   // Se agotaron los turnos sin respuesta final: devuelve el último texto.
   const lastAssistant = [...newMessages].reverse().find((m) => m.role === "assistant");
-  const text = policy ? advisorWelcome(advisorFallback("",policy),policy,raw) : lastAssistant?.content??"";
+  let text = policy ? advisorWelcome(advisorFallback("",policy),policy,raw) : lastAssistant?.content??"";
+  if(informative) text=providerNeutralFallback(text,raw,policy?.locale);
   return { text, rich, newMessages, turns };
 }

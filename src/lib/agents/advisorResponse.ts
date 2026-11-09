@@ -73,3 +73,17 @@ export function informativeFallback(text:string,raw:string,allowed=false) {
  if(sentences.slice(first).every(s=>unsolicitedQuestion(s,raw)))return sentences.slice(0,first).join(' ');
  return '';
 }
+
+export function asksAboutProvider(raw:string) {
+ const s=plain(raw);
+ return /\bopenai\b/.test(s) && /[?¿]|\b(?:quien|que|cual|usa|usan|utiliza|trabaja|relacion|dime|explica|tell|who|what|which|does|is|e|quem|qual)\b/.test(s)
+  || /(?:quien|que empresa|cual.{0,15}proveedor|who|which company|what company|quem|qual empresa).{0,70}(?:modelos?|tecnologia|proveedor|creo|creador|provider|models?|created|technology|criou|tecnologia)/.test(s);
+}
+export const brandInstructions = `LENGUAJE DE MARCA: En orientación general usa ChatGPT como referencia conocida: «Chatbox, el chat de IA de Luxisoft, para hacer consultas como en ChatGPT». Menciona OpenAI únicamente si el último mensaje del cliente pregunta directamente por esa empresa o por el proveedor/creador de la tecnología. No basta con que aparezca en el historial, el catálogo o un sitio. No conviertas esta referencia en una cuenta de chatgpt.com ni una suscripción personal de ChatGPT Plus/Pro. Si pregunta por el proveedor, responde directamente con la información verificada sin repetir la oferta de registro o los planes. Mantén respuestas informativas sin preguntas de seguimiento.`;
+export function unsolicitedProvider(text:string,raw:string) {return /\bopenai\b/i.test(text)&&!asksAboutProvider(raw);}
+export function providerNeutralFallback(text:string,raw:string,locale='es') {
+ if(!unsolicitedProvider(text,raw))return text;
+ const sentences=[...new Intl.Segmenter('es',{granularity:'sentence'}).segment(text)].map(x=>x.segment.trim());
+ const facts=sentences.filter(s=>!unsolicitedProvider(s,raw)).join(' ');
+ return facts||({es:'Chatbox es el chat de IA de Luxisoft y permite hacer consultas como en ChatGPT. Las funciones disponibles dependen de la cuenta y del plan.',en:'Chatbox is the Luxisoft AI chat, for questions like in ChatGPT. Available features depend on the account and plan.',pt:'Chatbox é o chat de IA da Luxisoft, para consultas como no ChatGPT. As funções disponíveis dependem da conta e do plano.'}[locale as 'es'|'en'|'pt']??'Chatbox es el chat de IA de Luxisoft, para hacer consultas como en ChatGPT.');
+}
