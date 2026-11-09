@@ -26,3 +26,5 @@ describe('AI account interest is a platform opportunity, not a website purchase'
  it.each(['Mi negocio se llama Rapitoto','Qué pasa si se agotan los Tokens IA?','No puedo entrar a mi cuenta ChatGPT','Ya tengo cuenta, cómo hago un formulario con IA?','No quiero registrarme en otra IA'])('keeps support and existing needs: %s',raw=>expect(advisorPolicy(raw).aiPlatformInterest).toBe(false));
  it('continues a signup offer without interpreting acceptance as payment',()=>{const p=advisorPolicy('Sí, por favor',[{role:'assistant',content:'¿Quieres crear una cuenta en Luxisoft?'}]);expect(p.aiPlatformInterest).toBe(true);expect(p.write).toBe(false);expect(p.followup).toBe(false);});
 });
+it('existing account support with natural wording does not become signup interest',()=>expect(advisorPolicy('Ya tengo una cuenta en Luxisoft y no me funciona el chat de IA').aiPlatformInterest).toBe(false));
+it('a requested price need not repeat the capability pitch',()=>expect(advisorViolation('Plan Plus: 12 pagos de $29.900 COP, total $358.800 COP.',advisorPolicy('¿Cuánto cuesta una cuenta de IA?'))).toBe(false));

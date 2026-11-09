@@ -18,7 +18,7 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
   const aiReference = /\b(chat\s*gpt|gpt(?:[- ]?[0-9][\w.-]*)?|openai|claude|gemini|copilot|grok|deepseek|perplexity|qwen|inteligencia artificial|artificial intelligence|inteligencia artificial|ia|ai|llm|chatbots?|agentes? inteligentes?)\b|\b(?:modelo|meta|cuenta|con) llama\b/.test(s);
   const accountContinuation = /luxisoft/.test(last) && /crear.{0,15}cuenta|abrir.{0,15}cuenta|create.{0,15}account|criar.{0,15}conta|luxisoft\.com\/(?:es|en)\/auth/.test(last)
     && (yes || /quiero|crearla|registr|enlace|link|sign up|create|criar/.test(s));
-  const accountSupport = /no puedo|no funciona|error|no me deja|cannot|can't|unable|nao consigo|recuper|contrase|password|contrasena|ya tengo cuenta|already have|ja tenho/.test(s);
+  const accountSupport = /no puedo|no (?:me )?funciona|error|no me deja|cannot|can't|unable|nao consigo|recuper|contrase|password|contrasena|ya tengo (?:una |mi )?cuenta|already have|ja tenho/.test(s);
   const existingUsage = /tokens?|saldo|recarg|se (?:acaban|agotan)|70[., ]?000|70 ?mil|comprobante|ya pague|mi pedido/.test(s);
   const declined = /no quiero|no me interesa|no gracias|not interested|do not want|nao quero/.test(s);
   const aiPlatformInterest = (aiReference || accountContinuation) && !accountSupport && !existingUsage && !declined;
@@ -105,7 +105,7 @@ export function advisorViolation(text: string, p: AdvisorPolicy) {
   const plans = new Set([...text.matchAll(/\b(Plus|Premium|Free)\b/gi)].map(m=>m[1]!.toLowerCase()));
   const amounts = text.match(/\$\s*\d[\d.,]*|\b(?:COP|USD)\s*\d[\d.,]*|\b\d[\d.,]*\s*(?:COP|USD|pesos)\b/gi) ?? [];
   const detailsCount=[/tokens/i,/videos/i,/\bmes(?:es)?\b|months/i,/habiles|business days/i,/renov|renew/i,/dominio propio|custom domain/i,/almacenamiento|storage/i].filter(re=>re.test(text)).length;
-  return (p.aiPlatformInterest && !p.accountContinuation && (!/luxisoft/i.test(text) || !/consult|formular|p[aá]ginas?|web|sites|pages|questions|queries|content|tiendas|lojas|applications/i.test(text))) || (p.packagesInquiry && !p.details && !p.price && detailsCount > 2) || (p.acceptedInformation && /[¿?]/.test(text) && /quieres? que (?:te )?(?:explique|muestre)|quieres? conocer|would you like me to explain/i.test(text)) ||
+  return (p.aiPlatformInterest && !p.accountContinuation && !p.price && (!/luxisoft/i.test(text) || !/consult|formular|p[aá]ginas?|web|sites|pages|questions|queries|content|tiendas|lojas|applications/i.test(text))) || (p.packagesInquiry && !p.details && !p.price && detailsCount > 2) || (p.acceptedInformation && /[¿?]/.test(text) && /quieres? que (?:te )?(?:explique|muestre)|quieres? conocer|would you like me to explain/i.test(text)) ||
     (p.usageInquiry && /(?:\d[\d.,]*\s*(?:a|y|[-–])\s*\d[\d.,]*\s*(?:tokens?|mensajes?)|\d[\d.,]*\s*mensajes?)/i.test(text)) || (p.exploring && (detailsCount>1 || text.split(/\s+/).length>60)) || (!p.price && money(text)) || (!p.portal && /website-sales\/portal\//.test(text)) ||
     (!p.details && (text.split(/\s+/).length > 110 || (amounts.length>1 && (periods.size>1 || plans.size>1))));
 }
