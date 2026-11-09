@@ -15,3 +15,4 @@ describe('one coherent delivered message',()=>{
  it('does not demand a social exchange before a concrete answer',()=>{const t=composeAdvisorReply('El mes cuesta $89.900 COP.','Buenas noches, cuánto cuesta?',true,'es',night);expect(t).toContain('89.900');expect(t).not.toContain('Cómo te encuentras');});
  it.each([['2026-11-09T10:00:00Z','Buenos días'],['2026-11-09T17:00:00Z','Buenas tardes'],['2026-11-10T00:00:00Z','Buenas noches']])('uses business time for generic hello at %s',(time,expected)=>expect(advisorOpening('Hola','es',new Date(time))).toBe(expected));
 });
+it('detects copied replies even with durable history timestamps',()=>expect(redundantAdvisorBody('El saldo se renueva mensualmente.','Y entonces?',[{role:'assistant',content:'[2026-11-09T00:00:00.000Z] El saldo se renueva mensualmente.'}])).toBe(true));

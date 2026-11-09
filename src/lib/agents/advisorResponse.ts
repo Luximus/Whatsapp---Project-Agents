@@ -34,7 +34,7 @@ export function composeAdvisorReply(text:string,raw:string,firstContact:boolean,
 export function redundantAdvisorBody(text:string,raw:string,history:ChatMessage[]) {
  if(quotedRequest(raw)||identityRequest(raw)||/repite|otra vez|nuevamente|resum|repeat|again|repita|compar|antes de pagar/i.test(raw))return false;
  if(/^(?:asistente|asesora|assistente|virtual sales assistant)\b/i.test(text))return true;
- const normalized=plain(text),last=history.filter(m=>m.role==='assistant').at(-1)?.content??'';
+ const normalized=plain(text),last=history.filter(m=>m.role==='assistant').at(-1)?.content?.replace(/^\[[^\]\n]{1,100}\]\s*/,'')??'';
  if(normalized&&normalized===plain(last))return true;
  const questions=text.match(/[^.!?\n]*\?/g)??[];
  if(questions.length>1)return true;

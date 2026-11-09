@@ -20,3 +20,4 @@ it.each(['cuantos mensajes son esos 70mil','aproximadamente cuanto seria?','pero
 it('accepts validation without asking again',()=>{expect(advisorPolicy('sí por favor',[{role:'assistant',content:'¿Quieres que consulte esa condición con el equipo?'}]).followup).toBe(true);});
 it('explains packages without prices or checkout',()=>{const p=advisorPolicy('Quiero conocer los paquetes y cómo contratarlo');expect(p.exploring).toBe(false);expect(p.price).toBe(false);expect(p.write).toBe(false);});
 it.each(['Quiero contratar\nEspera','Quiero contratar\nMejor no','Quiero pagar\nOlvídalo'])('a later cancellation in the same batch cannot authorize checkout: %s',raw=>{expect(advisorPolicy(raw).write).toBe(false);});
+it.each([['Good evening','en'],['Good morning','en'],['Boa noite','pt'],['Bom dia','pt'],['Buena noche','es']])('recognizes greeting language without forcing Spanish: %s',(raw,locale)=>expect(advisorPolicy(raw).locale).toBe(locale));

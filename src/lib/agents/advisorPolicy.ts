@@ -64,9 +64,9 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
     write: purchase || data,
     followup,
     portal: purchase || /\b(enlace|link|portal)\b/.test(s),
-    locale: /\b(hello|please|how|what|price|i want|i would)\b/.test(s)
+    locale: /\b(hello|hi|good morning|good afternoon|good evening|please|how|what|price|i want|i would)\b/.test(s)
       ? "en"
-      : /\b(ola|quero|quanto|preco)\b/.test(s)
+      : /\b(ola|oi|bom dia|boa tarde|boa noite|quero|quanto|preco)\b/.test(s)
         ? "pt"
         : "es"
   };

@@ -158,7 +158,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     // siguiente turno; sin ellas los mensajes "tool" quedan huérfanos.
     if (!result.toolCalls.length) {
       let text = policy ? cleanAdvisorBody(result.text,raw) : result.text;
-      if (policy && (advisorViolation(text, policy) || redundantAdvisorBody(text,raw,options.history??[]))) {
+      if (policy && (!text.trim() || advisorViolation(text, policy) || redundantAdvisorBody(text,raw,options.history??[]))) {
         try {
           const corrected = await provider.complete({
             messages: [
