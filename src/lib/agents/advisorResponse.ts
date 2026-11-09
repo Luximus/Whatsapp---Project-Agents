@@ -29,11 +29,10 @@ export function composeAdvisorReply(text:string,raw:string,firstContact:boolean,
  if(asksAboutAutomation(raw)) return locale==='en'?'I am an automated assistant for LUXISOFT S.A.S., not a person. I can help you or connect you with the team.':locale==='pt'?'Sou uma assistente automatizada da LUXISOFT S.A.S., não uma pessoa. Posso ajudar ou encaminhar você à equipe.':'Soy un asistente automatizado de LUXISOFT S.A.S., no una persona. Puedo orientarte o ayudarte a contactar al equipo.';
  const body=cleanAdvisorBody(text,raw);
  const opening=advisorOpening(raw,locale,now);
- const courtesy=({es:'¿Cómo te encuentras?',en:'How are you?',pt:'Como você está?'}[locale as 'es'|'en'|'pt']??'¿Cómo te encuentras?');
- if(!firstContact)return onlyGreeting(raw)?opening+'. '+courtesy:body;
+ if(!firstContact)return onlyGreeting(raw)?opening+'.':body;
  const identity=locale==='en'?`${opening}, I'm Luisa, the sales assistant at LUXISOFT S.A.S.`:locale==='pt'?`${opening}, sou Luisa, assistente comercial da LUXISOFT S.A.S.`:`${opening}, soy Luisa, asistente comercial de LUXISOFT S.A.S.`;
  if(identityRequest(raw))return identity;
- if(onlyGreeting(raw))return identity+' '+courtesy;
+ if(onlyGreeting(raw))return identity;
  return body?identity+'\n\n'+body:'';
 }
 export function redundantAdvisorBody(text:string,raw:string,history:ChatMessage[]) {
@@ -52,4 +51,25 @@ export function redundantAdvisorBody(text:string,raw:string,history:ChatMessage[
 }
 export function advisorPrompt(base:string) {
  return base.replace(/Termina la presentaci[oó]n individual con una pregunta natural como[^\n]+/g,'').replace(/Recoge nombre, correo, negocio\/profesi[oó]n y objetivo sin repetir el tel[eé]fono del chat;/g,'Recoge únicamente los datos necesarios que falten y que el cliente aporte voluntariamente;');
+}
+
+/** Conversation constraints shared by Luxisoft channels, independent of sales policy. */
+export const informationInstructions = `RESPUESTA INFORMATIVA: Responde la consulta y termina. Por defecto cero preguntas, cero sondeos comerciales y cero invitaciones como «cuéntame», «dime qué necesitas», «si quieres te explico» o «puedo ayudarte con algo más». No descubras necesidades por iniciativa propia ni conviertas información en una tarea de diseño. Amplía solo lo solicitado; no repitas cuentas, planes o beneficios ajenos a la duda nueva. Saluda sin preguntar cómo está. Las preguntas se permiten si el cliente solicita expresamente un cuestionario, texto con preguntas u orientación mediante preguntas; también una confirmación o dato indispensable exigido por una herramienta para una operación expresamente solicitada. Conserva las condiciones esenciales y la seguridad.`;
+export function requestsQuestions(raw:string) {
+ return /(?:hazme|haga(?:me)?|hacerme|ask me|fa[cç]a).{0,25}(?:preguntas|questions|perguntas)|preg[uú]ntame|(?:gu[ií]ame|guide me|oriente-me).{0,25}(?:paso a paso|step by step|passo a passo)|(?:redact|escribe|crea|genera|traduc|traduza|translate|write|create).{0,55}(?:preguntas|questions|perguntas|cuestionario|questionnaire|faq)|(?:traduce|translate|traduza).{0,80}[¿?]/i.test(raw);
+}
+export function unsolicitedQuestion(text:string,raw:string,allowed=false) {
+ if(allowed||requestsQuestions(raw))return false;
+ const visible=text.replace(/https?:\/\/\S+/g,'');
+ return /[¿?]/.test(visible)||/\b(?:cu[eé]ntame|cu[eé]ntenos|dime|d[ií]game|comparte|ind[ií]came|tell me|let me know|conte-me|me diga)\b|(?:si quieres|si deseas|if you (?:want|wish)|se quiser).{0,60}(?:explic|ayud|mostrar|contar|help|show|explain|ajud|explic)|(?:puedo|podemos|i can|we can|posso).{0,35}(?:ayudar(?:te)? con algo m[aá]s|mostrarte otro|explicarte m[aá]s|help with anything else|show you more)/i.test(visible);
+}
+/** Last-resort fallback retains complete informative sentences, never slices words. */
+export function informativeFallback(text:string,raw:string,allowed=false) {
+ if(allowed||requestsQuestions(raw))return text.trim();
+ const sentences=[...new Intl.Segmenter('es',{granularity:'sentence'}).segment(text)].map(x=>x.segment.trim());
+ // A trailing probe is removable only when all preceding sentences are complete statements.
+ const first=sentences.findIndex(s=>unsolicitedQuestion(s,raw));
+ if(first<0)return text.trim();
+ if(sentences.slice(first).every(s=>unsolicitedQuestion(s,raw)))return sentences.slice(0,first).join(' ');
+ return '';
 }

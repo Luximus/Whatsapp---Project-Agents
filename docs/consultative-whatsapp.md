@@ -126,3 +126,6 @@ social. La composición sigue siendo idempotente para texto y audio.
 
 ## Free primero (2026-11-09)
 Orientación inicial: cuenta gratuita, saldo mensual y almacenamiento verificados; después planes opcionales con facilidades de pago. No convertir saldo a mensajes ni atribuir más saldo a un plan de pago sin confirmación. El catálogo público expone freeAllowance independientemente del piloto.
+
+## Información sin sondeos (2026-11-09)
+En WhatsApp y Messenger: responder y terminar sin preguntas ni invitaciones a ampliar. Saludo sin pregunta de cortesía. Reformulación única sin tools; respaldo conserva frases informativas completas. Se permiten preguntas solicitadas y entradas indispensables exigidas por tools para gestiones expresas. Mantener Free, límites y condiciones de pago pertinentes.

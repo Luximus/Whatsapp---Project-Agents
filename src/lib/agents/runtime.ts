@@ -1,4 +1,4 @@
-import {onlyGreeting,cleanAdvisorBody,redundantAdvisorBody,advisorPrompt} from "./advisorResponse.js";
+import {onlyGreeting,cleanAdvisorBody,redundantAdvisorBody,advisorPrompt,informationInstructions,requestsQuestions,unsolicitedQuestion,informativeFallback} from "./advisorResponse.js";
 import {
   advisorPolicy,
   advisorInstructions,
@@ -106,14 +106,16 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       : null;
   if (policy && options.firstContact !== undefined) policy.firstContact = options.firstContact;
   const raw = options.originalUserMessage ?? userMessage.split(/\n\[|\n\n\[/)[0]!;
+  if(policy && requestsQuestions(raw)){policy.details=true;policy.exploring=false;}
   if (policy && onlyGreeting(raw)) {
     if (await options.isSuperseded?.()) return {text:"",rich:[],newMessages:[],turns:0};
     const text=advisorWelcome("",policy,raw);
     return {text,rich:[],newMessages:[{role:"assistant",content:text}],turns:0};
   }
+  const informative = agent.projectKey === "luxisoft";
   const systemPrompt = (
     (policy ? advisorPrompt(agent.systemPrompt) : agent.systemPrompt) +
-    (policy ? advisorInstructions + "\nPOLÍTICA DEL TURNO: " + JSON.stringify(policy) : "")
+    (policy ? advisorInstructions + "\nPOLÍTICA DEL TURNO: " + JSON.stringify(policy) : "") + (informative ? "\n"+informationInstructions : "")
   )
     .replace(/\{\{\s*ASSISTANT_NAME\s*\}\}/g, assistantName)
     .replace(/\{\{\s*CHANNEL_NAME\s*\}\}/g, channelName);
@@ -167,7 +169,11 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     // siguiente turno; sin ellas los mensajes "tool" quedan huérfanos.
     if (!result.toolCalls.length) {
       let text = policy ? cleanAdvisorBody(result.text,raw) : result.text;
-      if (policy && (!text.trim() || advisorViolation(text, policy) || redundantAdvisorBody(text,raw,options.history??[]))) {
+      const operationRequested=/\b(?:quiero|necesito|solicito|i want|quero).{0,50}(?:contratar|pagar|conectar|eliminar|reiniciar|vincular|buy|pay|connect|delete|restart|link)\b/i.test(raw);
+      const requiredInput=operationRequested && newMessages.some(m=>{if(m.role!=="tool")return false;try{return ["needs_confirmation","requires_confirmation","needs_input","requires_input"].includes(JSON.parse(m.content).status);}catch{return false;}});
+      const questionsAllowed=requestsQuestions(raw)||requiredInput;
+      const draft=text;
+      if ((informative && unsolicitedQuestion(text,raw,questionsAllowed)) || (policy && (!text.trim() || advisorViolation(text, policy) || (!requestsQuestions(raw)&&redundantAdvisorBody(text,raw,options.history??[]))))) {
         try {
           const corrected = await provider.complete({
             messages: [
@@ -177,7 +183,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
               {
                 role: "user",
                 content:
-                  "Reformula únicamente tu respuesta de acuerdo con la política del turno. No uses herramientas ni ejecutes acciones. Responde la duda original de forma breve con como máximo una pregunta, sin saludos, presentación, preguntas ya contestadas ni repetir explicaciones anteriores. Conserva importes y condiciones verificadas; no adelantes precios o enlaces no solicitados."
+                  "Reformula únicamente tu respuesta de acuerdo con la política del turno. No uses herramientas ni ejecutes acciones. Responde la duda original de forma breve sin preguntas de seguimiento ni invitaciones a ampliar, salvo petición expresa del cliente o dato indispensable exigido por una herramienta para su operación solicitada, sin saludos, presentación, preguntas ya contestadas ni repetir explicaciones anteriores. Conserva importes y condiciones verificadas; no adelantes precios o enlaces no solicitados."
               }
             ],
             model: agent.chatModel || undefined,
@@ -185,11 +191,12 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           });
           text = cleanAdvisorBody(corrected.text,raw);
         } catch {
-          text = advisorFallback(text, policy);
+          text = policy ? advisorFallback(text, policy) : draft;
         }
-        if (!text.trim() || advisorViolation(text, policy) || redundantAdvisorBody(text,raw,options.history??[])) text = advisorFallback("", policy);
+        if (policy && (!text.trim() || advisorViolation(text, policy) || (!requestsQuestions(raw)&&redundantAdvisorBody(text,raw,options.history??[])))) text = advisorFallback("", policy);
         context.logger?.info?.("advisor_response_corrected");
       }
+      if(informative && unsolicitedQuestion(text,raw,questionsAllowed)) text=informativeFallback(text,raw,questionsAllowed)||((!policy||!advisorViolation(draft,policy))?informativeFallback(draft,raw,questionsAllowed):'')||({es:'La información solicitada requiere verificación del equipo para responder con precisión.',en:'The requested information requires verification by the team for an accurate answer.',pt:'A informação solicitada requer verificação da equipe para uma resposta precisa.'}[policy?.locale as 'es'|'en'|'pt']??'La información solicitada requiere verificación del equipo para responder con precisión.');
       if(policy?.aiPlatformInterest && !policy.accountContinuation && !policy.accountComparison && !policy.specificPlan && platformOrientation && advisorViolation(text,policy)) text=platformOrientation;
       if (policy) text = advisorWelcome(text, policy,raw);
       newMessages.push({ role: "assistant", content: text });
