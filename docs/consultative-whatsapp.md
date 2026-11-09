@@ -85,3 +85,10 @@ misma política de intención del agente, sin ampliar la autorización.
 
 El overlay publicado ops/upgrade-advisor-response.mjs aplica anclas exactas al
 webhook runtime sin sustituir sus cambios ajenos, colas o controles OTP/firma.
+
+## Título comercial (2026-11-09)
+
+La apertura usa «Luisa, asistente comercial de LUXISOFT S.A.S.» sin etiquetas
+técnicas no solicitadas, también en inglés/portugués. Las consultas explícitas
+sobre si se trata de una persona reciben una respuesta transparente; nunca se
+presenta como humana. Sin cambios en servicios, precios, saldo ni herramientas.

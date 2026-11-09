@@ -15,18 +15,22 @@ export function cleanAdvisorBody(text:string,raw:string) {
  // Only remove conversational openings, never occurrences inside facts or quotes.
  for(let i=0;i<4;i++) {
   const before=body;
-  body=body.replace(greeting,'').trim().replace(/^(?:soy|me llamo|i am|i'm|sou)\s+Luisa(?:,?\s*(?:asistente|assistente|the virtual sales assistant)[^!?\n]{0,100}?LUXISOFT S\.A\.S\.)?[.!,:]?\s*/iu,'').trim().replace(/^(?:¿?C[oó]mo te encuentras\?|How are you\?|Como voc[eê] est[aá]\?)\s*/iu,'');
+  body=body.replace(greeting,'').trim().replace(/^(?:soy|me llamo|i am|i'm|sou)\s+Luisa(?:,?\s*(?:asistente|assistente|the (?:virtual )?sales assistant)[^!?\n]{0,100}?LUXISOFT S\.A\.S\.)?[.!,:]?\s*/iu,'').trim().replace(/^(?:¿?C[oó]mo te encuentras\?|How are you\?|Como voc[eê] est[aá]\?)\s*/iu,'');
   if(body===before)break;
  }
  const seen=new Set<string>();
  const sentences=new Set<string>();
  return body.split(/\n\s*\n/).filter(p=>{const key=plain(p);if(seen.has(key))return false;seen.add(key);return true;}).map(p=>[...new Intl.Segmenter('es',{granularity:'sentence'}).segment(p)].filter(({segment})=>{const key=plain(segment);if(key.length<15)return true;if(sentences.has(key))return false;sentences.add(key);return true;}).map(s=>s.segment).join('').trim()).filter(Boolean).join('\n\n');
 }
+export function asksAboutAutomation(raw:string) {
+ return /(?:eres|sos|usted es|hablando|hablo|are you|is this|voce e).{0,40}\b(?:bot|robot|ia|ai|humano?|humana|persona|person|human|automatiz\w*|virtual)\b/i.test(plain(raw));
+}
 export function composeAdvisorReply(text:string,raw:string,firstContact:boolean,locale:string,now=new Date()) {
+ if(asksAboutAutomation(raw)) return locale==='en'?'I am an automated assistant for LUXISOFT S.A.S., not a person. I can help you or connect you with the team.':locale==='pt'?'Sou uma assistente automatizada da LUXISOFT S.A.S., não uma pessoa. Posso ajudar ou encaminhar você à equipe.':'Soy un asistente automatizado de LUXISOFT S.A.S., no una persona. Puedo orientarte o ayudarte a contactar al equipo.';
  const body=cleanAdvisorBody(text,raw);
  if(!firstContact)return body;
  const opening=advisorOpening(raw,locale,now);
- const identity=locale==='en'?`${opening}, I'm Luisa, the virtual sales assistant at LUXISOFT S.A.S.`:locale==='pt'?`${opening}, sou Luisa, assistente comercial virtual da LUXISOFT S.A.S.`:`${opening}, soy Luisa, asistente comercial virtual de LUXISOFT S.A.S.`;
+ const identity=locale==='en'?`${opening}, I'm Luisa, the sales assistant at LUXISOFT S.A.S.`:locale==='pt'?`${opening}, sou Luisa, assistente comercial da LUXISOFT S.A.S.`:`${opening}, soy Luisa, asistente comercial de LUXISOFT S.A.S.`;
  if(identityRequest(raw))return identity;
  if(onlyGreeting(raw))return identity+' '+({es:'¿Cómo te encuentras?',en:'How are you?',pt:'Como você está?'}[locale as 'es'|'en'|'pt']??'¿Cómo te encuentras?');
  return body?identity+'\n\n'+body:'';

@@ -2,7 +2,7 @@ import{describe,it,expect}from'vitest';import{composeAdvisorReply,cleanAdvisorBo
 const night=new Date('2026-11-09T02:00:00Z');
 describe('one coherent delivered message',()=>{
  it.each(['Buena noche','Buenas noches','Hola','Hola!','Buenas tardes','Buenos días','Olá','Good evening'])('pure greeting has one opening and one identity: %s',raw=>{expect(onlyGreeting(raw)).toBeTruthy();const text=composeAdvisorReply('Buenas noches. Cuéntame brevemente qué necesitas y te orientaré.',raw,true,'es',night);expect(text.match(/Luisa/g)).toHaveLength(1);expect(text.split('\n')).toHaveLength(1);expect(text.match(/\?/g)).toHaveLength(1);expect(text).not.toContain('Cuéntame');});
- it('matches the exact reported regression',()=>expect(composeAdvisorReply('Buenas noches. Cuéntame brevemente qué necesitas y te orientaré.','Buena noche',true,'es',night)).toBe('Buenas noches, soy Luisa, asistente comercial virtual de LUXISOFT S.A.S. ¿Cómo te encuentras?'));
+ it('matches the exact reported regression',()=>expect(composeAdvisorReply('Buenas noches. Cuéntame brevemente qué necesitas y te orientaré.','Buena noche',true,'es',night)).toBe('Buenas noches, soy Luisa, asistente comercial de LUXISOFT S.A.S. ¿Cómo te encuentras?'));
  it('is idempotent when commercial filters run after the agent',()=>{const a=composeAdvisorReply('Buenos días. Soy Luisa, asistente comercial virtual de LUXISOFT S.A.S. Cuesta $89.900 COP por un mes.','Cuánto cuesta?',true,'es',night);expect(composeAdvisorReply(a,'Cuánto cuesta?',true,'es',night)).toBe(a);expect(a).toContain('89.900');expect(a.match(/Luisa/g)).toHaveLength(1);});
  it('removes exact duplicate sentences while retaining prices and totals',()=>expect(cleanAdvisorBody('Incluye alojamiento y subdominio. Incluye alojamiento y subdominio. Total $89.900 COP.','Qué incluye?')).toBe('Incluye alojamiento y subdominio. Total $89.900 COP.'));
  it('does not corrupt a word that starts like a greeting',()=>expect(cleanAdvisorBody('Holanda es parte de la referencia.','Referencia')).toBe('Holanda es parte de la referencia.'));
@@ -16,3 +16,6 @@ describe('one coherent delivered message',()=>{
  it.each([['2026-11-09T10:00:00Z','Buenos días'],['2026-11-09T17:00:00Z','Buenas tardes'],['2026-11-10T00:00:00Z','Buenas noches']])('uses business time for generic hello at %s',(time,expected)=>expect(advisorOpening('Hola','es',new Date(time))).toBe(expected));
 });
 it('detects copied replies even with durable history timestamps',()=>expect(redundantAdvisorBody('El saldo se renueva mensualmente.','Y entonces?',[{role:'assistant',content:'[2026-11-09T00:00:00.000Z] El saldo se renueva mensualmente.'}])).toBe(true));
+
+it.each(['es','en','pt'])('commercial introduction avoids unsolicited technical labels in %s',locale=>{const text=composeAdvisorReply('','Hola',true,locale,night);expect(text).toContain('Luisa');expect(text).not.toMatch(/virtual|\bbot\b|\bIA\b|\bAI\b/i);});
+it.each(['¿Eres una persona real?','¿Eres un bot?','Who are you, are you AI?'])('answers direct automation questions truthfully: %s',raw=>{expect(composeAdvisorReply('Soy una persona.',raw,true,'es',night)).toContain('no una persona');});
