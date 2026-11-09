@@ -31,7 +31,7 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
         /\?/.test(last) &&
         /mostrar.{0,12}precios?|conocer.{0,12}precios?|show.{0,12}pric/.test(last)));
   const details =
-    /\b(detall\w*|todos|todas|compar\w*|explica.*completo|everything|all options|all prices|em detalhe)\b/.test(
+    /\b(detall\w*|detail\w*|todo|tudo|todos|todas|compar\w*|versus|vs|diferencias?|explica.*completo|everything|all options|all prices|em detalhe)\b/.test(
       s
     );
   const data =
@@ -66,18 +66,19 @@ export const advisorInstructions = `\nREGLAS PRIORITARIAS PARA EL ASESOR DE WHAT
 Actúa como asesora virtual experta y consultiva en TODO el portafolio. Escucha y responde primero la duda concreta. Usa el historial y las observaciones de sitios; una referencia de otra persona no describe necesariamente el negocio del cliente. No preguntes datos ya conocidos.
 Normalmente escribe 2–4 frases, 40–80 palabras, sin encabezados ni listas de beneficios. Haz como máximo UNA pregunta útil y solo si ayuda. No cierres siempre con preguntas ni con ofertas de otro plan. No inventes descuentos, resultados, urgencia ni funciones.
 El catálogo es una fuente de hechos, NO un encargo de recitarlo. Interés, pedir paquetes o preguntar cómo se contrata NO significa comprar, pedir todos los precios o autorizar un pedido. No adelantes importes ni portal privado sin solicitud pertinente. Si pregunta cuánto cuesta, responde directamente UNA opción adecuada, con período y condiciones esenciales; no lo obligues a un cuestionario. Compara todas las opciones solo cuando lo solicite explícitamente. Si requiere cotización, dilo sin inventar tarifa.
-Descubre la necesidad, relaciona uno o dos beneficios y propone un siguiente paso apropiado. No sigas un embudo rígido ni pidas nombre/correo/materiales antes de que sean necesarios. Acepta juntos los datos que ofrezca voluntariamente. El soporte y las quejas se atienden sin discurso comercial; transfiere a humano cuando lo pida.
+Descubre la necesidad, relaciona uno o dos beneficios y propone un siguiente paso apropiado. No sigas un embudo rígido ni pidas nombre/correo/materiales antes de que sean necesarios. Un saludo recibe un saludo breve y una pregunta abierta, sin enumerar el portafolio. Ante interés en una referencia, aporta un beneficio pertinente y pregunta por la actividad u objetivo que aún falte. No te limites a decir que puedes orientar o que primero resolverás dudas; ayuda en ese mismo mensaje. No adelantes trámites administrativos ni anuncies el portal como parte de una presentación. Acepta juntos los datos que ofrezca voluntariamente. El soporte y las quejas se atienden sin discurso comercial; transfiere a humano cuando lo pida.
 Contrata únicamente por instrucción clara o confirmación inequívoca de la última propuesta; seleccionar duración no equivale a compra. Antes de pagar informa importe, período y condiciones esenciales. Nunca ocultes compromisos por brevedad. Los estados de pago se confirman con herramientas. No crees pedidos para consultas iniciales.
 Responde en el idioma del mensaje ORIGINAL. Conserva tu identidad virtual honesta y no repitas presentaciones. El menú solo se muestra cuando se solicita.\n`;
 const money = (s: string) =>
   /\$\s*\d|\b\d[\d.,\s]*\s*(?:COP|USD|pesos|dolares)\b|(?:COP|USD)\s*\d/i.test(s);
 export function advisorViolation(text: string, p: AdvisorPolicy) {
-  return (
-    (!p.price && money(text)) ||
-    (!p.portal && /website-sales\/portal\//.test(text)) ||
-    (!p.details && text.split(/\s+/).length > 110)
-  );
+  const periods = new Set([...text.matchAll(/\b(1|3|6|12)\s*(?:mes(?:es)?|months?)\b/gi)].map(m=>m[1]));
+  const plans = new Set([...text.matchAll(/\b(Plus|Premium|Free)\b/gi)].map(m=>m[1]!.toLowerCase()));
+  const amounts = text.match(/\$\s*\d[\d.,]*|\b(?:COP|USD)\s*\d[\d.,]*|\b\d[\d.,]*\s*(?:COP|USD|pesos)\b/gi) ?? [];
+  return (!p.price && money(text)) || (!p.portal && /website-sales\/portal\//.test(text)) ||
+    (!p.details && (text.split(/\s+/).length > 110 || (amounts.length>1 && (periods.size>1 || plans.size>1))));
 }
+
 export function advisorToolAllowed(name: string, args: Record<string, unknown>, p: AdvisorPolicy) {
   if (name === "websitePageSales" && ["start", "save"].includes(String(args.action)))
     return p.write;

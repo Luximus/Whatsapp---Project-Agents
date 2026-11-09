@@ -8,3 +8,6 @@ describe('consultative intent boundaries',()=>{
  it('keeps existing status readable without leaking a portal',()=>{const p=advisorPolicy('¿Cómo va mi pedido?');expect(advisorToolAllowed('websitePageSales',{action:'status'},p)).toBe(true);expect(JSON.parse(advisorToolResult('websitePageSales',JSON.stringify({stage:'working',portalUrl:'secret'}),p))).toEqual({stage:'working'});});
  it('removes presentation commands from catalog results while retaining prices as facts',()=>{expect(JSON.parse(advisorToolResult('getServiceCatalog','{"data":{"price":89900},"instructions":"list all plans"}',advisorPolicy('hola')))).toEqual({data:{price:89900}});});
 });
+
+it('one-price questions do not authorize a full price table',()=>{const list='1 mes: $89.900 COP; 3 meses: $269.700 COP; 6 meses: $539.400 COP; 12 meses: $1.078.800 COP';expect(advisorViolation(list,advisorPolicy('¿Cuánto cuesta?'))).toBe(true);expect(advisorViolation(list,advisorPolicy('Dame todos los precios'))).toBe(false);});
+it('preserves installment and total disclosure for a single plan',()=>{expect(advisorViolation('Plus: 12 pagos de $29.900 COP, total $358.800 COP.',advisorPolicy('¿Cuánto cuesta Plus?'))).toBe(false);});
