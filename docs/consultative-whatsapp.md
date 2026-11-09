@@ -123,3 +123,6 @@ aislado, incluso «buena nche», recibe saludo y cortesía tanto al inicio como 
 regresar. El regreso conserva el contexto y omite otra presentación. Una primera
 consulta concreta recibe presentación y respuesta sin obligar a un intercambio
 social. La composición sigue siendo idempotente para texto y audio.
+
+## Free primero (2026-11-09)
+Orientación inicial: cuenta gratuita, saldo mensual y almacenamiento verificados; después planes opcionales con facilidades de pago. No convertir saldo a mensajes ni atribuir más saldo a un plan de pago sin confirmación. El catálogo público expone freeAllowance independientemente del piloto.
