@@ -11,3 +11,6 @@ describe('consultative intent boundaries',()=>{
 
 it('one-price questions do not authorize a full price table',()=>{const list='1 mes: $89.900 COP; 3 meses: $269.700 COP; 6 meses: $539.400 COP; 12 meses: $1.078.800 COP';expect(advisorViolation(list,advisorPolicy('¿Cuánto cuesta?'))).toBe(true);expect(advisorViolation(list,advisorPolicy('Dame todos los precios'))).toBe(false);});
 it('preserves installment and total disclosure for a single plan',()=>{expect(advisorViolation('Plus: 12 pagos de $29.900 COP, total $358.800 COP.',advisorPolicy('¿Cuánto cuesta Plus?'))).toBe(false);});
+
+it('initial reference interest does not authorize a benefits and conditions dump',()=>{const p=advisorPolicy('Me gustaría conocer los paquetes y cómo contratarla');expect(p.exploring).toBe(true);expect(advisorViolation('Incluye tres videos y 70.000 Tokens con vigencia de 1, 3, 6 o 12 meses y entrega en 3 a 5 días hábiles.',p)).toBe(true);expect(advisorViolation('Podemos ayudarte a presentar tus servicios y recibir consultas. ¿Para qué actividad la necesitas?',p)).toBe(false);});
+it('keeps requested benefits and delivery available',()=>{expect(advisorPolicy('¿Qué incluye?').exploring).toBe(false);expect(advisorPolicy('¿Cuándo me entregan?').exploring).toBe(false);});

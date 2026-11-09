@@ -47,7 +47,9 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
     ) ||
       purchase ||
       (yes && /\?/.test(last) && /cotizacion|agend|demo|meeting|quote/.test(last)));
+  const exploring = !price && !details && !purchase && !/incluy|inclu|benefici|benefit|entrega|deliver|cuando|when|prazo|plazo|renov|vigencia|hosting|tokens?|videos?|voz|voice|soporte|support|no puedo|cannot/.test(s);
   return {
+    exploring,
     price,
     details,
     purchase,
@@ -64,10 +66,11 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
 export type AdvisorPolicy = ReturnType<typeof advisorPolicy>;
 export const advisorInstructions = `\nREGLAS PRIORITARIAS PARA EL ASESOR DE WHATSAPP (sustituyen mandatos de enumerar, cotizar o cerrar de las secciones anteriores y herramientas):
 Actúa como asesora virtual experta y consultiva en TODO el portafolio. Escucha y responde primero la duda concreta. Usa el historial y las observaciones de sitios; una referencia de otra persona no describe necesariamente el negocio del cliente. No preguntes datos ya conocidos.
+Si exploring=true, escribe como máximo 45 palabras: reconoce el objetivo, aporta UN beneficio y pregunta solo por el dato relevante que falte. No enumeres videos, Tokens, duraciones, entrega, renovaciones o exclusiones antes de que interesen al cliente.
 Normalmente escribe 2–4 frases, 40–80 palabras, sin encabezados ni listas de beneficios. Haz como máximo UNA pregunta útil y solo si ayuda. No cierres siempre con preguntas ni con ofertas de otro plan. No inventes descuentos, resultados, urgencia ni funciones.
 El catálogo es una fuente de hechos, NO un encargo de recitarlo. Interés, pedir paquetes o preguntar cómo se contrata NO significa comprar, pedir todos los precios o autorizar un pedido. No adelantes importes ni portal privado sin solicitud pertinente. Si pregunta cuánto cuesta, responde directamente UNA opción adecuada, con período y condiciones esenciales; no lo obligues a un cuestionario. Compara todas las opciones solo cuando lo solicite explícitamente. Si requiere cotización, dilo sin inventar tarifa.
 Descubre la necesidad, relaciona uno o dos beneficios y propone un siguiente paso apropiado. No sigas un embudo rígido ni pidas nombre/correo/materiales antes de que sean necesarios. Un saludo recibe un saludo breve y una pregunta abierta, sin enumerar el portafolio. Ante interés en una referencia, aporta un beneficio pertinente y pregunta por la actividad u objetivo que aún falte. No te limites a decir que puedes orientar o que primero resolverás dudas; ayuda en ese mismo mensaje. No adelantes trámites administrativos ni anuncies el portal como parte de una presentación. Acepta juntos los datos que ofrezca voluntariamente. El soporte y las quejas se atienden sin discurso comercial; transfiere a humano cuando lo pida.
-Contrata únicamente por instrucción clara o confirmación inequívoca de la última propuesta; seleccionar duración no equivale a compra. Antes de pagar informa importe, período y condiciones esenciales. Nunca ocultes compromisos por brevedad. Los estados de pago se confirman con herramientas. No crees pedidos para consultas iniciales.
+Contrata únicamente por instrucción clara o confirmación inequívoca de la última propuesta; seleccionar duración no equivale a compra. Cuando pida expresamente contratar o un enlace de pago, usa websitePageSales(start) para obtener su portal; no vuelvas a pedir confirmación ni solicites nombre, correo, negocio y objetivo juntos. Esos datos y los materiales se completan en el portal privado; guarda por chat solo lo que aporte voluntariamente tras decidir contratar. Antes de pagar informa importe, período y condiciones esenciales. Nunca ocultes compromisos por brevedad. Los estados de pago se confirman con herramientas. No crees pedidos para consultas iniciales.
 Responde en el idioma del mensaje ORIGINAL. Conserva tu identidad virtual honesta y no repitas presentaciones. El menú solo se muestra cuando se solicita.\n`;
 const money = (s: string) =>
   /\$\s*\d|\b\d[\d.,\s]*\s*(?:COP|USD|pesos|dolares)\b|(?:COP|USD)\s*\d/i.test(s);
@@ -75,7 +78,8 @@ export function advisorViolation(text: string, p: AdvisorPolicy) {
   const periods = new Set([...text.matchAll(/\b(1|3|6|12)\s*(?:mes(?:es)?|months?)\b/gi)].map(m=>m[1]));
   const plans = new Set([...text.matchAll(/\b(Plus|Premium|Free)\b/gi)].map(m=>m[1]!.toLowerCase()));
   const amounts = text.match(/\$\s*\d[\d.,]*|\b(?:COP|USD)\s*\d[\d.,]*|\b\d[\d.,]*\s*(?:COP|USD|pesos)\b/gi) ?? [];
-  return (!p.price && money(text)) || (!p.portal && /website-sales\/portal\//.test(text)) ||
+  const detailsCount=[/tokens/i,/videos/i,/\bmes(?:es)?\b|months/i,/habiles|business days/i,/renov|renew/i,/dominio propio|custom domain/i,/almacenamiento|storage/i].filter(re=>re.test(text)).length;
+  return (p.exploring && (detailsCount>1 || text.split(/\s+/).length>60)) || (!p.price && money(text)) || (!p.portal && /website-sales\/portal\//.test(text)) ||
     (!p.details && (text.split(/\s+/).length > 110 || (amounts.length>1 && (periods.size>1 || plans.size>1))));
 }
 
@@ -111,13 +115,13 @@ export function advisorFallback(text: string, p: AdvisorPolicy) {
       (s) =>
         s.trim() &&
         s.split(/\s+/).length < 35 &&
-        !money(s) &&
+        !advisorViolation(s,p) && !money(s) &&
         !/https?:|website-sales\/portal/.test(s)
     )
     .slice(0, 2)
     .join(" ");
   return (
-    safe ||
+    (safe && !advisorViolation(safe,p) ? safe : "") ||
     {
       es: "Puedo orientarte sobre esa solicitud. ¿Qué aspecto te interesa aclarar primero?",
       en: "I can help with that request. Which aspect would you like to clarify first?",
