@@ -26,3 +26,18 @@ no se repite información conocida, no se inventan tarifas ni se presiona al
 cliente. Verificar escenarios de saludo, referencia, tienda/app/IA/servidores,
 precio, comparación, objeción, contratación, soporte y retorno en es/en/pt.
 No se envían mensajes reales ni se crean pedidos durante la evaluación.
+
+## Continuidad y saldo incluido (2026-11-09)
+
+«Sí, por favor» retoma la última propuesta; las preguntas de seguimiento sobre
+mensajes/saldo conservan el tema. Pedir modalidades habilita su explicación,
+no precios ni pedidos. Evitar repetir preguntas y prometer pedidos completos
+sin un alcance confirmado. Las gestiones aceptadas requieren tool y éxito real.
+
+La mensualidad de la oferta de página incluye saldo IA mensual (70.000 unidades).
+El excedente genera consumo por mensaje según su uso real, con saldo adicional
+contratado; no se implementa ni anuncia un débito automático. No cambiar cuotas,
+créditos, topes ni facturación. getAiUsagePricing consulta las recargas vigentes
+por el contrato comercial, publica importe y saldo por separado sin marcas,
+rechaza caché vencida/fallos y nunca convierte saldo en mensajes sin medición.
+No atribuir esta inclusión a otros servicios del portafolio.
