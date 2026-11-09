@@ -519,10 +519,11 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         phoneE164: to
       });
       const salesContext = /jmarin\.luxisoft\.com|(?:pagina|página|perfil(?: profesional)?|website|(?:professional )?profile) (?:como est[ae]|like this)/i.test([userMessage,...history.filter(m=>m.role==="user").slice(-8).map(m=>m.content)].join(" "));
-      const modelMessage = salesContext ? userMessage + "\n[Oferta específica verificada de página web; no es Plus/Premium]\n" + JSON.stringify({catalog:await websitePageSales("catalog",to,locale),request:await websitePageSales("start",to,locale)}) : userMessage;
+      const modelMessage = salesContext ? userMessage + "\n[Oferta específica verificada de página web; no es Plus/Premium]\n" + JSON.stringify({catalog:await websitePageSales("catalog",to,locale).catch(()=>({status:"catalog_unavailable"}))}) : userMessage;
       const result = await handleAgentMessage({
         projectKey: env.defaultProject,
         userMessage:modelMessage,
+        originalUserMessage:userMessage,
         history,
         context: {
           from: to,

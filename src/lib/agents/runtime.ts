@@ -1,3 +1,11 @@
+import {
+  advisorPolicy,
+  advisorInstructions,
+  advisorViolation,
+  advisorToolAllowed,
+  advisorToolResult,
+  advisorFallback
+} from "./advisorPolicy.js";
 import { createChatProvider, getDefaultChatProvider } from "../ai/chat/index.js";
 import { isAiProviderName, type ChatMessage, type ChatProvider } from "../ai/types.js";
 import { env } from "../../env.js";
@@ -15,6 +23,7 @@ export interface RunAgentOptions {
   agent: LoadedAgent;
   /** Mensaje del usuario (texto ya transcrito si venía en audio). */
   userMessage: string;
+  originalUserMessage?: string;
   /** Historial previo de la conversación (sin el system). */
   history?: ChatMessage[];
   context: AgentToolContext;
@@ -84,7 +93,17 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       : context.channel === "messenger"
         ? "Messenger"
         : "WhatsApp";
-  const systemPrompt = agent.systemPrompt
+  const policy =
+    context.channel === "whatsapp" && agent.projectKey === "luxisoft"
+      ? advisorPolicy(
+          options.originalUserMessage ?? userMessage.split(/\n\[|\n\n\[/)[0]!,
+          options.history
+        )
+      : null;
+  const systemPrompt = (
+    agent.systemPrompt +
+    (policy ? advisorInstructions + "\nPOLÍTICA DEL TURNO: " + JSON.stringify(policy) : "")
+  )
     .replace(/\{\{\s*ASSISTANT_NAME\s*\}\}/g, assistantName)
     .replace(/\{\{\s*CHANNEL_NAME\s*\}\}/g, channelName);
 
@@ -114,8 +133,32 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     // las tool calls en el mensaje para reenviarlas al proveedor en el
     // siguiente turno; sin ellas los mensajes "tool" quedan huérfanos.
     if (!result.toolCalls.length) {
-      newMessages.push({ role: "assistant", content: result.text });
-      return { text: result.text, rich, newMessages, turns };
+      let text = result.text;
+      if (policy && advisorViolation(text, policy)) {
+        try {
+          const corrected = await provider.complete({
+            messages: [
+              ...baseMessages,
+              ...newMessages,
+              { role: "assistant", content: text },
+              {
+                role: "user",
+                content:
+                  "Reformula únicamente tu respuesta de acuerdo con la política del turno. No uses herramientas ni ejecutes acciones. Responde la duda original de forma breve; no adelantes precios o enlaces no solicitados."
+              }
+            ],
+            model: agent.chatModel || undefined,
+            tools: []
+          });
+          text = corrected.text;
+        } catch {
+          text = advisorFallback(text, policy);
+        }
+        if (!text.trim() || advisorViolation(text, policy)) text = advisorFallback(text, policy);
+        context.logger?.info?.("advisor_response_corrected");
+      }
+      newMessages.push({ role: "assistant", content: text });
+      return { text, rich, newMessages, turns };
     }
 
     newMessages.push({ role: "assistant", content: result.text, toolCalls: result.toolCalls });
@@ -123,9 +166,24 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     // Ejecuta cada tool solicitada y añade su resultado al historial.
     for (const call of result.toolCalls) {
       const tool = toolsByName.get(call.name);
-      const output = tool
-        ? await executeTool(tool, call.arguments, toolContext)
-        : `error: unknown_tool:${call.name}`;
+      let args: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(call.arguments);
+        if(parsed && typeof parsed === "object" && !Array.isArray(parsed)) args=parsed;
+      } catch {
+        /* Invalid args are handled by the tool. */
+      }
+      const allowed = !policy || advisorToolAllowed(call.name, args, policy);
+      let output = !allowed
+        ? JSON.stringify({
+            status: "needs_confirmation",
+            message:
+              "La consulta no autoriza esta acción. Responde primero y confirma intención sin crear pedidos."
+          })
+        : tool
+          ? await executeTool(tool, call.arguments, toolContext)
+          : `error: unknown_tool:${call.name}`;
+      if (policy) output = advisorToolResult(call.name, output, policy);
       newMessages.push({
         role: "tool",
         content: output,

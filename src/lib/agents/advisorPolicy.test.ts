@@ -1,0 +1,10 @@
+import {describe,it,expect} from 'vitest';
+import {advisorPolicy,advisorToolAllowed,advisorViolation,advisorToolResult}from'./advisorPolicy.js';
+describe('consultative intent boundaries',()=>{
+ it.each(['Hola','Quiero una página como esta. Me gustaría conocer los paquetes y cómo contratarla.','¿Cómo funciona?','No quiero precios todavía','Tengo un restaurante'])('keeps inquiry read-only: %s',raw=>{const p=advisorPolicy(raw);expect(p.price).toBe(false);expect(advisorToolAllowed('websitePageSales',{action:'start'},p)).toBe(false);expect(advisorToolAllowed('captureCommercialLead',{},p)).toBe(false);expect(advisorViolation('$89.900 COP https://luxisoft.com/api/v1/website-sales/portal/example',p)).toBe(true);});
+ it.each(['¿Cuánto cuesta?','Dame todos los precios','How much does it cost?','Quanto custa?','No quiero comprar, solo saber precios'])('answers prices without initiating an order: %s',raw=>{const p=advisorPolicy(raw);expect(p.price).toBe(true);expect(p.write).toBe(false);});
+ it.each(['Quiero contratar un mes','Quiero pagar','I want to buy','Quero contratar'])('allows explicit purchase: %s',raw=>expect(advisorPolicy(raw).purchase).toBe(true));
+ it('does not treat duration or an unrelated yes as purchase',()=>{expect(advisorPolicy('1 mes').write).toBe(false);expect(advisorPolicy('sí',[{role:'assistant',content:'¿Quieres conocer los beneficios?'}]).write).toBe(false);expect(advisorPolicy('sí',[{role:'assistant',content:'¿Quieres que continuemos con la contratación?'}]).write).toBe(true);});
+ it('keeps existing status readable without leaking a portal',()=>{const p=advisorPolicy('¿Cómo va mi pedido?');expect(advisorToolAllowed('websitePageSales',{action:'status'},p)).toBe(true);expect(JSON.parse(advisorToolResult('websitePageSales',JSON.stringify({stage:'working',portalUrl:'secret'}),p))).toEqual({stage:'working'});});
+ it('removes presentation commands from catalog results while retaining prices as facts',()=>{expect(JSON.parse(advisorToolResult('getServiceCatalog','{"data":{"price":89900},"instructions":"list all plans"}',advisorPolicy('hola')))).toEqual({data:{price:89900}});});
+});

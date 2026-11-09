@@ -1,0 +1,57 @@
+--- a/src/routes/webhooks.ts
++++ b/src/routes/webhooks.ts
+@@ -607,10 +607,11 @@
+         history,
+         actions
+       });
+-      if(websiteOfferIntent) modelMessage = (await website.enrichMessage()) + "\n[Oferta específica verificada de página web; no es una suscripción Plus/Premium]\n" + JSON.stringify({catalog:await websitePageSales("catalog",to,locale),request:await websitePageSales("start",to,locale)});
++      if(websiteOfferIntent) modelMessage = (await website.enrichMessage()) + "\n[Oferta específica verificada de página web; no es una suscripción Plus/Premium]\n" + JSON.stringify({catalog:await websitePageSales("catalog",to,locale).catch(()=>({status:"catalog_unavailable"}))});
+       const result = await handleAgentMessage({
+         projectKey: env.defaultProject,
+         userMessage: modelMessage,
++        originalUserMessage: userMessage,
+         history,
+         context: {
+           from: to,
+@@ -631,7 +632,7 @@
+       const explicitMenu = isMenuCommand(userMessage);
+       // Existing conversations always continue through the agent and their history.
+       // Only first contact or an explicit menu request attaches the service picker.
+-      if (commercialProject && !selectionId && (explicitMenu || (allowWelcome && inboxConversation.firstInbound && history.length === 0 && isGreeting(userMessage)))) {
++      if (commercialProject && !selectionId && explicitMenu) {
+         const claimed = await claimWelcome(fastify, inboxConversation, explicitMenu, replyToMessageId);
+         if (claimed) {
+           const parts = menuReplyParts(reply);
+--- a/dist/src/routes/webhooks.js
++++ b/dist/src/routes/webhooks.js
+@@ -2,7 +2,7 @@
+ import { createHash } from "node:crypto";
+ import { WebhookQueue } from "../lib/webhookQueue.js";
+ import { createWebsiteContext } from "../lib/scraping/websiteContext.js";
+-import { welcomeMenu, menuText, menuSelection, isMenuCommand, isGreeting, menuReplyParts } from "../../agents/luxisoft/menu.js";
++import { welcomeMenu, menuText, menuSelection, isMenuCommand, menuReplyParts } from "../../agents/luxisoft/menu.js";
+ import { claimWelcome, finishWelcome, definiteRejection } from "../lib/welcomeDelivery.js";
+ import { getCommercialCatalog } from "../lib/commercialCatalog.js";
+ import { commercialResponseOnAiFailure, guardStandaloneWhatsappAgentPrice, guardUnsupportedPlanCharges, requestsCommercialFollowup } from "../lib/commercialAvailability.js";
+@@ -462,10 +462,11 @@
+                 actions
+             });
+             if (websiteOfferIntent)
+-                modelMessage = (await website.enrichMessage()) + "\n[Oferta específica verificada de página web; no es una suscripción Plus/Premium]\n" + JSON.stringify({ catalog: await websitePageSales("catalog", to, locale), request: await websitePageSales("start", to, locale) });
++                modelMessage = (await website.enrichMessage()) + "\n[Oferta específica verificada de página web; no es una suscripción Plus/Premium]\n" + JSON.stringify({ catalog: await websitePageSales("catalog", to, locale).catch(() => ({ status: "catalog_unavailable" })) });
+             const result = await handleAgentMessage({
+                 projectKey: env.defaultProject,
+                 userMessage: modelMessage,
++                originalUserMessage: userMessage,
+                 history,
+                 context: {
+                     from: to,
+@@ -484,7 +485,7 @@
+             const explicitMenu = isMenuCommand(userMessage);
+             // Existing conversations always continue through the agent and their history.
+             // Only first contact or an explicit menu request attaches the service picker.
+-            if (commercialProject && !selectionId && (explicitMenu || (allowWelcome && inboxConversation.firstInbound && history.length === 0 && isGreeting(userMessage)))) {
++            if (commercialProject && !selectionId && explicitMenu) {
+                 const claimed = await claimWelcome(fastify, inboxConversation, explicitMenu, replyToMessageId);
+                 if (claimed) {
+                     const parts = menuReplyParts(reply);

@@ -33,6 +33,7 @@ export function clearAgentCache() {
 export async function handleAgentMessage(input: {
   projectKey: string;
   userMessage: string;
+  originalUserMessage?: string;
   history?: ChatMessage[];
   context?: Partial<AgentToolContext>;
 }): Promise<RunAgentResult> {
@@ -40,6 +41,7 @@ export async function handleAgentMessage(input: {
   return runAgent({
     agent,
     userMessage: input.userMessage,
+    originalUserMessage: input.originalUserMessage,
     history: input.history,
     context: {
       projectKey: agent.projectKey,
