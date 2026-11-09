@@ -175,7 +175,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
               {
                 role: "user",
                 content:
-                  "Reformula únicamente tu respuesta de acuerdo con la política del turno. No uses herramientas ni ejecutes acciones. Responde la duda original de forma breve sin saludos, presentación, preguntas ya contestadas ni repetir explicaciones anteriores. Conserva importes y condiciones verificadas; no adelantes precios o enlaces no solicitados."
+                  "Reformula únicamente tu respuesta de acuerdo con la política del turno. No uses herramientas ni ejecutes acciones. Responde la duda original de forma breve con como máximo una pregunta, sin saludos, presentación, preguntas ya contestadas ni repetir explicaciones anteriores. Conserva importes y condiciones verificadas; no adelantes precios o enlaces no solicitados."
               }
             ],
             model: agent.chatModel || undefined,
