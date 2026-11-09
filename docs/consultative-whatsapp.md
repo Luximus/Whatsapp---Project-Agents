@@ -60,3 +60,28 @@ pueden deshacer: nunca se reintentan efectos aceptados para aparentar cancelaci�
 ops/upgrade-reply-batch.mjs actualiza por anclas exactas el webhook efectivo,
 conservando trabajo ajeno no publicado, historial, firma, OTP y colas. Compilar
 el commit publicado e instalar únicamente sus módulos y este overlay validado.
+
+## Mensaje final sin redundancias (2026-11-09)
+
+Una única composición gestiona la apertura: el saludo aislado recibe únicamente
+saludo, identidad y cortesía, sin llamada al modelo. Se respeta la franja indicada
+por la persona; un «hola» usa America/Bogota (05–11 mañana, 12–18 tarde, 19–04
+noche). Una consulta concreta recibe presentación y respuesta directa.
+
+El webhook consulta respuestas AI efectivamente enviadas del mismo contacto,
+canal y proyecto; truncar el contexto o reiniciar no reinicia la presentación.
+Ante fallo de lectura no se presupone un contacto nuevo. Limpiar el historial
+por su API vuelve a permitir una presentación sin migraciones nuevas.
+
+El cuerpo generado elimina solo aperturas conversacionales y repeticiones
+exactas; citas/traducciones y consultas de identidad se preservan. Preguntas
+aceptadas repetidas, solicitudes de datos ya conocidos y respuestas calcadas
+provocan una reformulación sin tools, una sola vez. No se eliminan condiciones
+comerciales ni comparaciones solicitadas. Si la reformulación falla, se informa
+la limitación sin reiniciar un cuestionario. El resultado se compone nuevamente,
+de forma idempotente, después de los filtros comerciales y antes del menú/TTS.
+El historial conserva exactamente lo enviado. La captación comercial usa la
+misma política de intención del agente, sin ampliar la autorización.
+
+El overlay publicado ops/upgrade-advisor-response.mjs aplica anclas exactas al
+webhook runtime sin sustituir sus cambios ajenos, colas o controles OTP/firma.

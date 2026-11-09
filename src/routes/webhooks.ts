@@ -1,3 +1,4 @@
+import {composeAdvisorReply} from "../lib/agents/advisorResponse.js";
 import { replyBatch } from "../lib/replyBatch.js";
 import {websitePageSales} from "../lib/websitePageSales.js";
 import type { FastifyPluginAsync } from "fastify";
@@ -504,6 +505,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     locale: Locale
   ): Promise<boolean> {
     let inboxConversation: InboxConversation | null = null;
+    let firstContact=false;
     let batch: ReturnType<typeof replyBatch> | null = null;
     try {
       inboxConversation = await recordInboxInbound(fastify, {
@@ -531,6 +533,12 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         if (!await batch.ready()) return true;
         userMessage = await batch.text(userMessage);
       }
+      if(env.defaultProject==='luxisoft') {
+        try {
+          const sent = await fastify.pg.query("select exists(select 1 from whatsapp_inbox_messages m join whatsapp_inbox_conversations c on c.id=m.conversation_id where c.id=$1 and c.project_key=$2 and c.channel='whatsapp' and c.contact_key=$3 and m.actor='ai' and m.direction='outbound' and m.delivery_status in ('sent','delivered','read')) as introduced",[inboxConversation.id,env.defaultProject,to]);
+          firstContact=sent.rows[0]?.introduced===false;
+        } catch { fastify.log.warn('advisor_introduction_state_unavailable'); }
+      }
       const history = await loadConversationHistory(fastify, {
         projectKey: env.defaultProject,
         phoneE164: to
@@ -538,6 +546,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       const salesContext = /jmarin\.luxisoft\.com|(?:pagina|página|perfil(?: profesional)?|website|(?:professional )?profile) (?:como est[ae]|like this)/i.test([userMessage,...history.filter(m=>m.role==="user").slice(-8).map(m=>m.content)].join(" "));
       const modelMessage = salesContext ? userMessage + "\n[Oferta específica verificada de página web; no es Plus/Premium]\n" + JSON.stringify({catalog:await websitePageSales("catalog",to,locale).catch(()=>({status:"catalog_unavailable"}))}) : userMessage;
       const result = await handleAgentMessage({
+        firstContact,
         isSuperseded: batch?.newer,
         projectKey: env.defaultProject,
         userMessage:modelMessage,
@@ -551,7 +560,8 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         }
       });
       if (batch && await batch.newer()) return true;
-      const reply = result.text?.trim();
+      let reply = result.text?.trim();
+      if(env.defaultProject==='luxisoft') reply=composeAdvisorReply(reply??'',userMessage,firstContact,locale);
       if (!reply) return false;
       // El asistente IA elige modo por probabilidad: nota de voz / texto plano /
       // texto citando al usuario. Si la voz falla o no aplica, cae a texto plano.

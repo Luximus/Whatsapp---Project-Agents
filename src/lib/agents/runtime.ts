@@ -1,3 +1,4 @@
+import {onlyGreeting,cleanAdvisorBody,redundantAdvisorBody,advisorPrompt} from "./advisorResponse.js";
 import {
   advisorPolicy,
   advisorInstructions,
@@ -28,6 +29,7 @@ export interface RunAgentOptions {
   /** Historial previo de la conversación (sin el system). */
   history?: ChatMessage[];
   context: AgentToolContext;
+  firstContact?: boolean;
   maxTurns?: number;
   isSuperseded?: () => Promise<boolean>;
 }
@@ -102,8 +104,15 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           options.history
         )
       : null;
+  if (policy && options.firstContact !== undefined) policy.firstContact = options.firstContact;
+  const raw = options.originalUserMessage ?? userMessage.split(/\n\[|\n\n\[/)[0]!;
+  if (policy?.firstContact && onlyGreeting(raw)) {
+    if (await options.isSuperseded?.()) return {text:"",rich:[],newMessages:[],turns:0};
+    const text=advisorWelcome("",policy,raw);
+    return {text,rich:[],newMessages:[{role:"assistant",content:text}],turns:0};
+  }
   const systemPrompt = (
-    agent.systemPrompt +
+    (policy ? advisorPrompt(agent.systemPrompt) : agent.systemPrompt) +
     (policy ? advisorInstructions + "\nPOLÍTICA DEL TURNO: " + JSON.stringify(policy) : "")
   )
     .replace(/\{\{\s*ASSISTANT_NAME\s*\}\}/g, assistantName)
@@ -148,8 +157,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     // las tool calls en el mensaje para reenviarlas al proveedor en el
     // siguiente turno; sin ellas los mensajes "tool" quedan huérfanos.
     if (!result.toolCalls.length) {
-      let text = result.text;
-      if (policy && advisorViolation(text, policy)) {
+      let text = policy ? cleanAdvisorBody(result.text,raw) : result.text;
+      if (policy && (advisorViolation(text, policy) || redundantAdvisorBody(text,raw,options.history??[]))) {
         try {
           const corrected = await provider.complete({
             messages: [
@@ -159,20 +168,20 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
               {
                 role: "user",
                 content:
-                  "Reformula únicamente tu respuesta de acuerdo con la política del turno. No uses herramientas ni ejecutes acciones. Responde la duda original de forma breve; no adelantes precios o enlaces no solicitados."
+                  "Reformula únicamente tu respuesta de acuerdo con la política del turno. No uses herramientas ni ejecutes acciones. Responde la duda original de forma breve sin saludos, presentación, preguntas ya contestadas ni repetir explicaciones anteriores. Conserva importes y condiciones verificadas; no adelantes precios o enlaces no solicitados."
               }
             ],
             model: agent.chatModel || undefined,
             tools: []
           });
-          text = corrected.text;
+          text = cleanAdvisorBody(corrected.text,raw);
         } catch {
           text = advisorFallback(text, policy);
         }
-        if (!text.trim() || advisorViolation(text, policy)) text = advisorFallback(text, policy);
+        if (!text.trim() || advisorViolation(text, policy) || redundantAdvisorBody(text,raw,options.history??[])) text = advisorFallback("", policy);
         context.logger?.info?.("advisor_response_corrected");
       }
-      if (policy) text = advisorWelcome(text, policy);
+      if (policy) text = advisorWelcome(text, policy,raw);
       newMessages.push({ role: "assistant", content: text });
       return { text, rich, newMessages, turns };
     }
@@ -212,5 +221,6 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
 
   // Se agotaron los turnos sin respuesta final: devuelve el último texto.
   const lastAssistant = [...newMessages].reverse().find((m) => m.role === "assistant");
-  return { text: lastAssistant?.content ?? "", rich, newMessages, turns };
+  const text = policy ? advisorWelcome(advisorFallback("",policy),policy,raw) : lastAssistant?.content??"";
+  return { text, rich, newMessages, turns };
 }
