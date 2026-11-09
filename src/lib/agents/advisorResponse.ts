@@ -6,7 +6,7 @@ const identityRequest=(raw:string)=>/quien eres|como te llamas|who are you|your 
 const quotedRequest=(raw:string)=>/redact|traduc|traduza|translate|write.*message|escribe.*mensaje|ejemplo.*saludo|cita textual/i.test(raw);
 export function advisorOpening(raw:string,locale:string,now=new Date()) {
  const s=plain(raw), hour=Number(new Intl.DateTimeFormat('en-GB',{timeZone:'America/Bogota',hour:'2-digit',hourCycle:'h23'}).format(now));
- const period=/buenas? n[oó]?ches?|good evening|boa noite/.test(s)?'night':/buenas tardes?|good afternoon|boa tarde/.test(s)?'afternoon':/buenos dias|buen dia|good morning|bom dia/.test(s)?'morning':hour<5||hour>=19?'night':hour>=12?'afternoon':'morning';
+ const period=/buenas? n[oó]?ches?|good evening|boa noite/.test(s)?'night':/buenas? tardes?|good afternoon|boa tarde/.test(s)?'afternoon':/buenos dias|buen dia|good morning|bom dia/.test(s)?'morning':hour<5||hour>=19?'night':hour>=12?'afternoon':'morning';
  return ({es:{morning:'Buenos días',afternoon:'Buenas tardes',night:'Buenas noches'},en:{morning:'Good morning',afternoon:'Good afternoon',night:'Good evening'},pt:{morning:'Bom dia',afternoon:'Boa tarde',night:'Boa noite'}}[locale as 'es'|'en'|'pt']??{morning:'Buenos días',afternoon:'Buenas tardes',night:'Buenas noches'})[period];
 }
 export function cleanAdvisorBody(text:string,raw:string) {
@@ -29,7 +29,7 @@ export function composeAdvisorReply(text:string,raw:string,firstContact:boolean,
  if(asksAboutAutomation(raw)) return locale==='en'?'I am an automated assistant for LUXISOFT S.A.S., not a person. I can help you or connect you with the team.':locale==='pt'?'Sou uma assistente automatizada da LUXISOFT S.A.S., não uma pessoa. Posso ajudar ou encaminhar você à equipe.':'Soy un asistente automatizado de LUXISOFT S.A.S., no una persona. Puedo orientarte o ayudarte a contactar al equipo.';
  const body=cleanAdvisorBody(text,raw);
  const opening=advisorOpening(raw,locale,now);
- if(!firstContact)return onlyGreeting(raw)?opening+'.':body;
+ if(!firstContact){if(onlyGreeting(raw))return opening+'.';const greeted=!quotedRequest(raw)&&raw.split(/\n/).some(line=>greeting.test(plain(line)));return greeted&&body?opening+'.\n\n'+body:body;}
  const identity=locale==='en'?`${opening}, I'm Luisa, the sales assistant at LUXISOFT S.A.S.`:locale==='pt'?`${opening}, sou Luisa, assistente comercial da LUXISOFT S.A.S.`:`${opening}, soy Luisa, asistente comercial de LUXISOFT S.A.S.`;
  if(identityRequest(raw))return identity;
  if(onlyGreeting(raw))return identity;

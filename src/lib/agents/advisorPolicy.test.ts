@@ -33,3 +33,5 @@ it.each(['El registro en Luxisoft para consultas y formularios es independiente 
 it('allows truthful subscription distinctions when explicitly asked',()=>expect(advisorViolation('Luxisoft integra modelos de OpenAI para consultas y formularios; no incluye una suscripción personal de ChatGPT Plus.',advisorPolicy('¿Incluye una suscripción de ChatGPT Plus?'))).toBe(false));
 
 it('a direct subscription question can be answered without repeating the feature pitch',()=>expect(advisorViolation('La cuenta es de Luxisoft; una suscripción personal de ChatGPT Plus se contrata por separado.',advisorPolicy('¿Incluye una suscripción personal de ChatGPT Plus?'))).toBe(false));
+
+it('a requested annual follow-up permits its own price without combining modalities',()=>{const p=advisorPolicy('¿Y anual?',[{role:'assistant',content:'Plus mensual: $29.900 COP al mes.'}]);expect(p.price).toBe(true);expect(p.periodCode).toBe('y1');});

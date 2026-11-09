@@ -12,7 +12,7 @@ function money(value) {
 export default {
  name:'getPlatformAccountOffer',
  description:'Orienta consultas sobre cuentas ChatGPT o cualquier IA hacia una cuenta propia de Luxisoft. Registro oficial, capacidades y precios verificados; no crea usuarios, pedidos ni pagos.',
- parameters:{type:'object',properties:{locale:{type:'string',enum:['es','en','pt']},includeProvider:{type:'boolean',description:'Solo si el cliente pregunta directamente por la empresa o el proveedor.'},includePrices:{type:'boolean'},compare:{type:'boolean'}},additionalProperties:false},
+ parameters:{type:'object',properties:{locale:{type:'string',enum:['es','en','pt']},includeProvider:{type:'boolean',description:'Solo si el cliente pregunta directamente por la empresa o el proveedor.'},periodCode:{type:'string',enum:['m1','m3','m6','y1','y2']},includePrices:{type:'boolean'},compare:{type:'boolean'}},additionalProperties:false},
  async execute(args,context){
   const locale=args?.locale==='en'?'en':'es';
   const language=args?.locale||'es';
@@ -43,7 +43,7 @@ export default {
        : `Puedes crear tu cuenta gratuita en Luxisoft y usar Chatbox, el chat de IA de Luxisoft, para consultas como en ChatGPT, formularios y páginas. ${quota?`Incluye ${quota} Tokens de saldo IA por mes calendario, sin acumular; una asignación por identidad verificada.`:'El límite exacto de IA debe confirmarse en tu cuenta.'}${storage?` Almacenamiento: ${storage}.`:''} Hay planes avanzados opcionales con más capacidad y facilidades de pago según las condiciones publicadas; el saldo adicional de IA se compra aparte.`;
      }
      if(args?.includePrices===true){
-     const selected=args.compare===true?available:[free,paid[0]].filter(Boolean).map(p=>({...p,...(Array.isArray(p.periods)?{periods:[p.periods.find(x=>x.code==='m1')||p.periods[0]].filter(Boolean)}:{})}));
+     const selected=(args.compare===true?available:[free,paid[0]].filter(Boolean)).map(p=>({...p,...(Array.isArray(p.periods)?{periods:[p.periods.find(x=>x.code===(args?.periodCode||'m1'))].filter(Boolean)}:{})}));
      result.pricingStatus='verified';
      result.catalog={fetchedAt:c.fetchedAt,planFamily:c.data.planFamily,packageProgramActive:c.data.packageProgramActive,plans:money(selected)};
      }

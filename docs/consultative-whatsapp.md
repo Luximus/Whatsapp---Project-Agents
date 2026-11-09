@@ -132,3 +132,6 @@ En WhatsApp y Messenger: responder y terminar sin preguntas ni invitaciones a am
 
 ## Marca conocida (2026-11-09)
 Orientación general: Chatbox de Luxisoft y ChatGPT como referencia conocida, sin presentar suscripciones personales como incluidas. OpenAI solo ante pregunta directa por empresa/proveedor; no por historial o datos precargados. Regla en WhatsApp y Messenger, herramientas y respaldos.
+
+## Saludo y períodos independientes
+Saludo actual reconocido incluso junto a consulta y con historial, sin repetir identidad. Mensual por defecto y anual solo al solicitarlo, cada modalidad con precio/cobertura propios, sin doce cuotas implícitas. Catálogo/cache v5 alineados con contratación por período.

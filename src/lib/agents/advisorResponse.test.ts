@@ -21,3 +21,5 @@ it.each(['es','en','pt'])('commercial introduction avoids unsolicited technical 
 it.each(['¿Eres una persona real?','¿Eres un bot?','Who are you, are you AI?'])('answers direct automation questions truthfully: %s',raw=>{expect(composeAdvisorReply('Soy una persona.',raw,true,'es',night)).toContain('no una persona');});
 
 it.each([true,false])('acknowledges the reported typo greeting with archive firstContact=%s',first=>{const t=composeAdvisorReply('¿En qué te gustaría que te orientara?','buena nche',first,'es',night);expect(t).toContain('Buenas noches');expect(t).not.toContain('?');expect(t.includes('Luisa')).toBe(first);expect(composeAdvisorReply(t,'buena nche',first,'es',night)).toBe(t);});
+
+it('acknowledges a current greeting mixed with an existing conversation query',()=>{const raw='Buena tarde\nMe compartieron este número\n¿Qué costo tiene?';const text=composeAdvisorReply('Plus mensual: $29.900 COP al mes.',raw,false,'es',night);expect(text).toBe('Buenas tardes.\n\nPlus mensual: $29.900 COP al mes.');expect(composeAdvisorReply(text,raw,false,'es',night)).toBe(text);expect(text).not.toContain('Luisa');});

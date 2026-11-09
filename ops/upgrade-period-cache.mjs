@@ -1,0 +1,1 @@
+import{readFile,writeFile}from'node:fs/promises';const p=process.argv[2];const s=await readFile(p,'utf8');if(!s.includes('whatsapp:commercial:v4:'))throw Error('cache_anchor');await writeFile(p,s.replace('whatsapp:commercial:v4:','whatsapp:commercial:v5:'));
