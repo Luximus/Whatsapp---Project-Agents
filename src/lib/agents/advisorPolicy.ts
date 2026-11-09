@@ -63,6 +63,7 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
   return {
     aiReference,
     aiPlatformInterest,
+    accountContinuation,
     firstContact: !history.some(m => m.role === "assistant"),
     exploring,
     usageInquiry,
@@ -74,7 +75,7 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
     write: !aiPlatformInterest && (purchase || data),
     followup: !aiPlatformInterest && followup,
     portal: purchase || /\b(enlace|link|portal)\b/.test(s),
-    locale: /\b(hello|hi|good morning|good afternoon|good evening|please|how|what|price|i want|i would)\b/.test(s)
+    locale: /\b(hello|hi|i need|i am looking|do you|can i|good morning|good afternoon|good evening|please|how|what|price|i want|i would)\b/.test(s)
       ? "en"
       : /\b(ola|oi|bom dia|boa tarde|boa noite|quero|quanto|preco)\b/.test(s)
         ? "pt"
@@ -104,7 +105,7 @@ export function advisorViolation(text: string, p: AdvisorPolicy) {
   const plans = new Set([...text.matchAll(/\b(Plus|Premium|Free)\b/gi)].map(m=>m[1]!.toLowerCase()));
   const amounts = text.match(/\$\s*\d[\d.,]*|\b(?:COP|USD)\s*\d[\d.,]*|\b\d[\d.,]*\s*(?:COP|USD|pesos)\b/gi) ?? [];
   const detailsCount=[/tokens/i,/videos/i,/\bmes(?:es)?\b|months/i,/habiles|business days/i,/renov|renew/i,/dominio propio|custom domain/i,/almacenamiento|storage/i].filter(re=>re.test(text)).length;
-  return (p.packagesInquiry && !p.details && !p.price && detailsCount > 2) || (p.acceptedInformation && /[¿?]/.test(text) && /quieres? que (?:te )?(?:explique|muestre)|quieres? conocer|would you like me to explain/i.test(text)) ||
+  return (p.aiPlatformInterest && !p.accountContinuation && (!/luxisoft/i.test(text) || !/consult|formular|p[aá]ginas?|web|sites|pages|questions|queries|content|tiendas|lojas|applications/i.test(text))) || (p.packagesInquiry && !p.details && !p.price && detailsCount > 2) || (p.acceptedInformation && /[¿?]/.test(text) && /quieres? que (?:te )?(?:explique|muestre)|quieres? conocer|would you like me to explain/i.test(text)) ||
     (p.usageInquiry && /(?:\d[\d.,]*\s*(?:a|y|[-–])\s*\d[\d.,]*\s*(?:tokens?|mensajes?)|\d[\d.,]*\s*mensajes?)/i.test(text)) || (p.exploring && (detailsCount>1 || text.split(/\s+/).length>60)) || (!p.price && money(text)) || (!p.portal && /website-sales\/portal\//.test(text)) ||
     (!p.details && (text.split(/\s+/).length > 110 || (amounts.length>1 && (periods.size>1 || plans.size>1))));
 }
