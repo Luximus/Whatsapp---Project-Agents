@@ -19,3 +19,5 @@ it('detects copied replies even with durable history timestamps',()=>expect(redu
 
 it.each(['es','en','pt'])('commercial introduction avoids unsolicited technical labels in %s',locale=>{const text=composeAdvisorReply('','Hola',true,locale,night);expect(text).toContain('Luisa');expect(text).not.toMatch(/virtual|\bbot\b|\bIA\b|\bAI\b/i);});
 it.each(['¿Eres una persona real?','¿Eres un bot?','Who are you, are you AI?'])('answers direct automation questions truthfully: %s',raw=>{expect(composeAdvisorReply('Soy una persona.',raw,true,'es',night)).toContain('no una persona');});
+
+it.each([true,false])('acknowledges the reported typo greeting with archive firstContact=%s',first=>{const t=composeAdvisorReply('¿En qué te gustaría que te orientara?','buena nche',first,'es',night);expect(t).toContain('Buenas noches');expect(t).toContain('¿Cómo te encuentras?');expect(t.includes('Luisa')).toBe(first);expect(composeAdvisorReply(t,'buena nche',first,'es',night)).toBe(t);});

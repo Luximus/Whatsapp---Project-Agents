@@ -107,3 +107,19 @@ Conservar soporte, saldo, pedidos previos y negativas; no insistir en registrar
 una cuenta ya existente. Una aceptación de registro entrega el enlace sin otra
 confirmación. La persona completa el registro sin dar contraseñas/códigos en
 WhatsApp. No interpretar «se llama» como una referencia al modelo Llama.
+
+
+### Orientación afirmativa y saludos de regreso (2026-11-08)
+
+Para interés general en ChatGPT/IA, presentar directamente una cuenta propia de
+Luxisoft con modelos integrados de OpenAI, consultas, formularios y páginas. Evitar
+comparaciones no solicitadas con Plus/Pro; las diferencias se explican fielmente
+cuando se pregunta expresamente por equivalencia o inclusión de una suscripción.
+Una validación y una reformulación evitan el discurso de rechazo; el fallback
+conserva una oferta factual sin prometer suscripciones ajenas.
+
+El archivo de mensajes enviados determina si ya hubo presentación. Un saludo
+aislado, incluso «buena nche», recibe saludo y cortesía tanto al inicio como al
+regresar. El regreso conserva el contexto y omite otra presentación. Una primera
+consulta concreta recibe presentación y respuesta sin obligar a un intercambio
+social. La composición sigue siendo idempotente para texto y audio.

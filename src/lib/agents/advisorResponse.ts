@@ -1,12 +1,12 @@
 import type {ChatMessage} from '../ai/types.js';
 export const plain = (s:string)=>s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
-const greeting=/^(?:hola|buenas(?: noches?| tardes?)?|buena noche|buenos d[ií]as|buen d[ií]a|hello|hi|hey|good (?:morning|afternoon|evening)|ol[aá]|oi|bom dia|boa (?:tarde|noite))(?=$|[!,.:;\s])[!,.:;\s]*/iu;
+const greeting=/^(?:hola|buenas?(?: n[oó]?ches?| tardes?)?|buenos d[ií]as|buen d[ií]a|hello|hi|hey|good (?:morning|afternoon|evening)|ol[aá]|oi|bom dia|boa (?:tarde|noite))(?=$|[!,.:;\s])[!,.:;\s]*/iu;
 export const onlyGreeting=(s:string)=>greeting.test(plain(s))&&!plain(s).replace(greeting,'').replace(/[!.,\s]+/g,'');
 const identityRequest=(raw:string)=>/quien eres|como te llamas|who are you|your name|qual.*nome/i.test(plain(raw));
 const quotedRequest=(raw:string)=>/redact|traduc|traduza|translate|write.*message|escribe.*mensaje|ejemplo.*saludo|cita textual/i.test(raw);
 export function advisorOpening(raw:string,locale:string,now=new Date()) {
  const s=plain(raw), hour=Number(new Intl.DateTimeFormat('en-GB',{timeZone:'America/Bogota',hour:'2-digit',hourCycle:'h23'}).format(now));
- const period=/buenas? noches?|good evening|boa noite/.test(s)?'night':/buenas tardes?|good afternoon|boa tarde/.test(s)?'afternoon':/buenos dias|buen dia|good morning|bom dia/.test(s)?'morning':hour<5||hour>=19?'night':hour>=12?'afternoon':'morning';
+ const period=/buenas? n[oó]?ches?|good evening|boa noite/.test(s)?'night':/buenas tardes?|good afternoon|boa tarde/.test(s)?'afternoon':/buenos dias|buen dia|good morning|bom dia/.test(s)?'morning':hour<5||hour>=19?'night':hour>=12?'afternoon':'morning';
  return ({es:{morning:'Buenos días',afternoon:'Buenas tardes',night:'Buenas noches'},en:{morning:'Good morning',afternoon:'Good afternoon',night:'Good evening'},pt:{morning:'Bom dia',afternoon:'Boa tarde',night:'Boa noite'}}[locale as 'es'|'en'|'pt']??{morning:'Buenos días',afternoon:'Buenas tardes',night:'Buenas noches'})[period];
 }
 export function cleanAdvisorBody(text:string,raw:string) {
@@ -28,11 +28,12 @@ export function asksAboutAutomation(raw:string) {
 export function composeAdvisorReply(text:string,raw:string,firstContact:boolean,locale:string,now=new Date()) {
  if(asksAboutAutomation(raw)) return locale==='en'?'I am an automated assistant for LUXISOFT S.A.S., not a person. I can help you or connect you with the team.':locale==='pt'?'Sou uma assistente automatizada da LUXISOFT S.A.S., não uma pessoa. Posso ajudar ou encaminhar você à equipe.':'Soy un asistente automatizado de LUXISOFT S.A.S., no una persona. Puedo orientarte o ayudarte a contactar al equipo.';
  const body=cleanAdvisorBody(text,raw);
- if(!firstContact)return body;
  const opening=advisorOpening(raw,locale,now);
+ const courtesy=({es:'¿Cómo te encuentras?',en:'How are you?',pt:'Como você está?'}[locale as 'es'|'en'|'pt']??'¿Cómo te encuentras?');
+ if(!firstContact)return onlyGreeting(raw)?opening+'. '+courtesy:body;
  const identity=locale==='en'?`${opening}, I'm Luisa, the sales assistant at LUXISOFT S.A.S.`:locale==='pt'?`${opening}, sou Luisa, assistente comercial da LUXISOFT S.A.S.`:`${opening}, soy Luisa, asistente comercial de LUXISOFT S.A.S.`;
  if(identityRequest(raw))return identity;
- if(onlyGreeting(raw))return identity+' '+({es:'¿Cómo te encuentras?',en:'How are you?',pt:'Como você está?'}[locale as 'es'|'en'|'pt']??'¿Cómo te encuentras?');
+ if(onlyGreeting(raw))return identity+' '+courtesy;
  return body?identity+'\n\n'+body:'';
 }
 export function redundantAdvisorBody(text:string,raw:string,history:ChatMessage[]) {

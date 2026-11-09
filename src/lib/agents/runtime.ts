@@ -106,7 +106,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       : null;
   if (policy && options.firstContact !== undefined) policy.firstContact = options.firstContact;
   const raw = options.originalUserMessage ?? userMessage.split(/\n\[|\n\n\[/)[0]!;
-  if (policy?.firstContact && onlyGreeting(raw)) {
+  if (policy && onlyGreeting(raw)) {
     if (await options.isSuperseded?.()) return {text:"",rich:[],newMessages:[],turns:0};
     const text=advisorWelcome("",policy,raw);
     return {text,rich:[],newMessages:[{role:"assistant",content:text}],turns:0};

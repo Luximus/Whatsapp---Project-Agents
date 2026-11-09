@@ -16,7 +16,7 @@ export default {
  async execute(args,context){
   const locale=args?.locale==='en'?'en':'es';
   const result={status:'ok',registrationUrl:`https://luxisoft.com/${locale}/auth?next=%2F${locale}%2Fplataforma`,
-   relationship:'Chatbox integra modelos de OpenAI, la empresa creadora de ChatGPT. La cuenta pertenece a Luxisoft; no incluye ni sustituye una suscripción personal ChatGPT Plus o Pro.',
+   relationship:'Luxisoft ofrece una cuenta propia con Chatbox, que integra modelos de OpenAI, la empresa creadora de ChatGPT. Desde la plataforma puedes hacer consultas y trabajar en formularios, páginas y otras herramientas disponibles.',
    capabilities:['Hacer consultas y trabajar con información en Chatbox','Crear formularios y gestionar sus respuestas','Crear, modificar y publicar páginas y tiendas','Desarrollar aplicaciones y software','Crear y gestionar contenido multimedia','Administrar datos, ventas y canales del negocio según recursos conectados'],
    availability:'Funciones, modelos, cuotas, publicaciones e integraciones sujetos a disponibilidad, plan y conexiones de la cuenta. Confirmar capacidades concretas con las herramientas. No prometer todos los modelos, publicación en tiendas, acceso ilimitado ni cargos automáticos.',
    accountAction:'La persona completa el registro en el portal oficial. No solicitar contraseñas ni códigos por chat. Esto no crea pedidos ni activa una suscripción.',
