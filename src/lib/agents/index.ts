@@ -1,3 +1,4 @@
+import { messengerOwnershipGuard } from "../inboxAiOwnership.js";
 import type { ChatMessage } from "../ai/types.js";
 import { loadAgent, listAgentProjects } from "./registry.js";
 import { runAgent, type RunAgentResult } from "./runtime.js";
@@ -40,13 +41,15 @@ export async function handleAgentMessage(input: {
   context?: Partial<AgentToolContext>;
 }): Promise<RunAgentResult> {
   const agent = await getAgent(input.projectKey);
-  return runAgent({
+  const owned = messengerOwnershipGuard(input.projectKey, input.context);
+  const isSuperseded = async () => await owned() || Boolean(await input.isSuperseded?.());
+  const result = await runAgent({
     agent,
     userMessage: input.userMessage,
     originalUserMessage: input.originalUserMessage,
     history: input.history,
     firstContact: input.firstContact,
-    isSuperseded: input.isSuperseded,
+    isSuperseded,
     context: {
       projectKey: agent.projectKey,
       from: input.context?.from ?? null,
@@ -55,6 +58,8 @@ export async function handleAgentMessage(input: {
       actions: input.context?.actions
     }
   });
+  // Drop an answer generated before a human claim, even if that claim was already closed.
+  return await isSuperseded() ? { ...result, text: "", rich: [] } : result;
 }
 
 export { handleAgentMessage as routeAgentMessage };
