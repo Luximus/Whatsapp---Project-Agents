@@ -19,3 +19,10 @@ no vencen; los complementos mensuales requieren la disponibilidad del catálogo.
 Cada modalidad de suscripción paga su propio período; no representa cuotas de una
 anualidad. No se alteran precios, la oferta independiente de páginas a medida,
 conexiones, clientes ni el flujo de compra. Pruebas sin mensajes/pagos reales.
+
+Las comparaciones explícitas de perfiles se responden con sus límites, sin
+sustituirlas por la introducción de registro. Una consulta de compra de un plan
+de plataforma no autoriza crear un pedido de página a medida. Los perfiles en
+vista previa se informan como no contratables, sin sustituirlos por recargas.
+Negar una equivalencia numérica de Tokens y mensajes es una explicación válida;
+la política sigue rechazando cantidades de mensajes garantizadas.

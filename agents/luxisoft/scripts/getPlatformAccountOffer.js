@@ -35,6 +35,7 @@ export default {
       const preview=!requested?(c.data.previewPackages??[]).find(p=>p.code===args.planCode):null;
       result.requestedPlan={code:args.planCode,available:Boolean(requested),previewOnly:Boolean(preview),customerRole:requested?.customerRole??preview?.customerRole??null};
      }
+     result.unavailableProfiles=(c.data.previewPackages??[]).filter(p=>!available.some(a=>a.code===p.code)).map(p=>({code:p.code,name:p.customerRole?.name??p.name,customerRole:p.customerRole??null,purchasable:false,status:'preview'}));
      result.customerProfiles=available.map(p=>({code:p.code,name:p.customerRole?.name??p.name,customerRole:p.customerRole??null,tokenAllowance:p.tokenAllowance??null}));
      result.planAndTokens='El perfil comercial determina los modelos, nivel de razonamiento, generación y conexiones disponibles. Los Tokens aumentan saldo, conservando el perfil. Comprar un plan no asigna roles de soporte, moderador o administrador de Luxisoft. Usa customerRole verificado, nunca capacidades inferidas por precio o almacenamiento. Free permite vídeo nativo si customerRole.nativeVideo=true; cuotas según catálogo y saldo. Negocio en previewOnly no se ofrece para contratar.';
      const paid=available.filter(p=>p.code!=='free');

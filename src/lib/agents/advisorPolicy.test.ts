@@ -35,3 +35,19 @@ it('allows truthful subscription distinctions when explicitly asked',()=>expect(
 it('a direct subscription question can be answered without repeating the feature pitch',()=>expect(advisorViolation('La cuenta es de Luxisoft; una suscripción personal de ChatGPT Plus se contrata por separado.',advisorPolicy('¿Incluye una suscripción personal de ChatGPT Plus?'))).toBe(false));
 
 it('a requested annual follow-up permits its own price without combining modalities',()=>{const p=advisorPolicy('¿Y anual?',[{role:'assistant',content:'Plus mensual: $29.900 COP al mes.'}]);expect(p.price).toBe(true);expect(p.periodCode).toBe('y1');});
+
+it('preserves a requested comparison of Luxisoft model access without requiring a signup pitch',()=>{
+ const p=advisorPolicy('¿Qué diferencia hay entre Plus y Premium para usar los modelos de IA, en especial Sol?');
+ expect(advisorViolation('Plus permite Sol hasta nivel bajo; Premium permite Sol hasta ultra.',p)).toBe(false);
+});
+it('permits a negative message equivalence while rejecting a guaranteed count in another sentence',()=>{
+ const p=advisorPolicy('¿Los 20.000 Tokens de Free equivalen a 20.000 mensajes?');
+ expect(advisorViolation('No equivalen a 20.000 mensajes. El consumo depende de la tarea.',p)).toBe(false);
+ expect(advisorViolation('No equivalen a una cantidad fija. Puedes enviar 20.000 mensajes.',p)).toBe(true);
+});
+it('a platform plan purchase cannot create a custom website order',()=>{
+ const p=advisorPolicy('Quiero comprar el plan Negocio. ¿Está disponible y cuánto cuesta?');
+ expect(p.aiPlatformInterest).toBe(true);expect(p.specificPlan).toBe(true);
+ expect(advisorToolAllowed('websitePageSales',{action:'start'},p)).toBe(false);
+ expect(advisorToolAllowed('captureCommercialLead',{},p)).toBe(false);
+});
