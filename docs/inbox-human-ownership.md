@@ -11,3 +11,9 @@ propiedad durante la ejecución del agente y descarta texto/contenido generado
 antes de una toma humana, aunque esa atención haya terminado entretanto. La
 consulta usa el pool existente e identifica exactamente proyecto, canal y PSID.
 No modifica firmas, OTP, herramientas comerciales, colas ni eventos originales.
+
+El cierre exige `human_active` y el usuario asignado. Se corrigió el parámetro
+SQL sin usar que impedía cerrar incluso una atención válida. La regresión usa
+PostgreSQL aislado y comprueba competencia entre agentes, aislamiento de proyecto,
+registro de actor y vuelta a IA en ambos canales. El módulo publicado conserva
+los indicadores de entrada/duplicado que ya usa el webhook desplegado.

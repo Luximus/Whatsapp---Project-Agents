@@ -4,6 +4,10 @@ export type InboxChannel = "whatsapp" | "messenger";
 export type InboxStatus = "ai_active" | "waiting_human" | "human_active" | "closed";
 
 export type InboxConversation = {
+  /** Límite exclusivo del historial: no duplicar el mensaje entrante actual. */
+  inboundMessageId?: string | null;
+  inboundInserted?: boolean;
+  firstInbound?: boolean;
   id: string;
   projectKey: string;
   channel: InboxChannel;
@@ -133,9 +137,9 @@ export async function recordInboxInbound(
        where id=$1 returning *`,
       [conversation.id]
     );
-    return mapConversation(updated.rows[0]);
+    return { ...mapConversation(updated.rows[0]), inboundMessageId: String(inserted.rows[0].id), inboundInserted: true, firstInbound: !conversation.lastInboundAt };
   }
-  return conversation;
+  return { ...conversation, inboundInserted: false, firstInbound: false };
 }
 
 export async function recordInboxOutbound(
@@ -314,11 +318,11 @@ export async function closeInboxConversation(
   const result = await fastify.pg.query(
     `update whatsapp_inbox_conversations set
        status='ai_active', assigned_user_id=null, assigned_email=null,
-       handoff_summary=case when $5='' then handoff_summary else $5 end,
+       handoff_summary=case when $4='' then handoff_summary else $4 end,
        unread_count=0, updated_at=now()
-     where id=$1 and project_key=$2 and (assigned_user_id=$3 or assigned_user_id is null)
+     where id=$1 and project_key=$2 and status='human_active' and assigned_user_id=$3
      returning *`,
-    [id, projectKey, actor.userId, actor.email, actor.summary ?? ""]
+    [id, projectKey, actor.userId, actor.summary ?? ""]
   );
   if (!result.rows[0]) return null;
   await fastify.pg.query(
