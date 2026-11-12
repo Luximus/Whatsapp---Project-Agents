@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const state = vi.hoisted(() => ({ erase: vi.fn(), labels: vi.fn(), list: vi.fn(), set: vi.fn(), lookup: vi.fn(), messages: vi.fn() }));
+const state = vi.hoisted(() => ({ erase: vi.fn(), labels: vi.fn(), list: vi.fn(), set: vi.fn(), lookup: vi.fn(), messages: vi.fn(), typing: vi.fn() }));
 vi.mock("../env.js", () => ({
   env: { bridgeProjects: { one: { apiKey: "test-one" }, two: { apiKey: "test-two" } } }
 }));
@@ -19,6 +19,7 @@ vi.mock("../lib/inboxManagement.js", async (importOriginal) => ({
   setInboxTags: state.set
 }));
 vi.mock("../lib/inbox.js",async(importOriginal)=>({...await importOriginal<typeof import('../lib/inbox.js')>(),getInboxConversation:state.lookup,listInboxMessages:state.messages}));
+vi.mock("../lib/inboxTyping.js",()=>({sendInboxTyping:state.typing}));
 import { inboxRoutes } from "./inbox.js";
 describe("inbox bridge authentication", () => {
   let app: FastifyInstance;
@@ -72,6 +73,19 @@ describe("inbox bridge authentication", () => {
       expect(state.erase).toHaveBeenCalledWith(expect.anything(), "one", id, { ...payload, mode });
     }
   );
+  it("authenticates typing, binds the project and hides other owners",async()=>{
+    state.typing.mockResolvedValue({sent:true});
+    const url=`/api/bridge/inbox/conversations/${id}/typing`;
+    const body={userId:'operator',email:'operator@example.test'};
+    expect((await app.inject({method:'POST',url,payload:body})).statusCode).toBe(401);
+    expect(state.typing).not.toHaveBeenCalled();
+    expect((await app.inject({method:'POST',url,headers,payload:body})).statusCode).toBe(200);
+    expect(state.typing).toHaveBeenCalledWith(expect.anything(),'one',id,'operator');
+    expect((await app.inject({method:'POST',url,headers,payload:{...body,text:'never send drafts'}})).statusCode).toBe(400);
+    state.typing.mockClear();state.lookup.mockResolvedValue({id,assignedUserId:'A'});
+    expect((await app.inject({method:'POST',url,headers:{...headers,'x-inbox-viewer-id':'B'},payload:body})).statusCode).toBe(404);
+    expect(state.typing).not.toHaveBeenCalled();
+  });
   it("rejects mismatched credentials for another project", async () => {
     const response = await app.inject({
       method: "POST",

@@ -23,3 +23,16 @@ protegida por autenticación de proyecto, limita a chats sin asignar o propios.
 Se aplica antes de LIMIT y a historial/acciones/etiquetas. Sin cabecera se conserva
 el acceso administrativo del consumidor de confianza. No se acepta identidad de
 consulta para eludir el filtro. Al liberar, el chat vuelve a estar disponible.
+
+POST /api/bridge/inbox/conversations/:id/typing usa el actor autenticado por la
+plataforma y exige estado human_active con el mismo responsable. Bloquea la fila
+mientras envía presencia para serializarla con el cierre/cambio de propiedad.
+Solo WhatsApp, con un ID entrante de proveedor de las últimas 24 horas; nunca
+acepta un destinatario o ID externo desde el navegador. La metadata humanTypingAt
+limita señales exitosas a una por 25 segundos, también entre pestañas. Un fallo
+revierte la reserva y conserva las etiquetas. Usa el adaptador existente
+sendWhatsappTypingIndicator: confirma lectura y activa typing_indicator=text.
+No crea mensajes ni modifica propiedad/historial. Sin mensaje entrante reciente
+o en Messenger devuelve sent=false. No se transmite el texto del borrador.
+
+Contrato oficial: https://www.postman.com/meta/whatsapp-business-platform/request/lhf0duq/send-typing-indicator-and-read-receipt

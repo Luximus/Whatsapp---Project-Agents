@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
@@ -14,6 +14,10 @@ import {
   listManagedInbox,
   setInboxTags
 } from "./inboxManagement.js";
+
+const presence = vi.hoisted(() => ({ send: vi.fn() }));
+vi.mock("./whatsapp.js", () => ({ sendWhatsappTypingIndicator: presence.send }));
+import { sendInboxTyping } from "./inboxTyping.js";
 
 const bin = "/usr/lib/postgresql/17/bin";
 describe.skipIf(!existsSync(`${bin}/initdb`))("inbox management on isolated PostgreSQL", () => {
@@ -98,6 +102,40 @@ describe.skipIf(!existsSync(`${bin}/initdb`))("inbox management on isolated Post
         [project, channel === "whatsapp" ? "123" : "messenger:123"]
       );
     }
+  });
+  it("sends typing only for the current owner and throttles concurrent tabs", async () => {
+    presence.send.mockReset().mockResolvedValue({ success: true });
+    await pool.query("update whatsapp_inbox_conversations set status='human_active', assigned_user_id='agent-A' where id=$1", [own]);
+    await pool.query("update whatsapp_inbox_messages set external_message_id='wamid.own' where conversation_id=$1", [own]);
+    const results = await Promise.all([sendInboxTyping(host, 'one', own, 'agent-A'), sendInboxTyping(host, 'one', own, 'agent-A')]);
+    expect(results.filter(result => result.sent)).toHaveLength(1);
+    expect(presence.send).toHaveBeenCalledExactlyOnceWith('wamid.own');
+    expect(results).toContainEqual({ sent: false, reason: 'throttled' });
+    const metadata=(await pool.query('select metadata from whatsapp_inbox_conversations where id=$1', [own])).rows[0].metadata;
+    expect(metadata.tags).toEqual(['Ventas']);
+    expect(metadata.humanTypingAt).toBeTruthy();
+    await expect(sendInboxTyping(host, 'one', own, 'agent-B')).rejects.toMatchObject({statusCode:409});
+    await expect(sendInboxTyping(host, 'two', own, 'agent-A')).rejects.toMatchObject({statusCode:404});
+    await pool.query("update whatsapp_inbox_conversations set status='ai_active', assigned_user_id=null where id=$1", [own]);
+    await expect(sendInboxTyping(host, 'one', own, 'agent-A')).rejects.toMatchObject({statusCode:409});
+    expect(presence.send).toHaveBeenCalledTimes(1);
+  });
+  it("skips unsupported channels and chats without a recent inbound provider ID", async () => {
+    presence.send.mockReset();
+    await pool.query("update whatsapp_inbox_conversations set status='human_active', assigned_user_id='agent-A' where id=any($1::uuid[])", [[own,otherChannel]]);
+    expect(await sendInboxTyping(host,'one',otherChannel,'agent-A')).toEqual({sent:false,reason:'unsupported_channel'});
+    expect(await sendInboxTyping(host,'one',own,'agent-A')).toEqual({sent:false,reason:'no_recent_inbound_message'});
+    await pool.query("update whatsapp_inbox_messages set external_message_id='wamid.old', created_at=now()-interval '25 hours' where conversation_id=$1",[own]);
+    expect(await sendInboxTyping(host,'one',own,'agent-A')).toEqual({sent:false,reason:'no_recent_inbound_message'});
+    expect(presence.send).not.toHaveBeenCalled();
+  });
+  it("rolls back presence on provider failure so the next attempt can succeed",async()=>{
+    await pool.query("update whatsapp_inbox_conversations set status='human_active', assigned_user_id='agent-A' where id=$1",[own]);
+    await pool.query("update whatsapp_inbox_messages set external_message_id='wamid.retry' where conversation_id=$1",[own]);
+    presence.send.mockReset().mockRejectedValueOnce(new Error('provider failed')).mockResolvedValueOnce({success:true});
+    await expect(sendInboxTyping(host,'one',own,'agent-A')).rejects.toThrow('provider failed');
+    expect(await sendInboxTyping(host,'one',own,'agent-A')).toEqual({sent:true});
+    expect(presence.send).toHaveBeenCalledTimes(2);
   });
   it("clears archive and memory in the chosen project/channel while keeping chat and labels", async () => {
     expect(

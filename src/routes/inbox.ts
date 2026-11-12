@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { sendInboxTyping } from "../lib/inboxTyping.js";
 import { requireBridgeProjectAuth } from "../lib/bridge.js";
 import {
   claimInboxConversation,
@@ -129,6 +130,13 @@ export const inboxRoutes: FastifyPluginAsync = async (fastify) => {
     const row = await closeInboxConversation(fastify, auth.projectKey, id, input);
     if (!row) return reply.code(409).send({ ok: false, error: "conversation_not_owned" });
     return { ok: true, data: row };
+  });
+
+  fastify.post("/api/bridge/inbox/conversations/:id/typing", async (request) => {
+    const auth = requireBridgeProjectAuth(request);
+    const id = uuid.parse((request.params as { id: string }).id);
+    const input = actor.strict().parse(request.body);
+    return { ok: true, data: await sendInboxTyping(fastify, auth.projectKey, id, input.userId) };
   });
 
   fastify.post("/api/bridge/inbox/conversations/:id/messages", async (request, reply) => {
