@@ -1,69 +1,84 @@
-const API = String(process.env.LUXISOFT_PLATFORM_API_URL || "http://127.0.0.1:3200/api/v1").replace(/\/+$/, "");
+const cop = new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 });
+const usd = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const FALLBACK = {
-  positioning: "LuxiSoft permite crear o modificar un sitio o tienda con IA, publicarlo, vender y administrarlo desde una sola plataforma.",
-  features: ["sitio asistido por IA", "catálogo", "pagos en línea según plan", "WhatsApp con IA", "dominio propio según plan", "panel y estadísticas"],
-  plans: ["Free", "Plus", "Premium"]
-};
-
-const money = (cents) => new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(Number(cents || 0) / 100);
-
-async function json(path) {
-  const response = await fetch(`${API}${path}`, { headers: { accept: "application/json" }, signal: globalThis.AbortSignal.timeout(5000) });
-  if (!response.ok) throw new Error(`luxisoft_catalog_http_${response.status}`);
-  return response.json();
+// El catálogo y su caché conservan centavos. La IA solo ve pesos/dólares ya
+// convertidos y su representación: nunca debe hacer esta aritmética.
+export function normalizeCatalogMoneyForAgent(value) {
+  if (Array.isArray(value)) return value.map(normalizeCatalogMoneyForAgent);
+  if (!value || typeof value !== "object") return value;
+  const normalized = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key.endsWith("Cents")) {
+      if (typeof entry !== "number" || !Number.isSafeInteger(entry)) continue;
+      const currency = /UsdCents$/i.test(key) ? "USD" :
+        /CopCents$/i.test(key) || key === "monthlyEquivCents" ? "COP" : null;
+      if (!currency) continue;
+      const name = key === "monthlyEquivCents" ? "monthlyEquivCop" : key.slice(0, -5);
+      const amount = entry / 100;
+      normalized[name] = {
+        amount,
+        currency,
+        display: currency === "COP" ? `$${cop.format(amount)} COP` : `US$${usd.format(amount)}`
+      };
+      if (key === "includedCopCents") normalized.includedAiTokens = {
+        amount: entry / 10,
+        unit: "Tokens LuxiSoft",
+        display: `${cop.format(entry / 10)} Tokens`
+      };
+      continue;
+    }
+    normalized[key] = normalizeCatalogMoneyForAgent(entry);
+  }
+  return normalized;
 }
 
 export default {
   name: "getServiceCatalog",
-  description: "Consulta la oferta VIGENTE de LuxiSoft: planes y precios actuales, motores de negocio habilitados y funciones. Úsala antes de recomendar o cotizar; nunca memorices precios.",
+  description: "Consulta información comercial oficial de LUXISOFT o LUXIPANEL, con caché Redis de cinco minutos. Incluye recargas de Tokens LuxiSoft con precio y saldo acreditado. Recomienda según la necesidad e historial antes de citar un precio. Los paquetes de suscripción futuros solo se consultan con includePreview si la persona pregunta por ellos.",
   parameters: {
     type: "object",
     properties: {
-      area: { type: "string", enum: ["overview", "plans", "engines", "demos"], description: "Información que necesita la persona." },
-      planCode: { type: "string", enum: ["free", "plus", "premium"], description: "Plan específico si preguntó por uno." }
+      provider: { type: "string", enum: ["luxisoft", "luxipanel"], description: "Proveedor; por defecto luxisoft." },
+      area: { type: "string", enum: ["overview", "plans", "engines", "demos"], description: "Información solicitada." },
+      planCode: { type: "string", description: "Código de plan devuelto por el catálogo oficial; no inventar." },
+      includePreview: { type: "boolean", description: "Solo true si la persona pregunta expresamente por planes futuros o en vista previa. Nunca ofrecerlos como contratables cuando packageProgramActive=false." }
     },
     additionalProperties: false
   },
   async execute(args, context) {
-    const area = String(args?.area || "overview");
-    if (["voz", "navai"].includes(area.toLowerCase())) return "NAVAI: proyecto de agentes de voz en tiempo real de Luxisoft para asistentes, encuestas y evaluaciones.";
-    try {
-      if (area === "plans") {
-        const payload = await json("/billing/plans");
-        const plans = Array.isArray(payload?.plans) ? payload.plans : [];
-        const filtered = args?.planCode ? plans.filter((plan) => plan.code === args.planCode) : plans;
-        const lines = filtered.map((plan) => {
-          const periods = (plan.periods || []).map((period) => `${period.code}: ${money(period.priceCopCents)}${period.installments > 1 ? ` × ${period.installments} cuotas` : " pago único"}`).join("; ");
-          return `${String(plan.code).toUpperCase()}: ${plan.maxProducts == null ? "productos ilimitados" : `${plan.maxProducts} productos`}, ${plan.aiReplies} respuestas IA/mes, ${plan.siteChanges} cambios IA/mes${periods ? `. ${periods}` : ". Sin costo"}`;
-        });
-        context?.render?.([{ kind: "buttons", body: "¿Qué quieres hacer ahora?", options: [
-          { id: "START_TRIAL", title: "Probar 7 días" },
-          { id: "REQUEST_QUOTE", title: "Solicitar asesoría" },
-          { id: "VIEW_DEMOS", title: "Ver ejemplos" }
-        ] }]);
-        return lines.join("\n");
-      }
-      if (area === "engines") {
-        const payload = await json("/templates");
-        const templates = Array.isArray(payload?.data) ? payload.data : [];
-        const enabled = templates.filter((row) => row.enabled !== false);
-        const coming = templates.filter((row) => row.enabled === false);
-        context?.render?.([{ kind: "list", body: "Elige el tipo de proyecto que más se parece a tu negocio.", buttonLabel: "Ver opciones", sections: [{ title: "Disponibles", rows: enabled.slice(0, 10).map((row) => ({ id: `ENGINE:${row.key}`, title: row.name, description: row.description })) }] }]);
-        return `Disponibles hoy:\n${enabled.map((row) => `- ${row.name}: ${row.description}. ${Array.isArray(row.features) ? row.features.join(", ") : ""}`).join("\n")}\n\nPróximamente (no ofrecer como activos):\n${coming.map((row) => `- ${row.name}`).join("\n")}`;
-      }
-      if (area === "demos") {
-        context?.render?.([{ kind: "link", body: "Explora ejemplos reales creados con LuxiSoft.", label: "Ver proyectos", url: "https://luxisoft.com/es#proyectos" }]);
-        return "Ejemplos publicados: Eje Veleño, VitaSana, UFIT Mercado Saludable, LuxiGames, LUXIPANEL y NAVAI. Usa el enlace oficial para ver la selección vigente.";
-      }
-      context?.render?.([{ kind: "buttons", body: "Puedo orientarte según tu objetivo.", options: [
-        { id: "CATALOG:ENGINES", title: "Crear mi sitio" },
-        { id: "CATALOG:PLANS", title: "Planes y precios" },
-        { id: "HUMAN_HELP", title: "Hablar con alguien" }
-      ] }]);
-      return `${FALLBACK.positioning}\nIncluye: ${FALLBACK.features.join(", ")}. Planes: ${FALLBACK.plans.join(", ")}. La prueba completa dura 7 días y no requiere tarjeta.`;
-    } catch {
-      return `${FALLBACK.positioning} Incluye ${FALLBACK.features.join(", ")}. No pude consultar el catálogo en vivo; no des precios y ofrece reintentar o transferir a una persona.`;
+    const provider = args?.provider ?? "luxisoft";
+    const area = args?.area ?? "overview";
+    if (["voz", "navai"].includes(area)) return "NAVAI: proyecto de agentes de voz de LuxiSoft. Implementaciones a medida sujetas a cotización; consultar disponibilidad.";
+    if (!["luxisoft", "luxipanel"].includes(provider) || !["overview", "plans", "engines", "demos"].includes(area)) return "error: invalid_catalog_request";
+    if (area === "demos") return JSON.stringify({ provider, url: provider === "luxisoft" ? "https://luxisoft.com/es#proyectos" : "https://luxipanel.com", note: "Consultar la selección pública vigente, no afirmar que un proyecto está disponible para contratar sin confirmación." });
+    if (provider === "luxipanel" && area === "engines") return "LUXIPANEL: gestión de servidores Linux, WHM/hosting y orientación sobre desarrollo/monetización de software. Consultar disponibilidad específica; no prometer empleos ni ingresos.";
+    if (!context?.actions?.getCommercialCatalog) return "catalog_unavailable: no hay conexión al catálogo oficial. No citar precios ni límites; ofrecer reintentar o asesoría.";
+    const result = await context.actions.getCommercialCatalog({ provider, area: area === "engines" ? "engines" : "plans" });
+    if (result.status !== "ok" || !result.catalog) return "catalog_unavailable: no se pudo comprobar el catálogo vigente. No usar precios recordados ni interpretar el fallo como servicio gratuito.";
+    const catalog = result.catalog;
+    if (!Number.isFinite(catalog.expiresAt) || catalog.expiresAt <= Date.now()) return 'catalog_unavailable: el catálogo expiró; vuelve a consultar, sin reutilizar precios o capacidades.';
+    const data = normalizeCatalogMoneyForAgent(catalog.data);
+    if (args?.planCode && Array.isArray(data.plans)) data.plans = data.plans.filter(plan => plan.code === args.planCode);
+    const requestedPlanAvailable = !args?.planCode || (Array.isArray(data.plans) && data.plans.length > 0);
+    if (!requestedPlanAvailable && args?.planCode && Array.isArray(data.previewPackages)) {
+      const requestedPreview=data.previewPackages.find(plan=>plan.code===args.planCode);
+      if(requestedPreview)data.requestedProfile={code:requestedPreview.code,customerRole:requestedPreview.customerRole??null,purchasable:false,status:'preview'};
     }
+    if (args?.includePreview === true && Array.isArray(data.previewPackages)) {
+      if (args?.planCode) data.previewPackages = data.previewPackages.filter(plan => plan.code === args.planCode);
+    } else delete data.previewPackages;
+    return JSON.stringify({
+      ...catalog, data, requestedPlanAvailable,
+      instructions: [
+        "Responder en el idioma de la persona. Los importes ya están convertidos: copiar display, no multiplicar ni dividir. priceCop es el importe por cuota/pago y totalCop el total; months e installments definen periodicidad y número de pagos.",
+        "planFamily=packages identifica un programa activo; planFamily=legacy corresponde a las suscripciones actuales cuando packageProgramActive=false. previewPackages son solo información futura: no ofrecerlos como vigentes ni mezclar sus precios, límites o saldo con las suscripciones actuales.",
+        "Recomendar primero un plan acorde con la necesidad e historial. Explicar 2–4 servicios o funciones confirmadas para el caso y su utilidad, además de almacenamiento, soporte y facilidad. Si services no existe, no inventar funciones a partir de un código opaco de features.",
+        "Citar UNA modalidad pertinente con importe por pago, número de pagos y total; comparar alternativas solo si lo pide sin añadir preguntas ni invitaciones de seguimiento. Describir customerRole.description y customerRole.benefits para explicar los accesos reales del perfil; respetar sus accesos verificados. Luna/Terra/Sol y sus topes de razonamiento provienen de customerRole.policy.models. No suponer que todos los planes tienen las mismas funciones ni inferir modelos por almacenamiento. Los perfiles comerciales no conceden cargos de soporte, moderación o administración de Luxisoft.",
+        "Free usa tokenAllowance o freeAllowance para informar los Tokens mensuales verificados: vencen al final del mes calendario de Colombia, sin acumular; una asignación por identidad verificada. Free permite imágenes nativas y vídeo con IA nativa cuando customerRole.nativeVideo=true. No decir que solo ofrece vídeos de ejemplo. Una recarga aumenta saldo y no desbloquea modelos, voz o integraciones fuera del perfil. Si falta customerRole no inventar sus accesos.",
+        "Solo con planFamily=packages activo, balance.includedCop e includedAiTokens son el mismo saldo IA mensual expresado en COP y Tokens LuxiSoft (1 COP = 10 Tokens), no tokens técnicos del modelo. ai.includedCredits es otra unidad de uso. Citar el precio total y el saldo por separado; el saldo no rebaja la cuota.",
+        "tokenPackages contiene recargas opcionales para compra única si oneTimeAvailable=true. priceCop es lo que paga la persona, tokens es el saldo LuxiSoft acreditado y balanceCop es su equivalente en COP; no son iguales al precio bruto. La API indica que el precio incluye IVA y que comisión de pago y reserva cambiaria se descuentan antes de acreditar saldo. El complemento mensual solo existe si monthlyAddonProgramActive=true y exige plan pago; no ofrecerlo si está inactivo. No atribuir estos Tokens a una suscripción legacy ni presentar el costo real de IA como tarifa fija: aiUsagePricing depende del proveedor, modelo y TRM. No inventar ahorro, ventas o resultados.",
+        "Los planes son suscripciones de plataforma, no la tarifa de integrar únicamente un agente WhatsApp en una web existente. Una lista vacía no significa gratuidad. No convertir campos ausentes en cero ni reutilizar precios previos a fetchedAt."
+      ].join(" ")
+    });
   }
 };

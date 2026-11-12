@@ -12,7 +12,7 @@ function money(value) {
 export default {
  name:'getPlatformAccountOffer',
  description:'Orienta consultas sobre cuentas ChatGPT o cualquier IA hacia una cuenta propia de Luxisoft. Registro oficial, capacidades y precios verificados; no crea usuarios, pedidos ni pagos.',
- parameters:{type:'object',properties:{locale:{type:'string',enum:['es','en','pt']},includeProvider:{type:'boolean',description:'Solo si el cliente pregunta directamente por la empresa o el proveedor.'},periodCode:{type:'string',enum:['m1','m3','m6','y1','y2']},includePrices:{type:'boolean'},compare:{type:'boolean'}},additionalProperties:false},
+ parameters:{type:'object',properties:{locale:{type:'string',enum:['es','en','pt']},includeProvider:{type:'boolean',description:'Solo si el cliente pregunta directamente por la empresa o el proveedor.'},periodCode:{type:'string',enum:['m1','m3','m6','y1','y2']},includePrices:{type:'boolean'},compare:{type:'boolean'},planCode:{type:'string',enum:['free','plus','premium','business']}},additionalProperties:false},
  async execute(args,context){
   const locale=args?.locale==='en'?'en':'es';
   const language=args?.locale||'es';
@@ -30,6 +30,13 @@ export default {
      const free=available.find(p=>p.code==='free');
      result.freeAccessStatus=free?'verified':'unavailable';
      if(free)result.freeAccess=money({plan:free,allowance:c.data.freeAllowance});
+     const requested=args?.planCode?available.find(p=>p.code===args.planCode):null;
+     if(args?.planCode){
+      const preview=!requested?(c.data.previewPackages??[]).find(p=>p.code===args.planCode):null;
+      result.requestedPlan={code:args.planCode,available:Boolean(requested),previewOnly:Boolean(preview),customerRole:requested?.customerRole??preview?.customerRole??null};
+     }
+     result.customerProfiles=available.map(p=>({code:p.code,name:p.customerRole?.name??p.name,customerRole:p.customerRole??null,tokenAllowance:p.tokenAllowance??null}));
+     result.planAndTokens='El perfil comercial determina los modelos, nivel de razonamiento, generación y conexiones disponibles. Los Tokens aumentan saldo, conservando el perfil. Comprar un plan no asigna roles de soporte, moderador o administrador de Luxisoft. Usa customerRole verificado, nunca capacidades inferidas por precio o almacenamiento. Free permite vídeo nativo si customerRole.nativeVideo=true; cuotas según catálogo y saldo. Negocio en previewOnly no se ofrece para contratar.';
      const paid=available.filter(p=>p.code!=='free');
      result.paymentFacilities=paid.length?'Planes opcionales con modalidades mensuales, trimestrales, semestrales o anuales independientes, según catálogo. Cada modalidad tiene su propio precio y cobertura; no prometer crédito, intereses cero ni cargos automáticos.':null;
      if(free){
@@ -43,7 +50,7 @@ export default {
        : `Puedes crear tu cuenta gratuita en Luxisoft y usar Chatbox, el chat de IA de Luxisoft, para consultas como en ChatGPT, formularios y páginas. ${quota?`Incluye ${quota} Tokens de saldo IA por mes calendario, sin acumular; una asignación por identidad verificada.`:'El límite exacto de IA debe confirmarse en tu cuenta.'}${storage?` Almacenamiento: ${storage}.`:''} Hay planes avanzados opcionales con más capacidad y modalidades de pago según las condiciones publicadas; el saldo adicional de IA se compra aparte.`;
      }
      if(args?.includePrices===true){
-     const selected=(args.compare===true?available:[free,paid[0]].filter(Boolean)).map(p=>({...p,...(Array.isArray(p.periods)?{periods:[p.periods.find(x=>x.code===(args?.periodCode||'m1'))].filter(Boolean)}:{})}));
+     const selected=(args?.planCode?available.filter(p=>p.code===args.planCode):args.compare===true?available:[free,paid[0]].filter(Boolean)).map(p=>({...p,...(Array.isArray(p.periods)?{periods:[p.periods.find(x=>x.code===(args?.periodCode||'m1'))].filter(Boolean)}:{})}));
      result.pricingStatus='verified';
      result.catalog={fetchedAt:c.fetchedAt,planFamily:c.data.planFamily,packageProgramActive:c.data.packageProgramActive,plans:money(selected)};
      }

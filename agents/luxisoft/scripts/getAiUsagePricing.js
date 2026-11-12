@@ -15,12 +15,14 @@ export default {
         Number.isSafeInteger(p.priceCopCents) && p.priceCopCents > 0 &&
         Number.isSafeInteger(p.tokens) && p.tokens > 0 &&
         Number.isSafeInteger(p.balanceCopCents) && p.balanceCopCents > 0)
-        .map(p => ({ priceCop: p.priceCopCents / 100, creditedUnits: p.tokens,
+        .map(p => ({ priceCop: p.priceCopCents / 100, creditedUnits: p.tokens, creditedTokens: p.tokens, unit: "Tokens de saldo",
           creditedBalanceCop: p.balanceCopCents / 100 }));
       if (!recargas.length || !data?.aiUsagePricing) return JSON.stringify({ status: "pricing_unavailable" });
       return JSON.stringify({ status: "ok", fetchedAt: snapshot.fetchedAt,
         currency: "COP", fixedPricePerMessage: null,
         consumptionBasis: "Costo real según modelo, contexto, longitud y modalidad. Las unidades de saldo no son tokens técnicos del modelo. Sin equivalencia garantizada a mensajes.",
+        freeAllowance: data.freeAllowance ? {tokens:data.freeAllowance.tokens,renewal:data.freeAllowance.renewal,rollover:data.freeAllowance.rollover,perVerifiedIdentity:data.freeAllowance.perVerifiedIdentity}:null,
+        planAccess: 'Recargar Tokens conserva el perfil comercial: los modelos, razonamiento, voz y conexiones dependen del plan, aunque haya saldo. El saldo no equivale a un número fijo de mensajes.',
         recargas,
         conditions: "El precio de compra y el saldo acreditado son distintos: el precio incluye impuestos y se descuentan costos de pago y reserva cambiaria antes de acreditar. Compra opcional; no activa cobros automáticos." });
     } catch {
