@@ -61,7 +61,9 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
       purchase ||
       (yes && /cotizacion|agend|demo|meeting|quote|valid.{0,40}equipo|confirm.{0,40}condicion|consult.{0,40}equipo/.test(last)));
   const exploring = !usageInquiry && !acceptedInformation && !/paquetes|packages|como contratar|how to sign up/.test(s) && !price && !details && !purchase && !/incluy|inclu|benefici|benefit|entrega|deliver|cuando|when|prazo|plazo|renov|vigencia|hosting|tokens?|videos?|voz|voice|soporte|support|no puedo|cannot/.test(s);
+  const namedPlans = [...new Set((s.match(/\b(?:free|plus|premium|negocio|business)\b/g) ?? []).map(code=>code==='negocio'?'business':code))];
   return {
+    requestedPlanCode: !/chat\s*gpt/.test(s) && namedPlans.length===1 ? namedPlans[0] as 'free'|'plus'|'premium'|'business' : undefined,
     periodCode:/\b(anual|annual|yearly|ano|año)\b/.test(s)?'y1':/trimestral|quarterly/.test(s)?'m3':/semestral|six months/.test(s)?'m6':'m1',
     providerInquiry: asksAboutProvider(raw),
     specificPlan: /\b(?:free|plus|premium|negocio|business)\b/.test(s) && !/chat\s*gpt/.test(s),

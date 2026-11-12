@@ -51,3 +51,9 @@ it('a platform plan purchase cannot create a custom website order',()=>{
  expect(advisorToolAllowed('websitePageSales',{action:'start'},p)).toBe(false);
  expect(advisorToolAllowed('captureCommercialLead',{},p)).toBe(false);
 });
+it('scopes a concrete plan quote without reducing requested comparisons to one plan',()=>{
+ expect(advisorPolicy('Quiero comprar el plan Negocio, ¿cuánto cuesta?').requestedPlanCode).toBe('business');
+ expect(advisorPolicy('¿Cuánto cuesta Premium?').requestedPlanCode).toBe('premium');
+ expect(advisorPolicy('Compara Plus y Premium').requestedPlanCode).toBeUndefined();
+ expect(advisorPolicy('¿Cuánto cuesta ChatGPT Plus?').requestedPlanCode).toBeUndefined();
+});
