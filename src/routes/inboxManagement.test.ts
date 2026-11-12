@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const state = vi.hoisted(() => ({ erase: vi.fn(), labels: vi.fn(), list: vi.fn(), set: vi.fn() }));
+const state = vi.hoisted(() => ({ erase: vi.fn(), labels: vi.fn(), list: vi.fn(), set: vi.fn(), lookup: vi.fn(), messages: vi.fn() }));
 vi.mock("../env.js", () => ({
   env: { bridgeProjects: { one: { apiKey: "test-one" }, two: { apiKey: "test-two" } } }
 }));
@@ -18,6 +18,7 @@ vi.mock("../lib/inboxManagement.js", async (importOriginal) => ({
   listManagedInbox: state.list,
   setInboxTags: state.set
 }));
+vi.mock("../lib/inbox.js",async(importOriginal)=>({...await importOriginal<typeof import('../lib/inbox.js')>(),getInboxConversation:state.lookup,listInboxMessages:state.messages}));
 import { inboxRoutes } from "./inbox.js";
 describe("inbox bridge authentication", () => {
   let app: FastifyInstance;
@@ -133,6 +134,16 @@ describe("inbox bridge authentication", () => {
       payload: { ...payload, tags: [" Ventas ", "Ventas"] }
     });
     expect(response.statusCode).toBe(404);
-    expect(state.set).toHaveBeenCalledWith(expect.anything(), "one", id, ["Ventas"]);
+    expect(state.set).toHaveBeenCalledWith(expect.anything(), "one", id, ["Ventas"], undefined);
   });
+  it('hides assigned histories and actions from other viewers even with forged query identity',async()=>{
+    state.lookup.mockResolvedValue({id,assignedUserId:'A'});state.messages.mockResolvedValue([]);
+    const url=`/api/bridge/inbox/conversations/${id}`;
+    expect((await app.inject({url:url+'?viewerUserId=A',headers:{...headers,'x-inbox-viewer-id':'B'}})).statusCode).toBe(404);
+    expect(state.messages).not.toHaveBeenCalled();
+    expect((await app.inject({method:'PATCH',url:url+'/tags',headers:{...headers,'x-inbox-viewer-id':'B'},payload:{...payload,tags:['X']}})).statusCode).toBe(404);
+    expect((await app.inject({url,headers:{...headers,'x-inbox-viewer-id':'A'}})).statusCode).toBe(200);
+    expect((await app.inject({url,headers})).statusCode).toBe(200);
+  });
+
 });

@@ -23,7 +23,7 @@ export const inboxListSchema = z.object({
 export async function listManagedInbox(
   fastify: FastifyInstance,
   projectKey: string,
-  input: z.infer<typeof inboxListSchema>
+  input: z.infer<typeof inboxListSchema> & { viewerUserId?: string }
 ) {
   const values: unknown[] = [projectKey];
   const where = ["project_key=$1"];
@@ -32,6 +32,10 @@ export async function listManagedInbox(
       values.push(input[field]);
       where.push(`${field}=$${values.length}`);
     }
+  }
+  if (input.viewerUserId) {
+    values.push(input.viewerUserId);
+    where.push(`(assigned_user_id is null or assigned_user_id=$${values.length})`);
   }
   if (input.search) {
     values.push(input.search);
@@ -61,13 +65,14 @@ export async function listManagedInbox(
 
 export async function listInboxTags(
   fastify: FastifyInstance,
-  projectKey: string
+  projectKey: string,
+  viewerUserId?: string
 ): Promise<string[]> {
   const result = await fastify.pg.query(
     `select distinct tag from whatsapp_inbox_conversations c,
     lateral jsonb_array_elements_text(case when jsonb_typeof(c.metadata->'tags')='array' then c.metadata->'tags' else '[]'::jsonb end) tag
-    where c.project_key=$1 order by tag limit 500`,
-    [projectKey]
+    where c.project_key=$1 and ($2::text is null or c.assigned_user_id is null or c.assigned_user_id=$2) order by tag limit 500`,
+    [projectKey, viewerUserId ?? null]
   );
   return result.rows.map((row) => String(row.tag));
 }
@@ -76,13 +81,14 @@ export async function setInboxTags(
   fastify: FastifyInstance,
   projectKey: string,
   id: string,
-  tags: string[]
+  tags: string[],
+  viewerUserId?: string
 ) {
   const result = await fastify.pg.query(
     `update whatsapp_inbox_conversations
     set metadata=jsonb_set(metadata,'{tags}',$3::jsonb),updated_at=now()
-    where id=$1 and project_key=$2 returning id`,
-    [id, projectKey, JSON.stringify(tags)]
+    where id=$1 and project_key=$2 and ($4::text is null or assigned_user_id is null or assigned_user_id=$4) returning id`,
+    [id, projectKey, JSON.stringify(tags), viewerUserId ?? null]
   );
   return Boolean(result.rows[0]);
 }

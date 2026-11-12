@@ -17,3 +17,9 @@ SQL sin usar que impedía cerrar incluso una atención válida. La regresión us
 PostgreSQL aislado y comprueba competencia entre agentes, aislamiento de proyecto,
 registro de actor y vuelta a IA en ambos canales. El módulo publicado conserva
 los indicadores de entrada/duplicado que ya usa el webhook desplegado.
+
+La cabecera interna x-inbox-viewer-id, fijada por Luxisoft desde la sesión y
+protegida por autenticación de proyecto, limita a chats sin asignar o propios.
+Se aplica antes de LIMIT y a historial/acciones/etiquetas. Sin cabecera se conserva
+el acceso administrativo del consumidor de confianza. No se acepta identidad de
+consulta para eludir el filtro. Al liberar, el chat vuelve a estar disponible.

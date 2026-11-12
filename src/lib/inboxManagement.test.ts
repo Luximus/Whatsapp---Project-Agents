@@ -213,6 +213,15 @@ describe.skipIf(!existsSync(`${bin}/initdb`))("inbox management on isolated Post
     expect(await listManagedInbox(host, "one", inboxListSchema.parse({ search: "%" }))).toEqual([]);
     expect(await setInboxTags(host, "two", own, ["Intruso"])).toBe(false);
   });
+  it('filters assignments before limit and hides private labels until release',async()=>{
+    await pool.query("update whatsapp_inbox_conversations set assigned_user_id='agent-A',status='human_active',metadata='{\"tags\":[\"private-A\"]}' where id=$1",[own]);
+    const b=await listManagedInbox(host,'one',{limit:200,viewerUserId:'agent-B'});
+    expect(b.some(row=>row.id===own)).toBe(false);
+    expect((await listManagedInbox(host,'one',{limit:200,viewerUserId:'agent-A'})).some(row=>row.id===own)).toBe(true);
+    expect(await listInboxTags(host,'one','agent-B')).not.toContain('private-A');
+    await pool.query('update whatsapp_inbox_conversations set assigned_user_id=null,status=\'ai_active\' where id=$1',[own]);
+    expect((await listManagedInbox(host,'one',{limit:200,viewerUserId:'agent-B'})).some(row=>row.id===own)).toBe(true);
+  });
 });
 
 describe("inbox input bounds", () => {
@@ -223,4 +232,6 @@ describe("inbox input bounds", () => {
     expect(inboxTagsSchema.safeParse(Array(11).fill("a")).success).toBe(false);
     expect(inboxListSchema.safeParse({ limit: 201 }).success).toBe(false);
   });
+
+
 });

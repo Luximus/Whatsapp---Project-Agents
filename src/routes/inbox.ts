@@ -24,7 +24,18 @@ function externalMessageId(payload: any): string | null {
   return String(payload?.messages?.[0]?.id ?? payload?.messageId ?? "").trim() || null;
 }
 
+const viewerFor = (request: { headers: Record<string, unknown> }) => z.string().min(1).max(200).optional().parse(request.headers['x-inbox-viewer-id']);
+
 export const inboxRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.addHook('preHandler', async (request, reply) => {
+    const viewer = viewerFor(request);
+    if (!viewer) return;
+    const auth = requireBridgeProjectAuth(request);
+    const id = ((request.params ?? {}) as { id?: string }).id;
+    if (!id) return;
+    const row = await getInboxConversation(fastify, auth.projectKey, uuid.parse(id));
+    if (!row || (row.assignedUserId && row.assignedUserId !== viewer)) return reply.code(404).send({ ok:false, error:'conversation_not_found' });
+  });
   fastify.post("/api/bridge/inbox/campaigns/send", async (request, reply) => {
     const auth = requireBridgeProjectAuth(request);
     const input = z.object({
@@ -48,18 +59,18 @@ export const inboxRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/api/bridge/inbox/conversations", async (request) => {
     const auth = requireBridgeProjectAuth(request);
     const query = inboxListSchema.parse(request.query ?? {});
-    return { ok: true, data: await listManagedInbox(fastify, auth.projectKey, query) };
+    return { ok: true, data: await listManagedInbox(fastify, auth.projectKey, { ...query, viewerUserId: viewerFor(request) }) };
   });
 
   fastify.get("/api/bridge/inbox/tags", async (request) => {
     const auth = requireBridgeProjectAuth(request);
-    return { ok: true, data: await listInboxTags(fastify, auth.projectKey) };
+    return { ok: true, data: await listInboxTags(fastify, auth.projectKey, viewerFor(request)) };
   });
   fastify.patch("/api/bridge/inbox/conversations/:id/tags", async (request, reply) => {
     const auth = requireBridgeProjectAuth(request);
     const id = uuid.parse((request.params as { id: string }).id);
     const input = actor.extend({ tags: inboxTagsSchema }).parse(request.body);
-    if (!await setInboxTags(fastify, auth.projectKey, id, input.tags)) return reply.code(404).send({ ok: false, error: "conversation_not_found" });
+    if (!await setInboxTags(fastify, auth.projectKey, id, input.tags, viewerFor(request))) return reply.code(404).send({ ok: false, error: "conversation_not_found" });
     return { ok: true, data: { id, tags: input.tags } };
   });
   for (const mode of ["clear", "delete"] as const) {
