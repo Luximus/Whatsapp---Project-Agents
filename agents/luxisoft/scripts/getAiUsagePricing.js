@@ -21,7 +21,8 @@ export default {
       return JSON.stringify({ status: "ok", fetchedAt: snapshot.fetchedAt,
         currency: "COP", fixedPricePerMessage: null,
         consumptionBasis: "Costo real según modelo, contexto, longitud y modalidad. Las unidades de saldo no son tokens técnicos del modelo. Sin equivalencia garantizada a mensajes.",
-        freeAllowance: data.freeAllowance ? {tokens:data.freeAllowance.tokens,renewal:data.freeAllowance.renewal,rollover:data.freeAllowance.rollover,perVerifiedIdentity:data.freeAllowance.perVerifiedIdentity}:null,
+        weeklyPlans:(data.plans??[]).map(p=>({code:p.code,aiUsage:p.aiUsage??p.customerRole?.aiUsage??null})),
+        fundingOrder:'Primero el cupo semanal del plan y después los Tokens comprados disponibles, automáticamente; sin compras ni cobros nuevos. No se acumula uso semanal. Las recargas conservan su saldo y sus condiciones.',
         planAccess: 'Recargar Tokens conserva el perfil comercial: los modelos, razonamiento, voz y conexiones dependen del plan, aunque haya saldo. El saldo no equivale a un número fijo de mensajes.',
         recargas,
         conditions: "El precio de compra y el saldo acreditado son distintos: el precio incluye impuestos y se descuentan costos de pago y reserva cambiaria antes de acreditar. Compra opcional; no activa cobros automáticos." });
