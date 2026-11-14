@@ -48,6 +48,7 @@ export default {
      }
      if(args?.includePrices===true){
      const selected=(args?.planCode?available.filter(p=>p.code===args.planCode):args.compare===true?available:[free,paid[0]].filter(Boolean)).map(p=>({...p,...(Array.isArray(p.periods)?{periods:[p.periods.find(x=>x.code===(args?.periodCode||'m1'))].filter(Boolean)}:{})}));
+     if(selected.some(p=>p.code!=='free'&&p.pricingStatus==='pending'))return JSON.stringify({...result,pricingStatus:'pending_daily_update'});
      result.pricingStatus='verified';
      result.catalog={fetchedAt:c.fetchedAt,planFamily:c.data.planFamily,packageProgramActive:c.data.packageProgramActive,plans:money(selected)};
      }
