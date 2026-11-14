@@ -11,21 +11,19 @@ export default {
         return JSON.stringify({ status: "pricing_unavailable" });
       }
       const data = snapshot.data;
-      const recargas = (data?.tokenPackages ?? []).filter(p => p.oneTimeAvailable === true &&
-        Number.isSafeInteger(p.priceCopCents) && p.priceCopCents > 0 &&
-        Number.isSafeInteger(p.tokens) && p.tokens > 0 &&
-        Number.isSafeInteger(p.balanceCopCents) && p.balanceCopCents > 0)
-        .map(p => ({ priceCop: p.priceCopCents / 100, creditedUnits: p.tokens, creditedTokens: p.tokens, unit: "Tokens de saldo",
-          creditedBalanceCop: p.balanceCopCents / 100 }));
-      if (!recargas.length || !data?.aiUsagePricing) return JSON.stringify({ status: "pricing_unavailable" });
+      const recharge = data?.aiUsagePricing?.tokenRecharge;
+      if (!recharge || !Number.isSafeInteger(recharge.minTokens) || recharge.minTokens<70000 || !Number.isSafeInteger(recharge.minimumPriceCopCents)) return JSON.stringify({status:'pricing_unavailable'});
       return JSON.stringify({ status: "ok", fetchedAt: snapshot.fetchedAt,
         currency: "COP", fixedPricePerMessage: null,
         consumptionBasis: "Costo real según modelo, contexto, longitud y modalidad. Las unidades de saldo no son tokens técnicos del modelo. Sin equivalencia garantizada a mensajes.",
         weeklyPlans:(data.plans??[]).map(p=>({code:p.code,aiUsage:p.aiUsage??p.customerRole?.aiUsage??null})),
         fundingOrder:'Primero el cupo semanal del plan y después los Tokens comprados disponibles, automáticamente; sin compras ni cobros nuevos. No se acumula uso semanal. Las recargas conservan su saldo y sus condiciones.',
         planAccess: 'Recargar Tokens conserva el perfil comercial: los modelos, razonamiento, voz y conexiones dependen del plan, aunque haya saldo. El saldo no equivale a un número fijo de mensajes.',
-        recargas,
-        conditions: "El precio de compra y el saldo acreditado son distintos: el precio incluye impuestos y se descuentan costos de pago y reserva cambiaria antes de acreditar. Compra opcional; no activa cobros automáticos." });
+        recarga: {minimumTokens:recharge.minTokens,minimumPriceCop:recharge.minimumPriceCopCents/100,
+          maximum:'Según el tope autorizado de Wompi para el comercio, validado al cotizar.',
+          selection:'Deslizador y cantidad exacta; precio confirmado antes del pago.',
+          pricingVersion:recharge.pricingVersion,expires:recharge.expires},
+        conditions: "El precio se calcula para la cantidad exacta elegida e incluye impuestos y costos de operación. Compra opcional; no activa cobros automáticos." });
     } catch {
       return JSON.stringify({ status: "pricing_unavailable" });
     }
