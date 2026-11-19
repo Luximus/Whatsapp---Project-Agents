@@ -407,4 +407,4 @@ Instalación sin migración: publicar y compilar en worktree limpio; instalar so
 runtime de historial duradero y menús que difieren de main. Verificar los hashes,
 el proceso y los canarios de historial antes del despliegue del frontend.
 
-Para el clon virtual, el asesor cotiza 1–24 meses, recibe datos y materiales en el chat y entrega el checkout de Wompi tras verificar la cuenta y el dominio. La elección de un plazo con intención de compra registra la oportunidad en la bandeja. La plantilla de uso interno es luxisoft_aviso_oportunidad_comercial y la de recibos fuera de ventana es profile_purchase_confirmation.
+Para el clon virtual, el asesor cotiza 1–24 meses, recibe datos y materiales en el chat y entrega el checkout de Wompi tras verificar la cuenta y el dominio. La elección de un plazo con intención de compra registra la oportunidad en la bandeja. La plantilla de uso interno es luxisoft_aviso_oportunidad_comercial y la de recibos fuera de ventana es luxisoft_recibo_pago_web.
