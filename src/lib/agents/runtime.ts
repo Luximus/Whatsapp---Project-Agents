@@ -1,3 +1,4 @@
+import { websitePackageSummary } from "../websitePackageSummary.js";
 import {onlyGreeting,cleanAdvisorBody,redundantAdvisorBody,advisorPrompt,informationInstructions,brandInstructions,unsolicitedProvider,providerNeutralFallback,asksAboutProvider,requestsQuestions,unsolicitedQuestion,informativeFallback} from "./advisorResponse.js";
 import {
   advisorPolicy,
@@ -105,7 +106,13 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         )
       : null;
   if (policy && options.firstContact !== undefined) policy.firstContact = options.firstContact;
+  const activePurchase = policy && context.actions?.websitePurchaseActive === true;
   const raw = options.originalUserMessage ?? userMessage.split(/\n\[|\n\n\[/)[0]!;
+  if (activePurchase) {
+    policy.details = true;
+    policy.price = true;
+    policy.exploring = false;
+  }
   if(policy && requestsQuestions(raw)){policy.details=true;policy.exploring=false;}
   if (policy && onlyGreeting(raw)) {
     if (await options.isSuperseded?.()) return {text:"",rich:[],newMessages:[],turns:0};
@@ -150,6 +157,32 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       baseMessages.push({role:"user",content:"[Contexto verificado para orientar a una cuenta de plataforma; no es la oferta de página a medida]\n"+facts});
     }
   }
+  // Package information is read-only. A request to buy must still take the order path.
+  const pageInquiry = /\bjmarin\.luxisoft\.com(?:[/?#\s]|$)|\bclon virtual\b/i.test(raw);
+  if (policy?.locale === "es" && pageInquiry && !policy.usageInquiry && !policy.purchase && !policy.followup &&
+      !/sin precios?|no (?:quiero|incluyas|menciones).{0,18}(?:precios?|costos?)/i.test(raw) &&
+      (policy.packagesInquiry || policy.price)) {
+    const catalog = toolsByName.get("websitePageSales");
+    if (catalog) {
+      const body = websitePackageSummary(await executeTool(catalog, '{"action":"catalog"}', toolContext), "es", Number(raw.match(/\b(\d{1,2})\s*mes(?:es)?\b/i)?.[1]) || undefined);
+      if (await options.isSuperseded?.()) return {text: "", rich: [], newMessages: [], turns: 0};
+      if (body) {
+        const text = advisorWelcome(body, policy, raw);
+        return {text, rich: [], newMessages: [{role: "assistant", content: text}], turns: 0};
+      }
+    }
+  }
+  const fallback = async (draft: string) => {
+    if (!policy) return draft;
+    const standard = advisorFallback(draft, policy);
+    if (policy.locale === "es" || !policy.packagesInquiry || policy.price || policy.purchase || policy.aiPlatformInterest ||
+        !/\bjmarin\.luxisoft\.com(?:[/?#\s]|$)/i.test(raw) ||
+        standard !== advisorFallback("", policy)) return standard;
+    const tool = toolsByName.get("websitePageSales");
+    if (!tool) return standard;
+    const result = await executeTool(tool, '{"action":"catalog"}', toolContext);
+    return websitePackageSummary(result, policy.locale) || standard;
+  };
   let turns = 0;
 
   const obsolete = async () => Boolean(await options.isSuperseded?.());
@@ -174,7 +207,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         const call=newMessages.flatMap(turn=>turn.toolCalls??[]).find(call=>call.id===m.toolCallId);
         return Boolean(call && ["connectServer","assistantSend","authenticate"].includes(call.name) && /^(?:auth_required:|elige_servidor:|error: (?:falta_codigo_2fa|codigo_2fa_incorrecto))/.test(m.content));
       }});
-      const questionsAllowed=requestsQuestions(raw)||requiredInput;
+      const questionsAllowed=requestsQuestions(raw)||requiredInput||Boolean(activePurchase)||Boolean(policy?.purchase);
       const draft=text;
       if ((informative && (unsolicitedQuestion(text,raw,questionsAllowed)||unsolicitedProvider(text,raw))) || (policy && (!text.trim() || advisorViolation(text, policy) || (!requestsQuestions(raw)&&redundantAdvisorBody(text,raw,options.history??[]))))) {
         try {
@@ -194,9 +227,9 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           });
           text = cleanAdvisorBody(corrected.text,raw);
         } catch {
-          text = policy ? advisorFallback(text, policy) : draft;
+          text = await fallback(draft);
         }
-        if (policy && (!text.trim() || advisorViolation(text, policy) || (!requestsQuestions(raw)&&redundantAdvisorBody(text,raw,options.history??[])))) text = advisorFallback("", policy);
+        if (policy && (!text.trim() || advisorViolation(text, policy) || (!requestsQuestions(raw)&&redundantAdvisorBody(text,raw,options.history??[])))) text = await fallback("");
         context.logger?.info?.("advisor_response_corrected");
       }
       if(informative && unsolicitedQuestion(text,raw,questionsAllowed)) text=informativeFallback(text,raw,questionsAllowed)||((!policy||!advisorViolation(draft,policy))?informativeFallback(draft,raw,questionsAllowed):'')||({es:'La información solicitada requiere verificación del equipo para responder con precisión.',en:'The requested information requires verification by the team for an accurate answer.',pt:'A informação solicitada requer verificação da equipe para uma resposta precisa.'}[policy?.locale as 'es'|'en'|'pt']??'La información solicitada requiere verificación del equipo para responder con precisión.');
@@ -220,7 +253,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       } catch {
         /* Invalid args are handled by the tool. */
       }
-      const allowed = !policy || advisorToolAllowed(call.name, args, policy);
+      const allowed = (activePurchase && call.name === "websitePageSales" && ["save","checkout"].includes(String(args.action))) || !policy || advisorToolAllowed(call.name, args, policy);
       let output = !allowed
         ? JSON.stringify({
             status: "needs_confirmation",
@@ -242,7 +275,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
 
   // Se agotaron los turnos sin respuesta final: devuelve el último texto.
   const lastAssistant = [...newMessages].reverse().find((m) => m.role === "assistant");
-  let text = policy ? advisorWelcome(advisorFallback("",policy),policy,raw) : lastAssistant?.content??"";
+  let text = policy ? advisorWelcome(await fallback(""),policy,raw) : lastAssistant?.content??"";
   if(informative) text=providerNeutralFallback(text,raw,policy?.locale);
   return { text, rich, newMessages, turns };
 }

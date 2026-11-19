@@ -9,6 +9,8 @@ export type Locale = (typeof SUPPORTED_LOCALES)[number];
 export const DEFAULT_LOCALE: Locale = "es";
 
 export type MessageKey =
+  | "sale_material_received"
+  | "sale_material_rejected"
   | "verification_help"
   | "audio_transcription_failed"
   | "code_verified"
@@ -23,6 +25,8 @@ type Catalog = Record<MessageKey, string>;
 
 const CATALOGS: Record<Locale, Catalog> = {
   es: {
+    sale_material_rejected: "El archivo no pudo incorporarse. Puedes enviar una imagen, un PDF o una muestra de voz autorizada de hasta 10 MB.",
+    sale_material_received: "Material recibido para revisión.",
     verification_help:
       "Este numero solo procesa codigos de verificacion. Envia el codigo que recibiste en la app para continuar.",
     audio_transcription_failed:
@@ -38,6 +42,8 @@ const CATALOGS: Record<Locale, Catalog> = {
     auth_retry_seed: "Ya verifique mi identidad con el codigo 2FA. Continua con lo que te pedi antes; si no habia nada pendiente, preguntame en que ayudo."
   },
   en: {
+    sale_material_rejected: "The file could not be attached. Send an image, PDF or authorized voice sample up to 10 MB.",
+    sale_material_received: "Material received for review.",
     verification_help:
       "This number only processes verification codes. Send the code you received in the app to continue.",
     audio_transcription_failed:
@@ -53,6 +59,8 @@ const CATALOGS: Record<Locale, Catalog> = {
     auth_retry_seed: "I just verified my identity with the 2FA code. Continue with what I asked before; if nothing was pending, ask me how you can help."
   },
   pt: {
+    sale_material_rejected: "O arquivo não foi anexado. Envie uma imagem, PDF ou amostra de voz autorizada de até 10 MB.",
+    sale_material_received: "Material recebido para análise.",
     verification_help:
       "Este numero processa apenas codigos de verificacao. Envie o codigo que recebeu no app para continuar.",
     audio_transcription_failed:

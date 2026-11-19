@@ -263,7 +263,7 @@ export async function sendWhatsappAudio(
   return sendWhatsappRequest(payload);
 }
 
-export async function downloadWhatsappMedia(mediaId: string): Promise<WhatsappMediaFile> {
+export async function downloadWhatsappMedia(mediaId: string, maxBytes?: number): Promise<WhatsappMediaFile> {
   const { accessToken } = requireWhatsappCredentials();
   const normalizedMediaId = String(mediaId ?? "").trim();
   if (!normalizedMediaId) {
@@ -295,6 +295,7 @@ export async function downloadWhatsappMedia(mediaId: string): Promise<WhatsappMe
     });
   }
 
+  if (maxBytes && (!Number.isSafeInteger(Number(metadata?.file_size)) || Number(metadata.file_size) <= 0 || Number(metadata.file_size) > maxBytes)) throw new Error("invalid_media_size");
   const mediaUrl = String(metadata?.url ?? "").trim();
   if (!mediaUrl) {
     throw new Error("whatsapp_media_url_missing");

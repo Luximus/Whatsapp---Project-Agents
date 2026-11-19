@@ -1,6 +1,7 @@
 import {composeAdvisorReply} from "../lib/agents/advisorResponse.js";
 import { replyBatch } from "../lib/replyBatch.js";
-import {websitePageSales} from "../lib/websitePageSales.js";
+import { notifyWebsiteOpportunity } from "../lib/websiteOpportunity.js";
+import {submitWebsiteMaterial,websitePageSales} from "../lib/websitePageSales.js";
 import type { FastifyPluginAsync } from "fastify";
 import { buildBridgeMessage, consumeBridgeOtp, dispatchDueBridgeEvents, fulfillBridgeOtpRequest } from "../lib/bridge.js";
 import { env } from "../env.js";
@@ -72,6 +73,8 @@ type WebhookMessage = {
     emoji?: string;
     message_id?: string;
   };
+  image?: { id?: string };
+  document?: { id?: string; filename?: string };
   audio?: {
     id?: string;
     mime_type?: string;
@@ -329,6 +332,28 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         messageType: isAudioInput ? "audio" : "text"
       });
 
+      const attachment = msg.image ?? msg.document ?? msg.audio;
+      if (env.defaultProject === "luxisoft" && env.whatsappAgentEnabled && attachment?.id && incomingMessageId) {
+        const state = await websitePageSales("status", from, locale).catch(() => null) as {
+          id?:string; stage?:string; details?:{voiceConsent?:boolean}
+        } | null;
+        const voiceSample = isAudioInput && state?.details?.voiceConsent === true;
+        if (state?.id && state.stage !== "delivered" && (!isAudioInput || voiceSample)) {
+          let materialStatus: "sale_material_received" | "sale_material_rejected" = "sale_material_received";
+          try {
+          const media = await downloadWhatsappMedia(attachment.id, 10 * 1024 * 1024);
+          await submitWebsiteMaterial(from, incomingMessageId, media.data, (media.mimeType ?? "").split(";")[0]!, msg.document?.filename ?? media.filename);
+          } catch { materialStatus="sale_material_rejected"; }
+          const content=t(materialStatus,locale);
+          const thread=await recordInboxInbound(fastify,{projectKey:env.defaultProject,channel:"whatsapp",contactKey:from,externalMessageId:incomingMessageId,content});
+          if (thread.inboundInserted!==false && thread.status==="ai_active") {
+            const sent=await safeReply(from,content,incomingMessageId);
+            await recordInboxOutbound(fastify,{conversationId:thread.id,actor:"system",content,deliveryStatus:sent?"sent":"failed"});
+          }
+          continue;
+        }
+      }
+
       if (isAudioInput && msg.audio?.id) {
         try {
           const media = await downloadWhatsappMedia(msg.audio.id);
@@ -543,6 +568,11 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         projectKey: env.defaultProject,
         phoneE164: to
       });
+      const actions = prepareBatchActions(buildAgentActions(to,locale,inboxConversation,userMessage));
+      if (env.defaultProject === "luxisoft" && inboxConversation.metadata.websiteOpportunity) {
+        const sale = await websitePageSales("status",to,locale).catch(()=>null) as {stage?:string;selectionAccepted?:boolean;paid?:boolean} | null;
+        actions.websitePurchaseActive = Boolean(sale?.selectionAccepted && !sale.paid && sale.stage !== "delivered");
+      }
       const salesContext = /jmarin\.luxisoft\.com|(?:pagina|página|perfil(?: profesional)?|website|(?:professional )?profile) (?:como est[ae]|like this)/i.test([userMessage,...history.filter(m=>m.role==="user").slice(-8).map(m=>m.content)].join(" "));
       const modelMessage = salesContext ? userMessage + "\n[Oferta específica verificada de página web; no es Plus/Premium]\n" + JSON.stringify({catalog:await websitePageSales("catalog",to,locale).catch(()=>({status:"catalog_unavailable"}))}) : userMessage;
       const result = await handleAgentMessage({
@@ -556,7 +586,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
           from: to,
           channel: "whatsapp",
           logger: fastify.log,
-          actions: prepareBatchActions(buildAgentActions(to, locale, inboxConversation))
+          actions
         }
       });
       if (batch && await batch.newer()) return true;
@@ -619,9 +649,20 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Acciones de negocio que se inyectan en el contexto de las tools del agente.
   // La lógica vive aquí (capa de rutas), no en el runtime ni en el script.
-  function buildAgentActions(phoneE164: string, locale: Locale, conversation: InboxConversation): AgentActions {
+  function buildAgentActions(phoneE164: string, locale: Locale, conversation: InboxConversation, userMessage: string): AgentActions {
     const actions: AgentActions = {
-      websitePageSales: ({action,details}) => websitePageSales(action,phoneE164,locale,details),
+      websitePageSales: async ({action,details,...options}) => {
+        if (details?.voiceConsent && !/autorizo.{0,90}(?:voz|audio)|(?:i authorize|autorizo).{0,90}(?:voice|voz)/i.test(userMessage))
+          return {status:"needs_input",message:"Pide autorización expresa para usar la próxima muestra de voz."};
+        const data = await websitePageSales(action, phoneE164, locale, details, options) as {
+          id?:string; offer?:{packages?:Array<{months:number;totalCop:number}>}
+        };
+        if (action === "start" && data.id && options.months) {
+          const pack = data.offer?.packages?.find(p=>p.months===options.months);
+          if (pack) await notifyWebsiteOpportunity(fastify,conversation,data.id,pack.months,pack.totalCop);
+        }
+        return data;
+      },
       async captureCommercialLead(input) {
         const updated = await markInboxCommercialSignal(fastify, conversation.id, {
           reason: input.reason,

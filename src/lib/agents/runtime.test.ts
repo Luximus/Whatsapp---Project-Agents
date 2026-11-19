@@ -41,6 +41,23 @@ describe("runAgent", () => {
     expect(firstReq.messages.at(-1)).toEqual({ role: "user", content: "hola" });
   });
 
+  it("responde la consulta del clon con costos y proceso del catálogo", async () => {
+    const execute = vi.fn().mockResolvedValue({code: "page-like-this", currency: "COP", packages: [{months: 3, totalCop: 269700}], benefits: ["Tres videos"], excluded: ["Dominio propio"], deliveryBusinessDays: [3, 5], autoRenew: false, startsAt: "delivery"});
+    completeMock.mockResolvedValue({text: "", toolCalls: []});
+    const result = await runAgent({
+      agent: {projectKey: "luxisoft", systemPrompt: "", tools: [{name: "websitePageSales", parameters: {type: "object"}, execute}]},
+      userMessage: "Hola, quiero crear mi clon virtual. Referencia: https://jmarin.luxisoft.com/es/ Me gustaría conocer los paquetes y cómo contratarlo.",
+      context: {projectKey: "luxisoft", channel: "whatsapp"}
+    });
+    expect(result.text).toContain("3 meses por $269.700");
+    expect(result.text).toContain("tres videos");
+    expect(result.text).toContain("3 a 5 días hábiles");
+    expect(result.text).toContain("una foto");
+    expect(completeMock).not.toHaveBeenCalled();
+    expect(result.text).toContain("enlace de Wompi");
+    expect(execute.mock.calls.map(([args]) => args)).toEqual([{action: "catalog"}]);
+  });
+
   it("sustituye el token {{ASSISTANT_NAME}} por el nombre del proveedor activo", async () => {
     completeMock.mockResolvedValueOnce({
       text: "hola",

@@ -23,7 +23,10 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
   const declined = /no quiero|no me interesa|no gracias|not interested|do not want|nao quero/.test(s);
   const platformPlan = /\b(?:plan|planes|perfil|suscripcion)\b/.test(s) && /\b(?:free|plus|premium|negocio|business)\b/.test(s) && !/chat\s*gpt/.test(s);
   const aiPlatformInterest = (aiReference || accountContinuation || platformPlan) && !accountSupport && (!existingUsage || platformPlan) && !declined;
+  const choseTerm = /\b(?:quiero|elijo|tomo|acepto|contrato|me quedo con)\s+(?:(?:el|la|los|un|paquete|plan|de|por)\s+)*\d{1,2}\s+mes(?:es)?\b/.test(s)
+    && !/\b(?:no|solo informacion)\b|[¿?]/.test(s) && /clon|tu pagina|jmarin|paquetes|dominio propio/.test(s + " " + last);
   const purchase = !aiPlatformInterest && (
+    choseTerm ||
     buying(s) ||
     (yes &&
       /\?/.test(last) &&
@@ -104,7 +107,7 @@ GESTIONES: Si aceptó que el equipo valide una condición que no puedes resolver
 MODALIDADES INDEPENDIENTES: Mensual por defecto: cita el importe por mes, sin multiplicarlo por doce ni añadir otra modalidad. Anual solo si lo solicita, con su propio precio por doce meses. No describas modalidades cortas como cuotas de una anualidad. No mezcles el equivalente mensual de una anualidad con la tarifa mensual. Comparaciones únicamente si las pide, con modalidades claramente separadas.\nNormalmente escribe 2–4 frases, 40–80 palabras, sin encabezados ni listas de beneficios. No añadas preguntas de seguimiento ni invitaciones a ampliar. No cierres siempre con preguntas ni con ofertas de otro plan. No inventes descuentos, resultados, urgencia ni funciones.
 El catálogo es una fuente de hechos, NO un encargo de recitarlo. Interés, pedir paquetes o preguntar cómo se contrata NO significa comprar, pedir todos los precios o autorizar un pedido. No adelantes importes ni portal privado sin solicitud pertinente. Si pregunta cuánto cuesta, responde directamente UNA opción adecuada, con período y condiciones esenciales; no lo obligues a un cuestionario. Compara todas las opciones solo cuando lo solicite explícitamente. Si requiere cotización, dilo sin inventar tarifa.
 Responde la necesidad expresada con información pertinente y termina. No sigas un embudo rígido ni pidas nombre/correo/materiales antes de que sean necesarios. El cuerpo no contiene saludos ni presentación: eso lo gestiona el compositor único. Ante interés en una referencia, explica brevemente el beneficio pertinente sin iniciar un cuestionario. No te limites a decir que puedes orientar o que primero resolverás dudas; ayuda en ese mismo mensaje. No adelantes trámites administrativos ni anuncies el portal como parte de una presentación. Acepta juntos los datos que ofrezca voluntariamente. El soporte y las quejas se atienden sin discurso comercial; transfiere a humano cuando lo pida.
-Contrata únicamente por instrucción clara o confirmación inequívoca de la última propuesta; seleccionar duración no equivale a compra. Cuando pida expresamente contratar o un enlace de pago, usa websitePageSales(start) para obtener su portal; no vuelvas a pedir confirmación ni solicites nombre, correo, negocio y objetivo juntos. Esos datos y los materiales se completan en el portal privado; guarda por chat solo lo que aporte voluntariamente tras decidir contratar. Antes de pagar informa importe, período y condiciones esenciales. Nunca ocultes compromisos por brevedad. Los estados de pago se confirman con herramientas. No crees pedidos para consultas iniciales.
+Para el clon virtual cotiza con websitePageSales(quote); al aceptar el cliente, recoge los datos por chat, verifica su correo y consulta el nombre que desea para su dirección web. Consulta domain antes de guardar el elegido. Todo se realiza por WhatsApp excepto la verificación de correo y el pago único mediante el enlace checkout de Wompi. Nunca inventes un enlace, un precio, disponibilidad ni confirmación de pago. En una compra iniciada pide solo los datos faltantes. No anuncies saldo IA salvo pregunta expresa sobre consumo o costos de IA.
 Responde en el idioma del mensaje ORIGINAL. Conserva tu identidad virtual honesta y no repitas presentaciones. El menú solo se muestra cuando se solicita.\n`;
 const money = (s: string) =>
   /\$\s*\d|\b\d[\d.,\s]*\s*(?:COP|USD|pesos|dolares)\b|(?:COP|USD)\s*\d/i.test(s);
@@ -123,8 +126,8 @@ export function advisorViolation(text: string, p: AdvisorPolicy) {
 }
 
 export function advisorToolAllowed(name: string, args: Record<string, unknown>, p: AdvisorPolicy) {
-  if (p.aiPlatformInterest && name === "websitePageSales" && ["start","save"].includes(String(args.action))) return false;
-  if (name === "websitePageSales" && ["start", "save"].includes(String(args.action)))
+  if (p.aiPlatformInterest && name === "websitePageSales" && ["start","save","checkout"].includes(String(args.action))) return false;
+  if (name === "websitePageSales" && ["start", "save", "checkout"].includes(String(args.action)))
     return p.write;
   if (["captureCommercialLead", "scheduleMeeting"].includes(name)) return p.followup;
   return true;
