@@ -568,7 +568,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         projectKey: env.defaultProject,
         phoneE164: to
       });
-      const actions = prepareBatchActions(buildAgentActions(to,locale,inboxConversation,userMessage));
+      const actions = prepareBatchActions(buildAgentActions(to,locale,inboxConversation,userMessage,history));
       if (env.defaultProject === "luxisoft" && inboxConversation.metadata.websiteOpportunity) {
         const sale = await websitePageSales("status",to,locale).catch(()=>null) as {stage?:string;selectionAccepted?:boolean;paid?:boolean} | null;
         actions.websitePurchaseActive = Boolean(sale?.selectionAccepted && !sale.paid && sale.stage !== "delivered");
@@ -649,17 +649,31 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Acciones de negocio que se inyectan en el contexto de las tools del agente.
   // La lógica vive aquí (capa de rutas), no en el runtime ni en el script.
-  function buildAgentActions(phoneE164: string, locale: Locale, conversation: InboxConversation, userMessage: string): AgentActions {
+  function buildAgentActions(phoneE164: string, locale: Locale, conversation: InboxConversation, userMessage: string, history: import("../lib/ai/types.js").ChatMessage[]): AgentActions {
     const actions: AgentActions = {
       websitePageSales: async ({action,details,...options}) => {
         if (details?.voiceConsent && !/autorizo.{0,90}(?:voz|audio)|(?:i authorize|autorizo).{0,90}(?:voice|voz)/i.test(userMessage))
           return {status:"needs_input",message:"Pide autorización expresa para usar la próxima muestra de voz."};
+        if (action === "start") {
+          delete options.acceptedTotalCop;
+          const pending = conversation.metadata.websiteOpportunity as {months:number;total:number} | undefined;
+          const last = history.filter(m=>m.role==="assistant").at(-1)?.content ?? "";
+          const affirmative = /^(?:s[ií]|acepto|confirmo|de acuerdo|yes|confirm|sim|aceito)(?:[,.! ]+(?:por favor|gracias|please))?[.! ]*$/i.test(userMessage.trim());
+          if (pending && options.months===pending.months && affirmative && last.includes(new Intl.NumberFormat("es-CO").format(pending.total)) && last.includes(String(pending.months)) && last.includes("?")) options.acceptedTotalCop=pending.total;
+        }
         const data = await websitePageSales(action, phoneE164, locale, details, options) as {
-          id?:string; offer?:{packages?:Array<{months:number;totalCop:number}>}
+          id?:string; selectionAccepted?:boolean; offer?:{packages?:Array<{months:number;totalCop:number}>}
         };
         if (action === "start" && data.id && options.months) {
           const pack = data.offer?.packages?.find(p=>p.months===options.months);
-          if (pack) await notifyWebsiteOpportunity(fastify,conversation,data.id,pack.months,pack.totalCop);
+          if (pack) {
+            await notifyWebsiteOpportunity(fastify,conversation,data.id,pack.months,pack.totalCop);
+            if (!data.selectionAccepted) {
+              const price=new Intl.NumberFormat("es-CO").format(pack.totalCop);
+              const message=locale==="en" ? `The total for ${pack.months} months is $${price} COP. Do you accept this one-time payment?` : locale==="pt" ? `O total por ${pack.months} meses é $${price} COP. Você aceita este pagamento único?` : `El total por ${pack.months} meses es $${price} COP. ¿Aceptas este pago único para iniciar tu registro?`;
+              return {status:"confirm_website_quote",message};
+            }
+          }
         }
         return data;
       },

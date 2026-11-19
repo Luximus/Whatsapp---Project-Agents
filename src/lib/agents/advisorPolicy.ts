@@ -26,7 +26,7 @@ export function advisorPolicy(raw: string, history: ChatMessage[] = []) {
   const choseTerm = /\b(?:quiero|elijo|tomo|acepto|contrato|me quedo con)\s+(?:(?:el|la|los|un|paquete|plan|de|por)\s+)*\d{1,2}\s+mes(?:es)?\b/.test(s)
     && !/\b(?:no|solo informacion)\b|[¿?]/.test(s) && /clon|tu pagina|jmarin|paquetes|dominio propio/.test(s + " " + last);
   const purchase = !aiPlatformInterest && (
-    choseTerm ||
+    (yes && /aceptas este pago unico|accept this one-time payment|aceita este pagamento unico/.test(last)) || choseTerm ||
     buying(s) ||
     (yes &&
       /\?/.test(last) &&

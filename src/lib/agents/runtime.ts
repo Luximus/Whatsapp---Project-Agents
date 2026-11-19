@@ -263,6 +263,15 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         : tool
           ? await executeTool(tool, call.arguments, toolContext)
           : `error: unknown_tool:${call.name}`;
+      if (policy && call.name === "websitePageSales" && args.action === "start" && allowed) {
+        let quote: {status?:string;message?:string} = {};
+        try { quote = JSON.parse(output); } catch { /* Tool errors go through the ordinary response path. */ }
+        if (quote.status === "confirm_website_quote" && quote.message) {
+          if (await obsolete()) return superseded();
+          const text=advisorWelcome(quote.message,policy,raw);
+          return {text,rich:[],newMessages:[{role:"assistant",content:text}],turns};
+        }
+      }
       if (policy) output = advisorToolResult(call.name, output, policy);
       newMessages.push({
         role: "tool",
