@@ -20,11 +20,11 @@ export async function notifyWebsiteOpportunity(
     "INSERT INTO whatsapp_website_notices(marker,project_key,phone,payload,status) VALUES($1,'luxisoft',$2,$3,'sending') ON CONFLICT DO NOTHING RETURNING marker",
     [marker, commercialPhone, JSON.stringify({ conversationId: conversation.id, body })]
   );
-  if (!claimed.rowCount) return;
   await app.pg.query(
     "UPDATE whatsapp_inbox_conversations SET metadata=metadata || jsonb_build_object('websiteOpportunity',$2::jsonb) WHERE id=$1",
     [conversation.id, JSON.stringify({ months, total })]
   );
+  if (!claimed.rowCount) return;
   const recipient = await app.pg.query(
     "SELECT last_inbound_at > now()-interval '24 hours' AS open FROM whatsapp_inbox_conversations WHERE project_key='luxisoft' AND channel='whatsapp' AND contact_key=$1",
     [commercialPhone]
