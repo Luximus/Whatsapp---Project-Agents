@@ -17,7 +17,14 @@ export const websiteSalesRoutes: FastifyPluginAsync = async (app) => {
       .parse(req.body);
     const inserted = (
       await app.pg.query(
-        "INSERT INTO whatsapp_website_notices(marker,project_key,phone,payload) VALUES($1,$2,$3,$4::jsonb) ON CONFLICT DO NOTHING RETURNING marker",
+        `INSERT INTO whatsapp_website_notices(marker,project_key,phone,payload,status)
+         VALUES($1,$2,$3,$4::jsonb,'sending')
+         ON CONFLICT(marker) DO UPDATE SET status='sending'
+         WHERE whatsapp_website_notices.status='awaiting_template'
+           AND (whatsapp_website_notices.payload->>'retryAfter')::timestamptz <= now()
+           AND whatsapp_website_notices.project_key=excluded.project_key
+           AND whatsapp_website_notices.phone=excluded.phone
+         RETURNING marker`,
         [b.marker, auth.projectKey, b.phone, JSON.stringify({ text: b.text })]
       )
     ).rows.length;
@@ -37,19 +44,25 @@ export const websiteSalesRoutes: FastifyPluginAsync = async (app) => {
     ).rows[0];
     const outside =
       !c?.last_inbound_at || Date.now() - new Date(c.last_inbound_at).getTime() > 86400000;
-    if (!c || (outside && !b.receipt))
+    if (!c || (outside && !b.receipt)) {
+      await app.pg.query(
+        "UPDATE whatsapp_website_notices SET status='pending_template' WHERE marker=$1",
+        [b.marker]
+      );
       return { ok: true, data: { status: "pending_template", emailFallback: true } };
+    }
     const last = (
       await app.pg.query(
         "SELECT content FROM whatsapp_inbox_messages WHERE conversation_id=$1 AND direction='inbound' ORDER BY id DESC LIMIT 1",
         [c.id]
       )
     ).rows[0];
-    if (/^(STOP|CANCELAR|SALIR|BAJA)\s*$/i.test(last?.content ?? ""))
+    if (/^(STOP|CANCELAR|SALIR|BAJA)\s*$/i.test(last?.content ?? "")) {
+      await app.pg.query("UPDATE whatsapp_website_notices SET status='opted_out' WHERE marker=$1", [
+        b.marker
+      ]);
       return { ok: true, data: { status: "opted_out" } };
-    await app.pg.query("UPDATE whatsapp_website_notices SET status='sending' WHERE marker=$1", [
-      b.marker
-    ]);
+    }
     try {
       if (outside && b.receipt)
         await sendWhatsappTemplate({
@@ -78,7 +91,18 @@ export const websiteSalesRoutes: FastifyPluginAsync = async (app) => {
         b.marker
       ]);
       return { ok: true, data: { status: "sent" } };
-    } catch {
+    } catch (error) {
+      const unapproved = z
+        .object({ details: z.object({ error: z.object({ code: z.literal(132001) }) }) })
+        .safeParse(error);
+      if (outside && b.receipt && unapproved.success) {
+        await app.pg.query(
+          `UPDATE whatsapp_website_notices SET status='awaiting_template',
+          payload=payload || jsonb_build_object('retryAfter', now()+interval '30 minutes') WHERE marker=$1`,
+          [b.marker]
+        );
+        return { ok: true, data: { status: "awaiting_template" } };
+      }
       await app.pg.query(
         "UPDATE whatsapp_website_notices SET status='needs_review' WHERE marker=$1",
         [b.marker]
