@@ -1,3 +1,4 @@
+import { getCommercialCatalog } from "../lib/commercialCatalog.js";
 import {chatBilling} from "../lib/chatBilling.js";
 import {composeAdvisorReply} from "../lib/agents/advisorResponse.js";
 import { replyBatch } from "../lib/replyBatch.js";
@@ -660,6 +661,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
   // La lógica vive aquí (capa de rutas), no en el runtime ni en el script.
   function buildAgentActions(phoneE164: string, locale: Locale, conversation: InboxConversation, userMessage: string, history: import("../lib/ai/types.js").ChatMessage[]): AgentActions {
     const actions: AgentActions = {
+    getCommercialCatalog,
       chatBilling: async input => {
         if(input.action==="confirm"||env.defaultProject!=="luxisoft")return {status:"unavailable"};
         const supplied=[userMessage,...history.filter(m=>m.role==="user").slice(-5).map(m=>m.content)].join(" ").toLowerCase();

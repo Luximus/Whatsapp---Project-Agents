@@ -1,37 +1,5 @@
-const cop = new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 });
-const usd = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-// El catálogo y su caché conservan centavos. La IA solo ve pesos/dólares ya
-// convertidos y su representación: nunca debe hacer esta aritmética.
-export function normalizeCatalogMoneyForAgent(value) {
-  if (Array.isArray(value)) return value.map(normalizeCatalogMoneyForAgent);
-  if (!value || typeof value !== "object") return value;
-  const normalized = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (key.endsWith("Cents")) {
-      if (typeof entry !== "number" || !Number.isSafeInteger(entry)) continue;
-      const currency = /UsdCents$/i.test(key) ? "USD" :
-        /CopCents$/i.test(key) || key === "monthlyEquivCents" ? "COP" : null;
-      if (!currency) continue;
-      const name = key === "monthlyEquivCents" ? "monthlyEquivCop" : key.slice(0, -5);
-      const amount = entry / 100;
-      normalized[name] = {
-        amount,
-        currency,
-        display: currency === "COP" ? `$${cop.format(amount)} COP` : `US$${usd.format(amount)}`
-      };
-      if (key === "includedCopCents") normalized.includedAiTokens = {
-        amount: entry / 10,
-        unit: "Tokens LuxiSoft",
-        display: `${cop.format(entry / 10)} Tokens`
-      };
-      continue;
-    }
-    normalized[key] = normalizeCatalogMoneyForAgent(entry);
-  }
-  return normalized;
-}
-
+import { normalizeCatalogMoneyForAgent } from "../commercialMoney.js";
+export { normalizeCatalogMoneyForAgent };
 export default {
   name: "getServiceCatalog",
   description: "Consulta información comercial oficial de LUXISOFT o LUXIPANEL, con caché Redis de cinco minutos. Incluye recargas de Tokens LuxiSoft con precio y saldo acreditado. Recomienda según la necesidad e historial antes de citar un precio. Los paquetes de suscripción futuros solo se consultan con includePreview si la persona pregunta por ellos.",
@@ -72,7 +40,7 @@ export default {
     return JSON.stringify({
       ...catalog, data, requestedPlanAvailable,
       instructions: [
-        "Responder en el idioma de la persona. Los importes ya están convertidos: copiar display, no multiplicar ni dividir. priceCop es el importe por cuota/pago y totalCop el total; months e installments definen periodicidad y número de pagos.",
+        "Responder en el idioma de la persona. Los importes ya están convertidos: copiar display, no multiplicar ni dividir. Para planes USD cita el precio USD y el equivalente COP con validOn de la TRM. Si falta el COP indica que está pendiente. Para enlaces emitidos prevalece su importe. priceCop es el importe por cuota/pago y totalCop el total; months e installments definen periodicidad y número de pagos.",
         "planFamily=packages identifica un programa activo; planFamily=legacy corresponde a las suscripciones actuales cuando packageProgramActive=false. previewPackages son solo información futura: no ofrecerlos como vigentes ni mezclar sus precios, límites o saldo con las suscripciones actuales.",
         "Recomendar primero un plan acorde con la necesidad e historial. Explicar 2–4 servicios o funciones confirmadas para el caso y su utilidad, además de almacenamiento, soporte y facilidad. Si services no existe, no inventar funciones a partir de un código opaco de features.",
         "Citar UNA modalidad pertinente con importe por pago, número de pagos y total; comparar alternativas solo si lo pide sin añadir preguntas ni invitaciones de seguimiento. Describir customerRole.description y customerRole.benefits para explicar los accesos reales del perfil; respetar sus accesos verificados. Luna/Terra/Sol y sus topes de razonamiento provienen de customerRole.policy.models. No suponer que todos los planes tienen las mismas funciones ni inferir modelos por almacenamiento. Los perfiles comerciales no conceden cargos de soporte, moderación o administración de Luxisoft.",

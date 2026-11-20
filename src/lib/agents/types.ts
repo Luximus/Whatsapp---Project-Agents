@@ -76,6 +76,7 @@ export interface ListLinksResult {
  * debe degradar con gracia.
  */
 export interface AgentActions {
+  getCommercialCatalog?: typeof import("../commercialCatalog.js").getCommercialCatalog;
   websitePurchaseActive?: boolean;
   chatBilling?: (input:Record<string,unknown>)=>Promise<unknown>;
   websitePageSales?: (input: {action: "catalog"|"start"|"save"|"status"|"quote"|"domain"|"checkout"; months?:number; domain?:string; acceptedTotalCop?:number; details?:Record<string,unknown>}) => Promise<unknown>;

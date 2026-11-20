@@ -1,3 +1,4 @@
+import { getCommercialCatalog } from "../lib/commercialCatalog.js";
 import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { env } from "../env.js";
 import { handleAgentMessage, type AgentActions } from "../lib/agents/index.js";
@@ -50,6 +51,7 @@ function conversationId(event: MetaMessagingEvent) {
 function buildCommercialActions(fastify: FastifyInstance, event: MetaMessagingEvent, conversation: InboxConversation): AgentActions {
   const userId = conversationId(event);
   return {
+    getCommercialCatalog,
     async captureCommercialLead(input) {
       const updated = await markInboxCommercialSignal(fastify, conversation.id, {
         reason: input.reason,

@@ -1,14 +1,4 @@
-function money(value) {
- if(Array.isArray(value))return value.map(money);
- if(!value||typeof value!=='object')return value;
- const result={};for(const [key,entry] of Object.entries(value)) {
-  if(key.endsWith('Cents')) {
-   if(!Number.isSafeInteger(entry)||entry<0)continue;
-   const currency=/UsdCents$/.test(key)?'USD':/CopCents$/.test(key)||key==='monthlyEquivCents'?'COP':null;
-   if(currency)result[key.slice(0,-5)]={amount:entry/100,currency,display:new Intl.NumberFormat(currency==='COP'?'es-CO':'en-US',{style:'currency',currency,maximumFractionDigits:currency==='COP'?0:2}).format(entry/100)+' '+currency};
-  }else result[key]=money(entry);
- }return result;
-}
+import { normalizeCatalogMoneyForAgent as money } from "../commercialMoney.js";
 export default {
  name:'getPlatformAccountOffer',
  description:'Orienta consultas sobre cuentas ChatGPT o cualquier IA hacia una cuenta propia de Luxisoft. Registro oficial, capacidades y precios verificados; no crea usuarios, pedidos ni pagos.',
@@ -50,7 +40,7 @@ export default {
      const selected=(args?.planCode?available.filter(p=>p.code===args.planCode):args.compare===true?available:[free,paid[0]].filter(Boolean)).map(p=>({...p,...(Array.isArray(p.periods)?{periods:[p.periods.find(x=>x.code===(args?.periodCode||'m1'))].filter(Boolean)}:{})}));
      if(selected.some(p=>p.code!=='free'&&p.pricingStatus==='pending'))return JSON.stringify({...result,pricingStatus:'pending_daily_update'});
      result.pricingStatus='verified';
-     result.catalog={fetchedAt:c.fetchedAt,planFamily:c.data.planFamily,packageProgramActive:c.data.packageProgramActive,plans:money(selected)};
+     result.catalog={fetchedAt:c.fetchedAt,planFamily:c.data.planFamily,packageProgramActive:c.data.packageProgramActive,trm:c.data.aiUsagePricing?.trm,plans:money(selected)};
      }
     }else {result.freeAccessStatus='unavailable';if(args?.includePrices)result.pricingStatus='unavailable';}
    }catch{result.freeAccessStatus='unavailable';if(args?.includePrices)result.pricingStatus='unavailable';}

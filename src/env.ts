@@ -151,6 +151,9 @@ const envSchema = z.object({
   AUTH_SESSION_TTL_SECONDS: z.coerce.number().int().min(60).default(3600),
   // LP-LICENSE-SERVER (autoridad): base URL + secreto compartido S2S. El backend
   // de LP corre en el mismo host (loopback) por defecto.
+  REDIS_URL: z.string().optional().default(""),
+  COMMERCIAL_CATALOG_TTL_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
+  LUXISOFT_PLATFORM_API_URL: z.string().url().default("http://127.0.0.1:3200/api/v1"),
   LP_API_BASE_URL: z.string().optional().default("http://127.0.0.1:3300"),
   LP_S2S_TOKEN: z.string().optional().default(""),
   LP_S2S_TIMEOUT_MS: z.coerce.number().int().min(1000).default(8000),
