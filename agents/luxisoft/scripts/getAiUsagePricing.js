@@ -12,7 +12,7 @@ export default {
       }
       const data = snapshot.data;
       const recharge = data?.aiUsagePricing?.tokenRecharge;
-      if (!recharge || !Number.isSafeInteger(recharge.minTokens) || recharge.minTokens<70000 || !Number.isSafeInteger(recharge.minimumPriceCopCents)) return JSON.stringify({status:'pricing_unavailable'});
+      if (!recharge || !Number.isSafeInteger(recharge.minTokens) || recharge.minTokens<70000 || (!Number.isSafeInteger(recharge.minimumPriceCopCents) || recharge.minimumPriceCopCents <= 0)) return JSON.stringify({status:'pricing_unavailable'});
       return JSON.stringify({ status: "ok", fetchedAt: snapshot.fetchedAt,
         currency: "COP", fixedPricePerMessage: null,
         consumptionBasis: "Costo real según modelo, contexto, longitud y modalidad. Las unidades de saldo no son tokens técnicos del modelo. Sin equivalencia garantizada a mensajes.",

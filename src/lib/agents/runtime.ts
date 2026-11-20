@@ -143,7 +143,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   // Public read-only facts must be available even when the model skips a tool call.
   // Intent uses the original message; this context never authorizes a purchase.
   const commerce = context.channel === "whatsapp" && agent.projectKey === "luxisoft" && context.actions?.chatBilling
-    ? await beginBillingConversation(raw,options.history??[],context.actions.chatBilling) : null;
+    ? await beginBillingConversation(raw,options.history??[],context.actions.chatBilling,Boolean(activePurchase)) : null;
   if(commerce?.message){
     if(await options.isSuperseded?.())return {text:"",rich:[],newMessages:[],turns:0};
     const text=policy?advisorWelcome(commerce.message,policy,raw):commerce.message;

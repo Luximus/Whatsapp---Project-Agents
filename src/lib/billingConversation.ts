@@ -8,8 +8,8 @@ const product =
 const clone = /\b(?:clon|jmarin|website-sales)\b/i;
 const identity =
   "Para continuar la compra por WhatsApp, escribe tu nombre completo y tu correo en un solo mensaje.";
-const emailSent =
-  "Abre el enlace que enviamos a tu correo. Cuando termines, escribe «ya confirmé» en este chat.";
+const confirmationReminder = "Cuando termines, escribe «ya confirmé» en este chat.";
+const emailSent = "Abre el enlace que enviamos a tu correo. " + confirmationReminder;
 const labels: Record<string, string> = {
   "company.legalName": "nombre o razón social",
   "contact.email": "correo de facturación",
@@ -48,13 +48,21 @@ export function billingOfferText(r: Record<string, unknown>) {
 export async function beginBillingConversation(
   raw: string,
   history: ChatMessage[],
-  call: BillingCall
+  call: BillingCall,
+  activeWebsitePurchase = false
 ) {
   const last = history.filter((x) => x.role === "assistant").at(-1)?.content ?? "";
   const askedIdentity = last.includes(identity),
-    awaitingEmail = last.includes(emailSent);
+    awaitingEmail = last.includes(confirmationReminder);
   const resume = awaitingEmail && /confirm|verifi|listo|hecho/i.test(raw);
-  const initial = isPurchase(raw);
+  const recentRequest = history.filter((message) => message.role === "user").at(-1)?.content ?? "";
+  const websiteContext =
+    activeWebsitePurchase || clone.test(recentRequest) || /clon virtual/i.test(last);
+  const explicitPlatform = /\b(?:tokens?|plus|premium|business|zadarma|plataforma|cuenta)\b/i.test(
+    raw
+  );
+  const initial =
+    isPurchase(raw) && (!websiteContext || explicitPlatform || askedIdentity || awaitingEmail);
   if (!initial && !askedIdentity && !resume) return null;
   if (/cancel|no quiero|otra cosa/i.test(raw)) return null;
   const ask = async (args: Record<string, unknown>) =>
@@ -79,7 +87,7 @@ export async function beginBillingConversation(
     }
     return {
       message: resume
-        ? "Todavía falta confirmar el enlace del correo. Cuando termines, escribe «ya confirmé» en este chat."
+        ? "Todavía falta confirmar el enlace del correo. " + confirmationReminder
         : identity
     };
   }
