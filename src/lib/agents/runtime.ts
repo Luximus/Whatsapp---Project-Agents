@@ -1,3 +1,4 @@
+import {beginBillingConversation,billingOfferText} from "../billingConversation.js";
 import { websitePackageSummary } from "../websitePackageSummary.js";
 import {onlyGreeting,cleanAdvisorBody,redundantAdvisorBody,advisorPrompt,informationInstructions,brandInstructions,unsolicitedProvider,providerNeutralFallback,asksAboutProvider,requestsQuestions,unsolicitedQuestion,informativeFallback} from "./advisorResponse.js";
 import {
@@ -141,7 +142,18 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   };
   // Public read-only facts must be available even when the model skips a tool call.
   // Intent uses the original message; this context never authorizes a purchase.
-  if (policy?.usageInquiry) {
+  const commerce = context.channel === "whatsapp" && agent.projectKey === "luxisoft" && context.actions?.chatBilling
+    ? await beginBillingConversation(raw,options.history??[],context.actions.chatBilling) : null;
+  if(commerce?.message){
+    if(await options.isSuperseded?.())return {text:"",rich:[],newMessages:[],turns:0};
+    const text=policy?advisorWelcome(commerce.message,policy,raw):commerce.message;
+    return {text,rich:[],newMessages:[{role:"assistant",content:text}],turns:0};
+  }
+  if(commerce?.hint) {
+    if(policy){policy.purchase=true;policy.price=true;policy.details=true;policy.exploring=false;}
+    baseMessages.push({role:"system",content:commerce.hint},{role:"user",content:"Mi solicitud de compra: "+commerce.request});
+  }
+  if (!commerce && policy?.usageInquiry) {
     const pricingTool = toolsByName.get("getAiUsagePricing");
     if (pricingTool) {
       const facts = await executeTool(pricingTool, "{}", toolContext);
@@ -268,7 +280,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         try { offer=JSON.parse(output); } catch { /* The next turn can explain a failed lookup. */ }
         if(offer.status==="offer" && offer.description && offer.confirm && typeof offer.totalCop==="number"){
           if(await obsolete())return superseded();
-          const text=(offer.environment==="sandbox"?"Cotización de prueba. ":"")+offer.description+" · $"+offer.totalCop.toLocaleString("es-CO")+" COP. Para aceptar este total y recibir el enlace de Wompi, responde "+offer.confirm+". Vence "+new Date(String(offer.expiresAt)).toLocaleTimeString("es-CO",{timeZone:"America/Bogota",hour:"2-digit",minute:"2-digit"})+" (Colombia).";
+          const text=billingOfferText(offer);
           return {text,rich:[],newMessages:[{role:"assistant",content:text}],turns};
         }
       }
