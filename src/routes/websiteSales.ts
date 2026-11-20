@@ -1,9 +1,11 @@
+import {commercialPaymentsRoutes} from "./commercialPayments.js";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { requireBridgeProjectAuth } from "../lib/bridge.js";
 import { sendWhatsappText, sendWhatsappTemplate } from "../lib/whatsapp.js";
 import { recordInboxOutbound } from "../lib/inbox.js";
 export const websiteSalesRoutes: FastifyPluginAsync = async (app) => {
+  await app.register(commercialPaymentsRoutes);
   app.post("/api/bridge/website-sales/notice", async (req) => {
     const auth = requireBridgeProjectAuth(req, "luxisoft");
     const b = z

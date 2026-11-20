@@ -263,6 +263,15 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         : tool
           ? await executeTool(tool, call.arguments, toolContext)
           : `error: unknown_tool:${call.name}`;
+      if (call.name==="chatBilling" && allowed) {
+        let offer:{status?:string;description?:string;totalCop?:number;confirm?:string;expiresAt?:string;environment?:string}={};
+        try { offer=JSON.parse(output); } catch { /* The next turn can explain a failed lookup. */ }
+        if(offer.status==="offer" && offer.description && offer.confirm && typeof offer.totalCop==="number"){
+          if(await obsolete())return superseded();
+          const text=(offer.environment==="sandbox"?"Cotización de prueba. ":"")+offer.description+" · $"+offer.totalCop.toLocaleString("es-CO")+" COP. Para aceptar este total y recibir el enlace de Wompi, responde "+offer.confirm+". Vence "+new Date(String(offer.expiresAt)).toLocaleTimeString("es-CO",{timeZone:"America/Bogota",hour:"2-digit",minute:"2-digit"})+" (Colombia).";
+          return {text,rich:[],newMessages:[{role:"assistant",content:text}],turns};
+        }
+      }
       if (policy && call.name === "websitePageSales" && args.action === "start" && allowed) {
         let quote: {status?:string;message?:string} = {};
         try { quote = JSON.parse(output); } catch { /* Tool errors go through the ordinary response path. */ }

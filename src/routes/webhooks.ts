@@ -1,3 +1,4 @@
+import {chatBilling} from "../lib/chatBilling.js";
 import {composeAdvisorReply} from "../lib/agents/advisorResponse.js";
 import { replyBatch } from "../lib/replyBatch.js";
 import { notifyWebsiteOpportunity } from "../lib/websiteOpportunity.js";
@@ -391,7 +392,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         continue;
       }
 
-      const otp = extractOtp(text);
+      const otp = /^\s*pagar\s+[a-f0-9]{8}[.!]?\s*$/i.test(text) ? null : extractOtp(text);
       if (otp) {
         trackOtpMessage();
         const bridgeResult = await consumeBridgeOtp(fastify, {
@@ -544,6 +545,14 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
         fastify.log.info({ conversationId: inboxConversation.id, status: inboxConversation.status }, "WhatsApp message queued for human; AI paused");
         return true;
       }
+      const paymentCode=/^\s*pagar\s+([a-f0-9]{8})[.!]?\s*$/i.exec(userMessage);
+      if(paymentCode && env.defaultProject==="luxisoft"){
+        const result=await chatBilling(to,inboxConversation.id,{action:"confirm",code:paymentCode[1]}).catch(()=>({status:"billing_unavailable"} as Record<string,unknown>));
+        const content=result.status==="checkout"?String(result.description)+" · $"+Number(result.totalCop).toLocaleString("es-CO")+" COP. Paga en Wompi: "+result.url:result.status==="verify_identity"?"Confirma nuevamente tu correo para pagar esta compra.":"Esta cotización no está disponible. Solicita el total actualizado por este chat.";
+        const sent=await safeReply(to,content,replyToMessageId,{quote:false});
+        await recordInboxOutbound(fastify,{conversationId:inboxConversation.id,actor:"system",content,deliveryStatus:sent?"sent":"failed"});
+        return true;
+      }
       const prepareBatchActions = (actions: AgentActions) => {
         const transfer = actions.escalateToHuman;
         if (transfer) actions.escalateToHuman = async input => {
@@ -595,7 +604,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       if (!reply) return false;
       // El asistente IA elige modo por probabilidad: nota de voz / texto plano /
       // texto citando al usuario. Si la voz falla o no aplica, cae a texto plano.
-      const mode = pickAgentReplyMode();
+      const mode = /\bPAGAR [a-f0-9]{8}\b/i.test(reply) ? "text" : pickAgentReplyMode();
       let sent = false;
       if (mode === "audio" && !/https:\/\/(?:luxisoft\.com\/api\/v1\/website-sales|checkout\.wompi\.co)/.test(reply)) {
         sent = await tryReplyWithVoice(to, reply, async()=>!batch || !await batch.newer());
@@ -651,6 +660,12 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
   // La lógica vive aquí (capa de rutas), no en el runtime ni en el script.
   function buildAgentActions(phoneE164: string, locale: Locale, conversation: InboxConversation, userMessage: string, history: import("../lib/ai/types.js").ChatMessage[]): AgentActions {
     const actions: AgentActions = {
+      chatBilling: async input => {
+        if(input.action==="confirm"||env.defaultProject!=="luxisoft")return {status:"unavailable"};
+        const supplied=[userMessage,...history.filter(m=>m.role==="user").slice(-5).map(m=>m.content)].join(" ").toLowerCase();
+        if(input.action==="identify" && (!input.email || !supplied.includes(String(input.email).toLowerCase())))return {status:"ask_for_email"};
+        return chatBilling(phoneE164,conversation.id,input);
+      },
       websitePageSales: async ({action,details,...options}) => {
         if (details?.voiceConsent && !/autorizo.{0,90}(?:voz|audio)|(?:i authorize|autorizo).{0,90}(?:voice|voz)/i.test(userMessage))
           return {status:"needs_input",message:"Pide autorización expresa para usar la próxima muestra de voz."};

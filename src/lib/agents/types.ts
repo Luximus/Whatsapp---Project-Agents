@@ -77,6 +77,7 @@ export interface ListLinksResult {
  */
 export interface AgentActions {
   websitePurchaseActive?: boolean;
+  chatBilling?: (input:Record<string,unknown>)=>Promise<unknown>;
   websitePageSales?: (input: {action: "catalog"|"start"|"save"|"status"|"quote"|"domain"|"checkout"; months?:number; domain?:string; acceptedTotalCop?:number; details?:Record<string,unknown>}) => Promise<unknown>;
   /** Agenda una cita: envía el correo de agendamiento al equipo comercial. */
   scheduleMeeting?: (input: ScheduleMeetingInput) => Promise<AgentActionResult>;
