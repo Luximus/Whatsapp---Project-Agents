@@ -58,6 +58,42 @@ describe("runAgent", () => {
     expect(execute.mock.calls.map(([args]) => args)).toEqual([{action: "catalog"}]);
   });
 
+  it("atiende la consulta real del clon y su continuación de precios con el catálogo, sin crear un pedido", async () => {
+    const catalog = {
+      code: "page-like-this", currency: "COP", packages: [{months: 3, totalCop: 269700}],
+      benefits: ["Página web", "Alojamiento y dominio propio por un año", "Tres videos", "Atención por texto y voz"],
+      excluded: [], deliveryBusinessDays: [3, 5], autoRenew: false, startsAt: "delivery"
+    };
+    const execute = vi.fn().mockResolvedValue(catalog);
+    const options = {
+      agent: {projectKey: "luxisoft", systemPrompt: "", tools: [{name: "websitePageSales", parameters: {type: "object"}, execute}]},
+      context: {projectKey: "luxisoft", channel: "whatsapp" as const}
+    };
+    const first = "buena noche, quisiera mas informacion sobre el clon virtual";
+    const intro = await runAgent({...options, userMessage: first});
+    expect(intro.text).toContain("dominio propio por un año");
+    expect(intro.text).toContain("texto y voz");
+    expect(intro.text).not.toMatch(/respuesta fiable|Tokens|enlace de pago/i);
+    const next = await runAgent({...options, userMessage: "¿Y cuánto cuesta por 3 meses?", history: [
+      {role: "user", content:first}, {role:"assistant",content:intro.text}
+    ]});
+    expect(next.text).toContain("3 meses por $269.700");
+    expect(completeMock).not.toHaveBeenCalled();
+    expect(execute.mock.calls.map(([args]) => args)).toEqual([{action: "catalog"}, {action: "catalog"}]);
+  });
+
+  it.each(["Quiero contratar el clon virtual por 3 meses", "Ya pagué mi clon virtual", "¿Cuánto cuesta el plan Plus?"])(
+    "conserva el flujo pertinente para %s", async (raw) => {
+      const execute = vi.fn();
+      completeMock.mockResolvedValue({text:"Revisaré la solicitud.", toolCalls:[]});
+      await runAgent({agent:{projectKey:"luxisoft",systemPrompt:"",tools:[{name:"websitePageSales",parameters:{type:"object"},execute}]},
+        userMessage:raw,history:[{role:"assistant",content:"El clon virtual es una página personalizada."}],
+        context:{projectKey:"luxisoft",channel:"whatsapp"}});
+      expect(execute).not.toHaveBeenCalled();
+      expect(completeMock).toHaveBeenCalled();
+    }
+  );
+
   it("sustituye el token {{ASSISTANT_NAME}} por el nombre del proveedor activo", async () => {
     completeMock.mockResolvedValueOnce({
       text: "hola",

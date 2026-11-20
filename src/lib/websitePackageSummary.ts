@@ -1,4 +1,61 @@
 import { z } from "zod";
+import type { AdvisorPolicy } from "./agents/advisorPolicy.js";
+
+const cloneTopic = /\b(?:clon virtual|clones virtuales|jmarin\.luxisoft\.com)\b/i;
+const relativeQuestion =
+  /^(?:(?:y|entonces|pero)\s+)?(?:cuanto (?:cuesta|vale|sale)|que (?:incluye|ofrecen)|como funciona|que paquetes (?:hay|tienen)|(?:(?:el|los) )?(?:precios?|paquetes)|(?:mas (?:info|informacion|detalles)|cuentame mas))(?:\s+(?:(?:por|para)\s+)?\d{1,2}\s+mes(?:es)?)?(?: por favor)?$/;
+
+export function websiteCatalogQuestion(raw: string, previousReply: string, policy: AdvisorPolicy) {
+  if (
+    policy.locale !== "es" ||
+    policy.usageInquiry ||
+    policy.purchase ||
+    policy.followup ||
+    policy.aiPlatformInterest
+  )
+    return null;
+  const text = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[¿?¡!,;:]/g, " ")
+    .replace(/[.!]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (
+    /\b(?:no (?:quiero|deseo|me interesa) (?:mas )?(?:informacion|info|el clon)|ya pague|mi pedido|mi comprobante)\b/.test(
+      text
+    )
+  )
+    return null;
+  const relative = cloneTopic.test(previousReply) && relativeQuestion.test(text);
+  if (!cloneTopic.test(text) && !relative) return null;
+  const omitPrices =
+    /\b(?:sin (?:precios?|costos?)|no (?:quiero|incluyas|menciones|necesito).{0,24}(?:precios?|costos?))\b/.test(
+      text
+    );
+  if (
+    !omitPrices &&
+    (policy.packagesInquiry || policy.price || (relative && /\bpaquetes\b/.test(text)))
+  )
+    return "packages";
+  // A general product inquiry can use the public catalog. Questions about a specific order,
+  // integration or feature still need their own context and tools.
+  const subject = text
+    .replace(cloneTopic, "producto")
+    .replace(/ de luxisoft\b/g, "")
+    .replace(/ (?:por favor|gracias)$/, "")
+    .replace(/\s+sin (?:precios?|costos?).*$/, "");
+  const overview =
+    /\b(?:informacion|info|detalles|cuentame|hablame|saber(?: mas)?|conocer(?: mas)?|como funciona|que incluye|que es|me interesa)(?: (?:acerca|sobre|de|del|el|un|mi|tu|su|ese|este|servicio|mas))* producto$/.test(
+      subject
+    ) ||
+    /\bproducto (?:y )?(?:que incluye|como funciona|que es|mas informacion|mas detalles)$/.test(
+      subject
+    ) ||
+    /^(?:el |mi |un )?producto$/.test(subject);
+  return relative || overview ? "overview" : null;
+}
 
 const offer = z.object({
   code: z.literal("page-like-this"),
@@ -20,7 +77,11 @@ const offer = z.object({
   autoRenew: z.literal(false)
 });
 
-function detailedOffer(data: unknown, months?: number): string {
+function detailedOffer(
+  data: unknown,
+  months: number | undefined,
+  view: "packages" | "overview"
+): string {
   const parsed = offer.safeParse(data);
   if (!parsed.success) return "";
   const {
@@ -33,9 +94,20 @@ function detailedOffer(data: unknown, months?: number): string {
   const list = new Intl.ListFormat("es", { type: "conjunction" });
   const items = (values: string[]) =>
     list.format(values.map((value) => value.charAt(0).toLowerCase() + value.slice(1)));
+  if (view === "overview") {
+    const extras = benefits.filter((item) => item.toLocaleLowerCase("es") !== "página web");
+    return [
+      "El clon virtual es una página personalizada para presentar tu negocio o profesión.",
+      ...(extras.length ? [`Incluye ${items(extras)}.`] : []),
+      `Por este chat recibimos tus materiales. La entrega tarda de ${min} a ${max} días hábiles desde que se confirma el pago y se validan los materiales.`
+    ].join(" ");
+  }
   const examples = months
     ? packages.filter((p) => p.months === months)
     : packages.filter((p) => [1, 3, 6, 12].includes(p.months));
+  if (months && !examples.length) {
+    return `El catálogo del clon virtual no ofrece un paquete de ${months} meses. Las duraciones disponibles en meses son ${list.format(packages.map((p) => String(p.months)))}.`;
+  }
   const prices = examples
     .map(({ months, totalCop, discountPercent }) => {
       const regularTotal = parsed.data.monthlyCop && months * parsed.data.monthlyCop;
@@ -58,10 +130,15 @@ function detailedOffer(data: unknown, months?: number): string {
 }
 
 // Only the authenticated catalog result is passed here, never website or chat text.
-export function websitePackageSummary(result: string, locale: string, months?: number): string {
+export function websitePackageSummary(
+  result: string,
+  locale: string,
+  months?: number,
+  view: "packages" | "overview" = "packages"
+): string {
   try {
     const data = JSON.parse(result);
-    if (locale === "es") return detailedOffer(data, months);
+    if (locale === "es") return detailedOffer(data, months, view);
     if (
       data?.code !== "page-like-this" ||
       !Array.isArray(data.periods) ||

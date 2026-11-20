@@ -1,5 +1,5 @@
 import {beginBillingConversation,billingOfferText} from "../billingConversation.js";
-import { websitePackageSummary } from "../websitePackageSummary.js";
+import { websiteCatalogQuestion, websitePackageSummary } from "../websitePackageSummary.js";
 import {onlyGreeting,cleanAdvisorBody,redundantAdvisorBody,advisorPrompt,informationInstructions,brandInstructions,unsolicitedProvider,providerNeutralFallback,asksAboutProvider,requestsQuestions,unsolicitedQuestion,informativeFallback} from "./advisorResponse.js";
 import {
   advisorPolicy,
@@ -172,18 +172,17 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     }
   }
   // Package information is read-only. A request to buy must still take the order path.
-  const pageInquiry = /\bjmarin\.luxisoft\.com(?:[/?#\s]|$)|\bclon virtual\b/i.test(raw);
-  if (policy?.locale === "es" && pageInquiry && !policy.usageInquiry && !policy.purchase && !policy.followup &&
-      !/sin precios?|no (?:quiero|incluyas|menciones).{0,18}(?:precios?|costos?)/i.test(raw) &&
-      (policy.packagesInquiry || policy.price)) {
+  const previousReply = options.history?.filter((message) => message.role === "assistant").at(-1)?.content ?? "";
+  const catalogQuestion = policy && websiteCatalogQuestion(raw, previousReply, policy);
+  if (policy && catalogQuestion && !commerce) {
     const catalog = toolsByName.get("websitePageSales");
     if (catalog) {
-      const body = websitePackageSummary(await executeTool(catalog, '{"action":"catalog"}', toolContext), "es", Number(raw.match(/\b(\d{1,2})\s*mes(?:es)?\b/i)?.[1]) || undefined);
+      const result = await executeTool(catalog, '{"action":"catalog"}', toolContext);
+      const months = Number(raw.match(/\b(\d{1,2})\s*mes(?:es)?\b/i)?.[1]) || undefined;
+      const body = websitePackageSummary(result, "es", months, catalogQuestion);
       if (await options.isSuperseded?.()) return {text: "", rich: [], newMessages: [], turns: 0};
-      if (body) {
-        const text = advisorWelcome(body, policy, raw);
-        return {text, rich: [], newMessages: [{role: "assistant", content: text}], turns: 0};
-      }
+      const text = advisorWelcome(body || "En este momento no puedo consultar el catálogo del clon virtual para confirmar sus condiciones.", policy, raw);
+      return {text, rich: [], newMessages: [{role: "assistant", content: text}], turns: 0};
     }
   }
   const fallback = async (draft: string) => {

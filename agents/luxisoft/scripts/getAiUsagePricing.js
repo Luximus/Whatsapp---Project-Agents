@@ -19,7 +19,7 @@ export default {
       if (args?.tokens !== undefined && args.tokens !== recharge.minTokens) {
         if (!Number.isSafeInteger(args.tokens) || args.tokens < recharge.minTokens || args.tokens > 100000000000) return JSON.stringify({status:"invalid_token_quantity"});
         const base = (process.env.LUXISOFT_PLATFORM_API_URL || "http://127.0.0.1:3200/api/v1").replace(/\/$/, "");
-        const response = await fetch(base + "/billing/token-quote?tokens=" + args.tokens, {signal:AbortSignal.timeout(5000)});
+        const response = await fetch(base + "/billing/token-quote?tokens=" + args.tokens, {signal:globalThis.AbortSignal.timeout(5000)});
         if (!response.ok) return JSON.stringify({status:"pricing_unavailable"});
         const body = await response.json();
         if (!body.ok || body.data?.tokens !== args.tokens) return JSON.stringify({status:"pricing_unavailable"});
