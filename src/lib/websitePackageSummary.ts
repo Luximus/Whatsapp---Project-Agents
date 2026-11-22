@@ -28,7 +28,7 @@ export function websiteCatalogQuestion(raw: string, previousReply: string, polic
     )
   )
     return null;
-  const relative = cloneTopic.test(previousReply) && relativeQuestion.test(text);
+  const relative = cloneTopic.test(previousReply) && (relativeQuestion.test(text) || /mensualidad|despues del primer mes|desde el segundo mes|pago mensual/.test(text));
   if (!cloneTopic.test(text) && !relative) return null;
   const omitPrices =
     /\b(?:sin (?:precios?|costos?)|no (?:quiero|incluyas|menciones|necesito).{0,24}(?:precios?|costos?))\b/.test(
@@ -138,6 +138,23 @@ export function websitePackageSummary(
 ): string {
   try {
     const data = JSON.parse(result);
+    if(locale==="es" && data?.code==="page-like-this"){
+      if(data.trmUnavailable && data.initialUsdCents===2599 && data.monthlyUsdCents===999)
+        return "El pago inicial del clon virtual es de 25,99 USD e incluye el primer mes. Desde el segundo mes cuesta 9,99 USD al mes. La equivalencia en COP está pendiente de confirmar con la TRM oficial de hoy.";
+      if(data.initial?.display && data.monthly?.display && data.trm?.rate){
+        const lines=[data.renewal
+          ? "Renovar tu página con clon virtual cuesta "+data.monthly.display+" al mes."
+          : "Crear tu página web con clon virtual cuesta "+data.initial.display+" e incluye el primer mes. Desde el segundo mes cuesta "+data.monthly.display+" al mes."];
+        if(months){
+          const item=data.packages.find((entry:{months:number})=>entry.months===months);
+          lines.push(item?"Por "+months+" "+(months===1?"mes":"meses")+", el total es "+item.display+".":"Puedes elegir entre 1 y 24 meses.");
+        }
+        const day = new Intl.DateTimeFormat("es-CO",{timeZone:"America/Bogota",day:"numeric",month:"long",year:"numeric"}).format(new Date());
+        lines.push("TRM del "+day+": "+data.trm.rate.toLocaleString("es-CO",{minimumFractionDigits:2})+" COP por USD.");
+        if(view==="overview")lines.unshift("El clon virtual es una página personalizada para presentar tu negocio o profesión. Incluye "+data.benefits.join(", ")+".");
+        return lines.join(" ");
+      }
+    }
     if (locale === "es") return detailedOffer(data, months, view);
     if (
       data?.code !== "page-like-this" ||
