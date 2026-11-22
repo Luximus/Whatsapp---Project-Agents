@@ -139,8 +139,12 @@ export function websitePackageSummary(
   try {
     const data = JSON.parse(result);
     if(locale==="es" && data?.code==="page-like-this"){
+      const benefits: string[] = Array.isArray(data.benefits) ? data.benefits : [];
+      const included = benefits.length ? "El paquete incluye " + new Intl.ListFormat("es", {type:"conjunction"}).format(
+        benefits.map(item => item.charAt(0).toLocaleLowerCase("es") + item.slice(1))
+      ) + "." : "";
       if(data.trmUnavailable && data.initialUsdCents===2599 && data.monthlyUsdCents===999)
-        return "El pago inicial del clon virtual es de 25,99 USD e incluye el primer mes. Desde el segundo mes cuesta 9,99 USD al mes. La equivalencia en COP está pendiente de confirmar con la TRM oficial de hoy.";
+        return [included, "El pago inicial del clon virtual es de 25,99 USD e incluye el primer mes. Desde el segundo mes cuesta 9,99 USD al mes. La equivalencia en COP está pendiente de confirmar con la TRM oficial de hoy."].filter(Boolean).join("\n\n");
       if(data.initial?.display && data.monthly?.display && data.trm?.rate){
         const lines=[data.renewal
           ? "Renovar tu página con clon virtual cuesta "+data.monthly.display+" al mes."
@@ -151,8 +155,12 @@ export function websitePackageSummary(
         }
         const day = new Intl.DateTimeFormat("es-CO",{timeZone:"America/Bogota",day:"numeric",month:"long",year:"numeric"}).format(new Date());
         lines.push("TRM del "+day+": "+data.trm.rate.toLocaleString("es-CO",{minimumFractionDigits:2})+" COP por USD.");
-        if(view==="overview")lines.unshift("El clon virtual es una página personalizada para presentar tu negocio o profesión. Incluye "+data.benefits.join(", ")+".");
-        return lines.join(" ");
+        const paragraphs = [included, lines.join(" ")];
+        if(Array.isArray(data.deliveryBusinessDays) && data.deliveryBusinessDays.length===2 && !data.renewal){
+          const [min,max] = data.deliveryBusinessDays;
+          paragraphs.push("La entrega tarda de "+min+" a "+max+" días hábiles desde que se confirma el pago y se validan los materiales. El primer mes empieza cuando recibes tu página.");
+        }
+        return paragraphs.filter(Boolean).join("\n\n");
       }
     }
     if (locale === "es") return detailedOffer(data, months, view);
